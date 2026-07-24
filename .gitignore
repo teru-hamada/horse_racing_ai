@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Secrets and local settings
+.env
+*.env
+.streamlit/secrets.toml
+
+# Local data
+data/**
+!data/**/
+!data/README.md
+!data/**/.gitkeep
+
+# Generated model artifacts
+artifacts/**
+!artifacts/**/
+!artifacts/README.md
+!artifacts/**/.gitkeep
+
+# Existing model directory (until migration to artifacts/)
+models/**
+
+# Logs and temporary files
+logs/
+*.log
+tmp/
+temp/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
