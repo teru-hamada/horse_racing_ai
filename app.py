@@ -14,9 +14,10 @@ import streamlit as st
 
 from src.config import PATHS
 from src.demo_data import generate_demo_records
+from src.html_collection_jobs import cancel_job, list_jobs, start_job
 from src.logging_utils import AppLogger
 from src.modeling import TrainConfig, predict_historical_race, predict_race, train_model
-from src.scrapers import NetkeibaScraper
+from src.scrapers_netkeiba import NetkeibaScraper
 from src.storage import (
     collection_runs,
     dashboard_summary,
@@ -395,7 +396,7 @@ def _clear_ui_state() -> None:
 with st.sidebar:
     page = st.radio(
         "メニュー",
-        ["ダッシュボード", "データ収集", "モデル学習", "学習評価", "週末予想", "ログ・保存結果", "メンテナンス"],
+        ["ダッシュボード", "HTML収集（学習用）", "HTML収集（予想用）", "データベース作成", "モデル学習", "学習評価", "週末予想", "ログ・保存結果", "メンテナンス"],
     )
     st.divider()
     st.caption(f"DB: {PATHS.database}")
@@ -412,16 +413,149 @@ if page == "ダッシュボード":
     c3.metric("登録レース数", f"{summary['races']:,}")
     c4.metric("学習済みモデル", f"{summary['model_count']:,}")
     st.info(
-        "最初は［データ収集］のデモデータ生成を実行してください。スクレイピング前でも、学習から予想まで動作確認できます。"
+        "最初は［データベース作成］のデモデータ生成を実行してください。HTML収集前でも、学習から予想まで動作確認できます。"
     )
     runs = collection_runs()
     if not runs.empty:
         st.subheader("直近のデータ収集")
         st.dataframe(runs.head(10), use_container_width=True, hide_index=True)
 
-elif page == "データ収集":
-    st.header("データ収集")
-    mode = st.radio("収集方法", ["デモデータを生成", "netkeibaから取得"], horizontal=True)
+elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
+    dataset_type = "historical" if page == "HTML収集（学習用）" else "upcoming"
+    st.header(page)
+    st.markdown(
+        """
+        <style>
+        .st-key-start_html_collection button {
+            background-color: #1677ff !important;
+            border-color: #1677ff !important;
+            color: white !important;
+        }
+        .st-key-start_html_collection button:hover {
+            background-color: #0958d9 !important;
+            border-color: #0958d9 !important;
+        }
+        .st-key-cancel_html_collection button {
+            background-color: #1677ff !important;
+            border-color: #1677ff !important;
+            color: white !important;
+        }
+        .st-key-cancel_html_collection button:hover {
+            background-color: #0958d9 !important;
+            border-color: #0958d9 !important;
+        }
+        .st-key-refresh_html_collection button {
+            background-color: #1677ff !important;
+            border-color: #1677ff !important;
+            color: white !important;
+        }
+        .st-key-refresh_html_collection button:hover {
+            background-color: #0958d9 !important;
+            border-color: #0958d9 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    if dataset_type == "historical":
+        start_year, end_year = st.slider(
+            "取得年範囲",
+            min_value=1986,
+            max_value=date.today().year,
+            value=(date.today().year, date.today().year),
+        )
+        start_date = date(int(start_year), 1, 1)
+        end_date = min(date(int(end_year), 12, 31), date.today())
+        st.caption(f"{start_year}年～{end_year}年の過去レース結果HTMLを取得します。")
+    else:
+        target_date = st.date_input("取得日", value=date.today())
+        start_date = target_date
+        end_date = target_date
+        st.caption(f"{target_date}の予想用出馬表HTMLを取得します。")
+
+    force = st.checkbox("保存済みHTMLを再取得する", value=False)
+    st.caption(
+        "ページ取得間隔は2秒固定です。処理はバックグラウンドで継続し、"
+        "HTMLは data/raw_html/<年>/ 以下へ保存します。"
+    )
+    current_jobs = list_jobs(dataset_type)
+    active_job = next(
+        (
+            job
+            for job in current_jobs
+            if job["status"] in {"running", "cancelling"}
+        ),
+        None,
+    )
+    start_column, cancel_column = st.columns(2)
+    with start_column:
+        if st.button(
+            "HTML収集を開始",
+            type="primary",
+            key="start_html_collection",
+            disabled=active_job is not None,
+            use_container_width=True,
+        ):
+            try:
+                job_id = start_job(dataset_type, start_date, end_date, force)
+                st.success(
+                    f"バックグラウンド収集を開始しました。実行ID: {job_id}"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+    with cancel_column:
+        if st.button(
+            "処理を中止",
+            key="cancel_html_collection",
+            disabled=active_job is None,
+            use_container_width=True,
+        ):
+            if active_job and cancel_job(str(active_job["job_id"])):
+                st.warning("中止を要求しました。現在のページ処理後に停止します。")
+                st.rerun()
+            else:
+                st.info("中止できるHTML収集はありません。")
+
+    st.subheader("実行状況")
+    jobs = list_jobs(dataset_type)
+    if not jobs:
+        st.info("この画面から開始したHTML収集はありません。")
+    else:
+        latest_job = jobs[0]
+        status_labels = {
+            "running": "実行中",
+            "cancelling": "中止処理中",
+            "cancelled": "中止",
+            "completed": "完了",
+            "failed": "失敗",
+        }
+        st.progress(
+            float(latest_job["progress"]),
+            text=(
+                f"{status_labels.get(latest_job['status'], latest_job['status'])} "
+                f"{float(latest_job['progress']):.0%}"
+            ),
+        )
+        st.write(
+            f"実行ID: `{latest_job['job_id']}`  "
+            f"対象: {latest_job['start_date']} ～ {latest_job['end_date']}"
+        )
+        if latest_job["result"]:
+            st.write(
+                f"確認日数: {latest_job['result'].get('date_count', 0):,} / "
+                f"取得レースHTML: {latest_job['result'].get('race_count', 0):,}"
+            )
+        if latest_job["error"]:
+            st.error(latest_job["error"])
+        with st.expander("実行ログ", expanded=latest_job["status"] == "running"):
+            st.code("\n".join(latest_job["logs"][-100:]), language="text")
+        if st.button("状況を更新", key="refresh_html_collection"):
+            st.rerun()
+
+elif page == "データベース作成":
+    st.header("データベース作成")
+    mode = st.radio("作成方法", ["デモデータを生成", "取得済みHTMLから作成"], horizontal=True)
 
     if mode == "デモデータを生成":
         st.write("実サイトへアクセスせず、学習・評価・予想を試せる合成データを保存します。")
@@ -437,8 +571,12 @@ elif page == "データ収集":
                     historical_races=historical_races,
                     upcoming_races=upcoming_races,
                 )
-                hist_path = save_race_records(historical, run_id + "_history", "historical")
-                up_path = save_race_records(upcoming, run_id + "_upcoming", "upcoming")
+                save_race_records(
+                    historical, run_id + "_history", "historical"
+                )
+                save_race_records(
+                    upcoming, run_id + "_upcoming", "upcoming"
+                )
                 save_collection_run(
                     {
                         "run_id": run_id,
@@ -451,7 +589,7 @@ elif page == "データ収集":
                         "end_date": upcoming["race_date"].max(),
                         "race_count": historical["race_id"].nunique() + upcoming["race_id"].nunique(),
                         "row_count": len(historical) + len(upcoming),
-                        "output_path": f"{hist_path}; {up_path}",
+                        "output_path": "",
                         "message": "デモデータ生成完了",
                     }
                 )
@@ -461,167 +599,50 @@ elif page == "データ収集":
                 logger.exception(f"デモデータ生成失敗: {exc}")
                 st.exception(exc)
     else:
-        dataset_type_label = st.radio("対象", ["学習用の過去結果", "予想用の出馬表"], horizontal=True)
-        dataset_type = "historical" if dataset_type_label == "学習用の過去結果" else "upcoming"
-        default_date = date.today() - timedelta(days=7) if dataset_type == "historical" else date.today() + timedelta(days=5)
-        c1, c2 = st.columns(2)
-        start_date = c1.date_input("開始日", value=default_date)
-        end_date = c2.date_input("終了日", value=default_date)
-        interval = st.number_input("ページ取得間隔（秒）", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
-        force = st.checkbox("保存済みHTMLを再取得する", value=False)
-        st.caption("取得した元HTML、Parquet、CSV、DuckDBの各結果を保存します。ページ構造変更時はraw_htmlを確認できます。")
-        if st.button("スクレイピング開始", type="primary"):
-            run_id = f"scrape_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
-            started = datetime.now()
-            st.session_state.scraping_urls = []
-
-            progress_bar = st.progress(0.0, text="収集中")
-            status_placeholder = st.empty()
-
-            st.subheader("リアルタイム実行ログ")
-            log_placeholder = st.empty()
-
-            def scraping_log_callback(line: str) -> None:
-                """実行ログをリアルタイム表示し、URLは内部的に件数だけ管理する。"""
-                ui_log_callback(line)
-
-                detected_urls = _extract_urls(line)
-                if detected_urls:
-                    _append_scraping_urls(detected_urls)
-
-                status_placeholder.caption(
-                    f"実行ID: {run_id} / 確認済みURL: "
-                    f"{len(st.session_state.scraping_urls):,}件"
-                )
-
-            logger = new_logger(callback=scraping_log_callback)
-            scraper = NetkeibaScraper(
-                logger=logger,
-                interval_seconds=float(interval),
+        dataset_type_label = st.radio(
+            "対象", ["学習用の過去結果", "予想用の出馬表"], horizontal=True
+        )
+        dataset_type = (
+            "historical"
+            if dataset_type_label == "学習用の過去結果"
+            else "upcoming"
+        )
+        if dataset_type == "historical":
+            selected_year = st.selectbox(
+                "対象年",
+                list(range(date.today().year, 1985, -1)),
+                key="database_year",
             )
-
+            start_date = date(int(selected_year), 1, 1)
+            end_date = min(date(int(selected_year), 12, 31), date.today())
+        else:
+            target_date = st.date_input(
+                "対象日", value=date.today(), key="database_date"
+            )
+            start_date = target_date
+            end_date = target_date
+        st.caption("ネットワークアクセスは行わず、取得済みHTMLだけを解析します。")
+        if st.button("取得済みHTMLからデータベースを作成", type="primary"):
+            run_id = f"database_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
+            started = datetime.now()
+            logger = new_logger()
+            scraper = NetkeibaScraper(logger=logger)
+            progress_bar = st.progress(0.0, text="解析中")
             try:
-                logger.info(
-                    "スクレイピング開始: "
-                    f"dataset_type={dataset_type}, "
-                    f"start_date={start_date}, end_date={end_date}, "
-                    f"force={force}"
-                )
-
-                frame = scraper.collect_date_range(
+                frame = scraper.parse_cached_date_range(
                     start_date=start_date,
                     end_date=end_date,
                     dataset_type=dataset_type,
-                    run_id=run_id,
-                    force=force,
                     progress_callback=lambda value: progress_bar.progress(
                         min(max(float(value), 0.0), 1.0),
-                        text=f"収集中 {float(value):.0%}",
+                        text=f"解析中 {float(value):.0%}",
                     ),
                 )
-
-                # ログ以外に、DataFrameやスクレイパー属性に残ったURLも回収する。
-                discovered_urls = (
-                    _frame_source_urls(frame)
-                    + _scraper_debug_urls(scraper)
-                )
-                _append_scraping_urls(discovered_urls)
-
-                with st.expander("取得状況・保存前診断", expanded=True):
-                    st.write("run_id:", run_id)
-                    st.write("dataset_type:", dataset_type)
-                    st.write(
-                        "対象期間:",
-                        f"{start_date} ～ {end_date}",
-                    )
-                    st.write(
-                        "確認できた取得URL数:",
-                        len(st.session_state.scraping_urls),
-                    )
-
-                    if frame is None:
-                        st.error("スクレイパーの戻り値がNoneです。")
-                    else:
-                        st.write("保存直前のデータ件数:", len(frame))
-                        st.write("保存直前の列:", frame.columns.tolist())
-                        if not frame.empty:
-                            st.caption(
-                                "取得データの明細は、保存後に作成される"
-                                "データ確認ログで確認できます。"
-                            )
-
-                if frame is None:
-                    raise ValueError(
-                        "スクレイパーの戻り値がNoneです。"
-                        "取得処理または戻り値生成処理を確認してください。"
-                    )
-
-                if not isinstance(frame, pd.DataFrame):
-                    raise TypeError(
-                        "スクレイパーの戻り値がDataFrameではありません。"
-                        f"実際の型: {type(frame).__name__}"
-                    )
-
                 if frame.empty:
-                    diagnostic_message = (
-                        "保存対象のレースデータが0件です。"
-                        f" 対象期間={start_date}～{end_date}、"
-                        f"dataset_type={dataset_type}、"
-                        f"確認URL数={len(st.session_state.scraping_urls)}。"
-                        "取得URL、対象日の開催有無、アクセス制限、"
-                        "HTML構造、結果ページと出馬表ページの"
-                        "解析処理の違いを確認してください。"
-                    )
-                    logger.error(diagnostic_message)
-                    raise ValueError(diagnostic_message)
-
-                required_columns = {"race_id"}
-                missing_columns = required_columns.difference(frame.columns)
-                if missing_columns:
                     raise ValueError(
-                        "保存に必要な列がありません: "
-                        + ", ".join(sorted(missing_columns))
+                        "対象期間の解析可能なHTMLがありません。先にHTML収集を実行してください。"
                     )
-
-                output_path = save_race_records(
-                    frame,
-                    run_id,
-                    dataset_type,
-                )
-
-                # 取得データ全件を確認できる専用ログを出力する。
-                data_log_path = Path(PATHS.logs) / f"{run_id}_records.log"
-                data_log_path.parent.mkdir(parents=True, exist_ok=True)
-
-                with data_log_path.open(
-                    "w",
-                    encoding="utf-8",
-                    newline="",
-                ) as data_log:
-                    data_log.write(
-                        f"run_id={run_id}\n"
-                        f"dataset_type={dataset_type}\n"
-                        f"start_date={start_date}\n"
-                        f"end_date={end_date}\n"
-                        f"race_count={frame['race_id'].nunique()}\n"
-                        f"row_count={len(frame)}\n"
-                        f"columns={frame.columns.tolist()}\n"
-                        f"output_path={output_path}\n"
-                        + "=" * 100
-                        + "\n"
-                    )
-                    frame.to_csv(
-                        data_log,
-                        index=False,
-                        lineterminator="\n",
-                    )
-
-                logger.info(
-                    "取得データ確認ログを保存: "
-                    f"{data_log_path} / "
-                    f"{frame['race_id'].nunique()}レース、{len(frame)}行"
-                )
-
+                save_race_records(frame, run_id, dataset_type)
                 save_collection_run(
                     {
                         "run_id": run_id,
@@ -629,29 +650,22 @@ elif page == "データ収集":
                         "completed_at": datetime.now(),
                         "status": "completed",
                         "dataset_type": dataset_type,
-                        "source": "netkeiba",
+                        "source": "cached_html",
                         "start_date": start_date,
                         "end_date": end_date,
                         "race_count": frame["race_id"].nunique(),
                         "row_count": len(frame),
-                        "output_path": str(output_path),
-                        "message": (
-                            "収集完了 / "
-                            f"確認URL数={len(st.session_state.scraping_urls)} / "
-                            f"データログ={data_log_path}"
-                        ),
+                        "output_path": "",
+                        "message": "取得済みHTMLからデータベース作成完了",
                     }
                 )
                 progress_bar.progress(1.0, text="完了")
                 st.success(
-                    f"{frame['race_id'].nunique()}レース、"
-                    f"{len(frame)}行を保存しました。"
+                    f"{frame['race_id'].nunique()}レース、{len(frame)}行を保存しました。"
                 )
-                st.caption(f"保存先: {output_path}")
-                st.caption(f"取得データ確認ログ: {data_log_path}")
-
+                st.caption(f"保存先: {PATHS.database}")
             except Exception as exc:
-                logger.exception(f"収集失敗: {exc}")
+                logger.exception(f"データベース作成失敗: {exc}")
                 progress_bar.empty()
                 save_collection_run(
                     {
@@ -660,21 +674,14 @@ elif page == "データ収集":
                         "completed_at": datetime.now(),
                         "status": "failed",
                         "dataset_type": dataset_type,
-                        "source": "netkeiba",
+                        "source": "cached_html",
                         "start_date": start_date,
                         "end_date": end_date,
                         "race_count": 0,
                         "row_count": 0,
                         "output_path": "",
-                        "message": (
-                            f"{exc} / "
-                            f"確認URL数={len(st.session_state.scraping_urls)}"
-                        ),
+                        "message": str(exc),
                     }
-                )
-                st.error(
-                    "スクレイピングに失敗しました。"
-                    "画面の取得URL一覧と実行ログを確認してください。"
                 )
                 st.exception(exc)
 
@@ -1218,8 +1225,8 @@ elif page == "メンテナンス":
                         f"確認できた関連レースID: **{len(race_ids):,}件**"
                     )
                     st.write(
-                        "関連HTML:",
-                        str(Path(PATHS.raw_html) / selected_run_id),
+                        "HTML保存先:",
+                        "data/raw_html/<年>/（実行履歴とは独立して保持）",
                     )
 
                     confirm = st.checkbox(
@@ -1609,4 +1616,3 @@ elif page == "メンテナンス":
                         f"{len(deleted):,}ファイルを"
                         "まとめて削除しました。"
                     )
-

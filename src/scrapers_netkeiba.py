@@ -13,8 +13,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-from ..config import PATHS
-from ..logging_utils import AppLogger
+from .config import PATHS
+from .logging_utils import AppLogger
 
 
 COURSES = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"]
@@ -36,6 +36,7 @@ JRA_COURSE_CODE_MAP = {
 # 01:札幌 02:函館 03:福島 04:新潟 05:東京
 # 06:中山 07:中京 08:京都 09:阪神 10:小倉
 JRA_COURSE_CODES = {f"{number:02d}" for number in range(1, 11)}
+PAGE_REQUEST_INTERVAL_SECONDS = 2.0
 
 
 def _flatten_columns(columns: pd.Index) -> list[str]:
@@ -164,8 +165,9 @@ class NetkeibaScraper:
         self.race_urls: list[str] = []
         self.diagnostics: list[dict[str, object]] = []
 
-    def _cache_path(self, run_id: str, kind: str, key: str) -> Path:
-        directory = PATHS.raw_html / run_id / kind
+    def _cache_path(self, storage_key: str, kind: str, key: str) -> Path:
+        """年単位の保存先を返す（storage_key は YYYY）。"""
+        directory = PATHS.raw_html / storage_key / kind
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"{key}.html"
 
@@ -209,11 +211,11 @@ class NetkeibaScraper:
         cache_path: Path,
     ) -> Path | None:
         """
-        別run_idで保存済みの同種HTMLを検索する。
+        別の年フォルダで保存済みの同種HTMLを検索する。
 
         例:
-            raw_html/<過去run_id>/result/202602011003.html
-            raw_html/<過去run_id>/race_list_db/20260712.html
+            raw_html/2026/result/202602011003.html
+            raw_html/2026/race_list_db/20260712.html
         """
         kind = cache_path.parent.name
         filename = cache_path.name
@@ -434,7 +436,10 @@ class NetkeibaScraper:
         all_records: list[pd.DataFrame] = []
         total_dates = len(dates)
         for date_index, target_date in enumerate(dates, start=1):
-            race_ids = self.race_ids_for_date(target_date, run_id, force=force)
+            storage_key = str(target_date.year)
+            race_ids = self.race_ids_for_date(
+                target_date, storage_key, force=force
+            )
             if not race_ids:
                 self.logger.error(
                     f"{target_date}: 詳細ページへ進めるレースIDが0件です。"
@@ -446,9 +451,13 @@ class NetkeibaScraper:
             for race_index, race_id in enumerate(race_ids, start=1):
                 try:
                     if dataset_type == "historical":
-                        frame = self.fetch_result(race_id, target_date, run_id, force=force)
+                        frame = self.fetch_result(
+                            race_id, target_date, storage_key, force=force
+                        )
                     else:
-                        frame = self.fetch_card(race_id, target_date, run_id, force=force)
+                        frame = self.fetch_card(
+                            race_id, target_date, storage_key, force=force
+                        )
                     if not frame.empty:
                         all_records.append(frame)
                     self.logger.info(f"{target_date} {race_id}: {len(frame)}頭を解析")
@@ -458,6 +467,130 @@ class NetkeibaScraper:
                     fraction = ((date_index - 1) + race_index / max(len(race_ids), 1)) / total_dates
                     progress_callback(min(float(fraction), 1.0))
         return pd.concat(all_records, ignore_index=True) if all_records else pd.DataFrame()
+
+    def collect_html_date_range(
+        self,
+        start_date: date,
+        end_date: date,
+        dataset_type: str,
+        force: bool = False,
+        progress_callback=None,
+    ) -> dict[str, int]:
+        """HTMLだけを取得する。解析やDB保存は行わない。"""
+        if end_date < start_date:
+            raise ValueError("終了日は開始日以降にしてください。")
+        if dataset_type not in {"historical", "upcoming"}:
+            raise ValueError(f"未対応のdataset_typeです: {dataset_type}")
+
+        dates = [
+            start_date + timedelta(days=i)
+            for i in range((end_date - start_date).days + 1)
+        ]
+        list_count = 0
+        race_count = 0
+        total_dates = len(dates)
+        for date_index, target_date in enumerate(dates, start=1):
+            storage_key = str(target_date.year)
+            race_ids = self.race_ids_for_date(
+                target_date, storage_key, force=force
+            )
+            list_count += 1
+            for race_index, race_id in enumerate(race_ids, start=1):
+                try:
+                    if dataset_type == "historical":
+                        url = self.RESULT_FALLBACK_URL.format(race_id=race_id)
+                        kind = "result"
+                    else:
+                        url = self.CARD_URL.format(race_id=race_id)
+                        kind = "card"
+                    cache_path = self._cache_path(
+                        storage_key, kind, race_id
+                    )
+                    html = self._download(
+                        url,
+                        cache_path,
+                        force=force,
+                    )
+                    metadata = self._metadata(
+                        BeautifulSoup(html, "lxml"),
+                        html,
+                        race_id,
+                        target_date,
+                    )
+                    self._rename_race_html(
+                        cache_path,
+                        race_id,
+                        target_date,
+                        metadata.get("race_name"),
+                        metadata.get("course_name"),
+                        metadata.get("race_number"),
+                    )
+                    race_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.error(
+                        f"{target_date} {race_id}: HTML取得失敗: {exc}"
+                    )
+                if progress_callback:
+                    fraction = (
+                        (date_index - 1)
+                        + race_index / max(len(race_ids), 1)
+                    ) / total_dates
+                    progress_callback(min(float(fraction), 1.0))
+            if progress_callback:
+                progress_callback(date_index / total_dates)
+        return {"date_count": list_count, "race_count": race_count}
+
+    def parse_cached_date_range(
+        self,
+        start_date: date,
+        end_date: date,
+        dataset_type: str,
+        progress_callback=None,
+    ) -> pd.DataFrame:
+        """保存済みHTMLだけを解析する。ネットワークアクセスは行わない。"""
+        if end_date < start_date:
+            raise ValueError("終了日は開始日以降にしてください。")
+        dates = [
+            start_date + timedelta(days=i)
+            for i in range((end_date - start_date).days + 1)
+        ]
+        frames: list[pd.DataFrame] = []
+        kind = "result" if dataset_type == "historical" else "card"
+        for index, target_date in enumerate(dates, start=1):
+            date_text = target_date.strftime("%Y%m%d")
+            list_path = (
+                PATHS.raw_html / str(target_date.year)
+                / "race_list_db" / f"{date_text}.html"
+            )
+            if not list_path.exists():
+                if progress_callback:
+                    progress_callback(index / len(dates))
+                continue
+            list_html = list_path.read_text(encoding="utf-8", errors="replace")
+            for race_id in self._extract_race_ids(list_html, date_text):
+                candidates = sorted(
+                    (PATHS.raw_html / str(target_date.year) / kind).glob(
+                        f"{race_id}*.html"
+                    )
+                )
+                if not candidates:
+                    continue
+                try:
+                    html = candidates[-1].read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    frame = self._parse_page(
+                        html, race_id, target_date, dataset_type
+                    )
+                    if not frame.empty:
+                        frames.append(frame)
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.error(
+                        f"{target_date} {race_id}: 保存HTML解析失敗: {exc}"
+                    )
+            if progress_callback:
+                progress_callback(index / len(dates))
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def fetch_card(self, race_id: str, race_date: date, run_id: str, force: bool = False) -> pd.DataFrame:
         url = self.CARD_URL.format(race_id=race_id)
@@ -480,7 +613,7 @@ class NetkeibaScraper:
         過去レース結果は旧DBページだけを取得する。
 
         保存先:
-            raw_html/<run_id>/result/<race_id>.html
+            raw_html/<year>/result/<race_id>.html
         """
         url = self.RESULT_FALLBACK_URL.format(race_id=race_id)
         cache = self._cache_path(run_id, "result", race_id)
@@ -807,7 +940,7 @@ class NetkeibaScraper:
     ) -> Path:
         """
         レースHTMLを
-        race_id_年月日_開催地_Rxx_レース名.html
+        race_id_開催地_年月日_Rxx_レース名.html
         へ変更する。
         """
         date_text = race_date.strftime("%Y年%m月%d日")
@@ -816,7 +949,6 @@ class NetkeibaScraper:
             course_name or "開催地不明",
             max_length=20,
         )
-
         try:
             race_no = int(race_number)
             race_number_text = f"R{race_no:02d}"
@@ -824,12 +956,26 @@ class NetkeibaScraper:
             race_number_text = "R不明"
 
         target = cache_path.with_name(
-            f"{race_id}_{date_text}_{safe_course_name}_"
+            f"{race_id}_{safe_course_name}_{date_text}_"
             f"{race_number_text}_{safe_race_name}.html"
         )
 
         if cache_path.resolve() == target.resolve():
             return target
+
+        # キャッシュ利用時は _download 内で既存の名称付きHTMLを読むため、
+        # 呼び出し元のrace_idだけのパスが存在しない場合がある。
+        if not cache_path.exists():
+            candidates = sorted(
+                cache_path.parent.glob(f"{race_id}*.html"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            if not candidates:
+                return cache_path
+            cache_path = candidates[0]
+            if cache_path.resolve() == target.resolve():
+                return target
 
         # 同名ファイルが既にあれば、今回の正規化済みHTMLで置き換える。
         if target.exists():

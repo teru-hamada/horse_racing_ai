@@ -137,7 +137,11 @@ def save_collection_run(metadata: dict[str, Any]) -> None:
         con.unregister("run_row")
 
 
-def save_race_records(df: pd.DataFrame, run_id: str, dataset_type: str) -> Path:
+def save_race_records(
+    df: pd.DataFrame,
+    run_id: str,
+    dataset_type: str,
+) -> None:
     if df.empty:
         raise ValueError("保存対象のレースデータが0件です。")
 
@@ -145,12 +149,6 @@ def save_race_records(df: pd.DataFrame, run_id: str, dataset_type: str) -> Path:
     normalized["dataset_type"] = dataset_type
     normalized["collection_run_id"] = run_id
     normalized["collected_at"] = datetime.now()
-
-    output_dir = PATHS.processed / run_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{dataset_type}.parquet"
-    normalized.to_parquet(output_path, index=False)
-    normalized.to_csv(output_dir / f"{dataset_type}.csv", index=False, encoding="utf-8-sig")
 
     with connect() as con:
         con.register("incoming", normalized)
@@ -165,7 +163,6 @@ def save_race_records(df: pd.DataFrame, run_id: str, dataset_type: str) -> Path:
         )
         con.execute("INSERT INTO race_records SELECT * FROM incoming")
         con.unregister("incoming")
-    return output_path
 
 
 def load_records(dataset_type: str | None = None) -> pd.DataFrame:

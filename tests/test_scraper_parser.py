@@ -1,7 +1,7 @@
 from datetime import date
 
 from src.logging_utils import AppLogger
-from src.scrapers.netkeiba import NetkeibaScraper
+from src.scrapers_netkeiba import NetkeibaScraper
 
 
 RESULT_HTML = """

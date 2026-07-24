@@ -9,7 +9,7 @@ class AppPaths:
     root: Path
     data: Path
     raw_html: Path
-    processed: Path
+    predictions: Path
     models: Path
     logs: Path
     database: Path
@@ -22,12 +22,18 @@ def get_paths(root: Path | None = None) -> AppPaths:
         root=root_path,
         data=data,
         raw_html=data / "raw_html",
-        processed=data / "processed",
+        predictions=data / "predictions",
         models=root_path / "models",
         logs=root_path / "logs",
         database=data / "racing.duckdb",
     )
-    for directory in (paths.data, paths.raw_html, paths.processed, paths.models, paths.logs):
+    for directory in (
+        paths.data,
+        paths.raw_html,
+        paths.predictions,
+        paths.models,
+        paths.logs,
+    ):
         directory.mkdir(parents=True, exist_ok=True)
     return paths
 

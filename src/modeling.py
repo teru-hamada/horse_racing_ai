@@ -551,7 +551,7 @@ def predict_historical_race(
         f"backtest_{datetime.now():%Y%m%d_%H%M%S}_"
         f"{uuid.uuid4().hex[:6]}"
     )
-    output_dir = PATHS.processed / prediction_run_id
+    output_dir = PATHS.predictions / prediction_run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / (
         f"historical_prediction_{race_id}.parquet"
@@ -602,7 +602,7 @@ def predict_race(
     result.insert(0, "prediction_rank", np.arange(1, len(result) + 1))
 
     prediction_run_id = f"pred_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
-    output_dir = PATHS.processed / prediction_run_id
+    output_dir = PATHS.predictions / prediction_run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"prediction_{race_id}.parquet"
     result.to_parquet(output_path, index=False)
