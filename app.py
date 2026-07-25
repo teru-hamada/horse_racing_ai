@@ -393,6 +393,79 @@ def _clear_ui_state() -> None:
     st.cache_data.clear()
 
 
+def _render_collection_status(dataset_type: str) -> bool:
+    st.subheader("実行状況")
+    jobs = list_jobs(dataset_type)
+    if not jobs:
+        st.info(
+            "この画面から開始したHTML収集はありません。"
+        )
+        return False
+
+    latest_job = jobs[0]
+    status_labels = {
+        "running": "実行中",
+        "cancelling": "中止処理中",
+        "cancelled": "中止",
+        "completed": "完了",
+        "failed": "失敗",
+    }
+    st.progress(
+        float(latest_job["progress"]),
+        text=(
+            f"{status_labels.get(latest_job['status'], latest_job['status'])} "
+            f"{float(latest_job['progress']):.0%}"
+        ),
+    )
+    st.write(
+        f"実行ID: `{latest_job['job_id']}`  "
+        f"対象: {latest_job['start_date']} ～ "
+        f"{latest_job['end_date']}"
+    )
+    if latest_job["result"]:
+        st.write(
+            f"確認日数: "
+            f"{latest_job['result'].get('date_count', 0):,} / "
+            f"取得レースHTML: "
+            f"{latest_job['result'].get('race_count', 0):,}"
+            + (
+                " / 取得競走馬HTML: "
+                f"{latest_job['result'].get('horse_count', 0):,}"
+                if "horse_count" in latest_job["result"]
+                else ""
+            )
+        )
+    if latest_job["error"]:
+        st.error(latest_job["error"])
+    with st.expander(
+        "実行ログ",
+        expanded=latest_job["status"] == "running",
+    ):
+        st.code(
+            "\n".join(latest_job["logs"][-100:]),
+            language="text",
+        )
+    if st.button(
+        "状況を更新",
+        key="refresh_html_collection",
+    ):
+        st.rerun()
+    return latest_job["status"] in {
+        "running",
+        "cancelling",
+    }
+
+
+@st.fragment(run_every=3)
+def _render_active_collection_status(
+    dataset_type: str,
+) -> None:
+    if not _render_collection_status(dataset_type):
+        # 完了・中止・失敗時は画面全体を1回更新し、
+        # 開始・中止ボタンの活性状態も最新化する。
+        st.rerun()
+
+
 with st.sidebar:
     page = st.radio(
         "メニュー",
@@ -458,25 +531,66 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
         unsafe_allow_html=True,
     )
     if dataset_type == "historical":
-        start_year, end_year = st.slider(
-            "取得年範囲",
-            min_value=1986,
-            max_value=date.today().year,
-            value=(date.today().year, date.today().year),
+        current_year = date.today().year
+        available_years = list(
+            range(current_year, 1985, -1)
         )
-        start_date = date(int(start_year), 1, 1)
-        end_date = min(date(int(end_year), 12, 31), date.today())
-        st.caption(f"{start_year}年～{end_year}年の過去レース結果HTMLを取得します。")
+        years_with_data = {
+            year
+            for year in available_years
+            if any(
+                (
+                    PATHS.historical_html / str(year)
+                ).rglob("*.html")
+            )
+        }
+        selected_year = st.selectbox(
+            "取得年",
+            options=available_years,
+            index=0,
+            format_func=lambda year: (
+                f"{year}年 ※データあり"
+                if year in years_with_data
+                else f"{year}年"
+            ),
+        )
+        start_date = date(int(selected_year), 1, 1)
+        end_date = min(
+            date(int(selected_year), 12, 31),
+            date.today(),
+        )
+        st.caption(
+            f"{selected_year}年の過去レース結果HTMLを取得します。"
+        )
     else:
-        target_date = st.date_input("取得日", value=date.today())
+        tomorrow = date.today() + timedelta(days=1)
+        prediction_date_limit = date.today() + timedelta(
+            days=7
+        )
+        target_date = st.date_input(
+            "取得日",
+            value=tomorrow,
+            min_value=tomorrow,
+            max_value=prediction_date_limit,
+        )
         start_date = target_date
         end_date = target_date
-        st.caption(f"{target_date}の予想用出馬表HTMLを取得します。")
+        st.caption(
+            f"{target_date}の予想用出馬表HTMLを取得します。"
+            f"選択可能期間: {tomorrow} ～ "
+            f"{prediction_date_limit}"
+        )
 
     force = st.checkbox("保存済みHTMLを再取得する", value=False)
+    html_storage_path = (
+        "data/raw_html/historical/<年>/"
+        if dataset_type == "historical"
+        else "data/raw_html/upcoming/<年>/"
+    )
     st.caption(
-        "ページ取得間隔は2秒固定です。処理はバックグラウンドで継続し、"
-        "HTMLは data/raw_html/<年>/ 以下へ保存します。"
+        "ページ取得間隔は2秒固定です。"
+        "処理はバックグラウンドで継続し、"
+        f"HTMLは {html_storage_path} 以下へ保存します。"
     )
     current_jobs = list_jobs(dataset_type)
     active_job = next(
@@ -517,41 +631,10 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
             else:
                 st.info("中止できるHTML収集はありません。")
 
-    st.subheader("実行状況")
-    jobs = list_jobs(dataset_type)
-    if not jobs:
-        st.info("この画面から開始したHTML収集はありません。")
+    if active_job is not None:
+        _render_active_collection_status(dataset_type)
     else:
-        latest_job = jobs[0]
-        status_labels = {
-            "running": "実行中",
-            "cancelling": "中止処理中",
-            "cancelled": "中止",
-            "completed": "完了",
-            "failed": "失敗",
-        }
-        st.progress(
-            float(latest_job["progress"]),
-            text=(
-                f"{status_labels.get(latest_job['status'], latest_job['status'])} "
-                f"{float(latest_job['progress']):.0%}"
-            ),
-        )
-        st.write(
-            f"実行ID: `{latest_job['job_id']}`  "
-            f"対象: {latest_job['start_date']} ～ {latest_job['end_date']}"
-        )
-        if latest_job["result"]:
-            st.write(
-                f"確認日数: {latest_job['result'].get('date_count', 0):,} / "
-                f"取得レースHTML: {latest_job['result'].get('race_count', 0):,}"
-            )
-        if latest_job["error"]:
-            st.error(latest_job["error"])
-        with st.expander("実行ログ", expanded=latest_job["status"] == "running"):
-            st.code("\n".join(latest_job["logs"][-100:]), language="text")
-        if st.button("状況を更新", key="refresh_html_collection"):
-            st.rerun()
+        _render_collection_status(dataset_type)
 
 elif page == "データベース作成":
     st.header("データベース作成")
@@ -1226,7 +1309,9 @@ elif page == "メンテナンス":
                     )
                     st.write(
                         "HTML保存先:",
-                        "data/raw_html/<年>/（実行履歴とは独立して保持）",
+                        "data/raw_html/historical/<年>/ または "
+                        "data/raw_html/upcoming/<年>/"
+                        "（実行履歴とは独立して保持）",
                     )
 
                     confirm = st.checkbox(
@@ -1450,9 +1535,14 @@ elif page == "メンテナンス":
         run_directories = (
             sorted(
                 [
-                    path
-                    for path in raw_html_root.iterdir()
-                    if path.is_dir()
+                    year_path
+                    for category_path in (
+                        PATHS.historical_html,
+                        PATHS.upcoming_html,
+                    )
+                    if category_path.exists()
+                    for year_path in category_path.iterdir()
+                    if year_path.is_dir()
                 ],
                 key=lambda path: path.stat().st_mtime,
                 reverse=True,
@@ -1467,7 +1557,9 @@ elif page == "メンテナンス":
             selected_directories = st.multiselect(
                 "削除する実行フォルダ",
                 run_directories,
-                format_func=lambda path: path.name,
+                format_func=lambda path: str(
+                    path.relative_to(raw_html_root)
+                ),
             )
 
             total_files = sum(
