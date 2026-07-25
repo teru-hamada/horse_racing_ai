@@ -359,6 +359,18 @@ def load_model_bundle(model_dir: Path) -> tuple[MLP, ColumnTransformer, dict[str
     return model, preprocessor, metrics
 
 
+def _features_for_saved_model(
+    metrics: dict[str, object],
+) -> list[str]:
+    """新旧モデルそれぞれが学習時に使用した特徴量を返す。"""
+    saved_features = metrics.get("features")
+    if isinstance(saved_features, list) and all(
+        isinstance(column, str) for column in saved_features
+    ):
+        return saved_features
+    return MODEL_FEATURES
+
+
 
 def predict_historical_race(
     historical_records: pd.DataFrame,
@@ -427,8 +439,9 @@ def predict_historical_race(
             "指定レースの予想用特徴量を生成できませんでした。"
         )
 
+    model_features = _features_for_saved_model(metrics)
     matrix = preprocessor.transform(
-        target[MODEL_FEATURES]
+        target[model_features]
     ).astype("float32")
     with torch.no_grad():
         probability = torch.sigmoid(
@@ -590,7 +603,10 @@ def predict_race(
     target = featured[featured["race_id"].astype(str) == str(race_id)].copy()
     if target.empty:
         raise ValueError("指定したレースの出走データがありません。")
-    matrix = preprocessor.transform(target[MODEL_FEATURES]).astype("float32")
+    model_features = _features_for_saved_model(metrics)
+    matrix = preprocessor.transform(
+        target[model_features]
+    ).astype("float32")
     with torch.no_grad():
         probability = torch.sigmoid(model(torch.from_numpy(matrix))).numpy()
     result = target[

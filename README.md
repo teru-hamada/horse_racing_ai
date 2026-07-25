@@ -70,6 +70,7 @@ streamlit run app.py
 - 予想用HTMLは `data/raw_html/upcoming/<年>/` に年単位でキャッシュ
 - 予想対象馬の血統HTMLは `data/raw_html/upcoming/horse/` に保存し、学習用に同じ競走馬HTMLがあれば再利用
 - データベース作成時はネットワークへアクセスせず、取得済みHTMLだけを解析
+- 取得済みHTMLからのデータベース作成はバックグラウンドで実行され、画面移動後も継続
 - 解析できないページはログを残し、他レースの処理を継続
 
 WebサイトのHTML構造は変更される可能性があります。解析エラー時は `data/raw_html/historical/<年>/` または `data/raw_html/upcoming/<年>/` のHTMLとログを確認し、パーサーの列名候補やCSSセレクタを調整してください。

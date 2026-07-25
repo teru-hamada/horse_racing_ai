@@ -1,5 +1,10 @@
 from src.demo_data import generate_demo_records
-from src.features import build_prediction_frame, build_training_frame
+from src.features import (
+    CATEGORICAL_FEATURES,
+    NUMERIC_FEATURES,
+    build_prediction_frame,
+    build_training_frame,
+)
 
 
 def test_training_features_do_not_use_current_result():
@@ -17,3 +22,14 @@ def test_prediction_features_are_created():
     assert len(prediction) == len(upcoming)
     assert prediction["finish_position"].isna().all()
     assert prediction["prior_top3_rate"].notna().all()
+
+
+def test_pedigree_is_used_as_categorical_features():
+    assert "sire_id" in CATEGORICAL_FEATURES
+    assert "dam_id" in CATEGORICAL_FEATURES
+    assert "damsire_id" in CATEGORICAL_FEATURES
+
+
+def test_body_weight_is_not_used_as_model_feature():
+    assert "body_weight" not in NUMERIC_FEATURES
+    assert "body_weight_change" not in NUMERIC_FEATURES

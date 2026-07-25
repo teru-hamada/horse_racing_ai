@@ -13,6 +13,11 @@ import plotly.express as px
 import streamlit as st
 
 from src.config import PATHS
+from src.database_creation_jobs import (
+    cancel_database_job,
+    list_database_jobs,
+    start_database_job,
+)
 from src.demo_data import generate_demo_records
 from src.html_collection_jobs import cancel_job, list_jobs, start_job
 from src.logging_utils import AppLogger
@@ -23,6 +28,8 @@ from src.storage import (
     dashboard_summary,
     load_records,
     model_runs,
+    race_record_summary,
+    race_record_years,
     save_collection_run,
     save_race_records,
 )
@@ -31,6 +38,36 @@ from src.storage import (
 st.set_page_config(page_title="競馬予想AI", page_icon="🏇", layout="wide")
 st.title("🏇 競馬予想AIシステム")
 st.caption("私的利用向けMVP：データ収集・保存・学習・過学習確認・週末予想を個別実行できます。")
+st.markdown(
+    """
+    <style>
+    div.stButton > button,
+    div.stDownloadButton > button,
+    [data-testid="stFormSubmitButton"] > button {
+        background-color: #1677ff !important;
+        border-color: #1677ff !important;
+        color: white !important;
+    }
+    div.stButton > button:hover,
+    div.stDownloadButton > button:hover,
+    [data-testid="stFormSubmitButton"] > button:hover {
+        background-color: #0958d9 !important;
+        border-color: #0958d9 !important;
+        color: white !important;
+    }
+    div.stButton > button:disabled,
+    div.stDownloadButton > button:disabled,
+    [data-testid="stFormSubmitButton"] > button:disabled {
+        background-color: #1677ff !important;
+        border-color: #1677ff !important;
+        color: white !important;
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "ui_logs" not in st.session_state:
     st.session_state.ui_logs = []
@@ -393,6 +430,60 @@ def _clear_ui_state() -> None:
     st.cache_data.clear()
 
 
+def _cached_race_html_count(
+    dataset_type: str,
+    start_date: date,
+    end_date: date,
+) -> int:
+    if dataset_type == "historical":
+        return sum(
+            1
+            for year in range(
+                start_date.year,
+                end_date.year + 1,
+            )
+            for path in (
+                PATHS.historical_html / str(year) / "result"
+            ).glob("*.html")
+            if path.is_file()
+        )
+
+    race_ids: set[str] = set()
+    current_date = start_date
+    while current_date <= end_date:
+        date_text = current_date.strftime("%Y%m%d")
+        list_path = (
+            PATHS.upcoming_html
+            / str(current_date.year)
+            / "race_list_db"
+            / f"{date_text}.html"
+        )
+        if list_path.exists():
+            html = list_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+            race_ids.update(
+                NetkeibaScraper._extract_race_ids(
+                    html,
+                    date_text,
+                )
+            )
+        current_date += timedelta(days=1)
+
+    return sum(
+        1
+        for race_id in race_ids
+        if any(
+            (
+                PATHS.upcoming_html
+                / race_id[:4]
+                / "card"
+            ).glob(f"{race_id}*.html")
+        )
+    )
+
+
 def _render_collection_status(dataset_type: str) -> bool:
     st.subheader("実行状況")
     jobs = list_jobs(dataset_type)
@@ -463,6 +554,74 @@ def _render_active_collection_status(
     if not _render_collection_status(dataset_type):
         # 完了・中止・失敗時は画面全体を1回更新し、
         # 開始・中止ボタンの活性状態も最新化する。
+        st.rerun()
+
+
+def _render_database_creation_status(
+    dataset_type: str | None = None,
+) -> bool:
+    st.subheader("データベース作成状況")
+    jobs = list_database_jobs(dataset_type)
+    if not jobs:
+        st.info(
+            "この画面から開始したデータベース作成は"
+            "ありません。"
+        )
+        return False
+
+    latest_job = jobs[0]
+    status_labels = {
+        "running": "実行中",
+        "cancelling": "中止処理中",
+        "cancelled": "中止",
+        "completed": "完了",
+        "failed": "失敗",
+    }
+    st.progress(
+        float(latest_job["progress"]),
+        text=(
+            f"{status_labels.get(latest_job['status'], latest_job['status'])} "
+            f"{float(latest_job['progress']):.0%}"
+        ),
+    )
+    st.write(
+        f"実行ID: `{latest_job['job_id']}`  "
+        f"対象: {latest_job['start_date']} ～ "
+        f"{latest_job['end_date']}"
+    )
+    if latest_job["result"]:
+        st.write(
+            f"登録レース: "
+            f"{latest_job['result'].get('race_count', 0):,} / "
+            f"登録頭数: "
+            f"{latest_job['result'].get('row_count', 0):,}"
+        )
+    if latest_job["error"]:
+        st.error(latest_job["error"])
+    with st.expander(
+        "実行ログ",
+        expanded=latest_job["status"] == "running",
+    ):
+        st.code(
+            "\n".join(latest_job["logs"][-100:]),
+            language="text",
+        )
+    if st.button(
+        "状況を更新",
+        key="refresh_database_creation",
+    ):
+        st.rerun()
+    return latest_job["status"] in {
+        "running",
+        "cancelling",
+    }
+
+
+@st.fragment(run_every=3)
+def _render_active_database_creation_status(
+    dataset_type: str | None = None,
+) -> None:
+    if not _render_database_creation_status(dataset_type):
         st.rerun()
 
 
@@ -563,22 +722,49 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
             f"{selected_year}年の過去レース結果HTMLを取得します。"
         )
     else:
-        tomorrow = date.today() + timedelta(days=1)
-        prediction_date_limit = date.today() + timedelta(
+        system_now = datetime.now()
+        system_date = system_now.date()
+        prediction_start_date = (
+            system_date
+            if system_now.hour < 5
+            else system_date + timedelta(days=1)
+        )
+        prediction_date_limit = system_date + timedelta(
             days=7
         )
+        stored_prediction_date = st.session_state.get(
+            "upcoming_collection_date"
+        )
+        if stored_prediction_date is not None:
+            stored_prediction_date = pd.to_datetime(
+                stored_prediction_date,
+                errors="coerce",
+            )
+            if (
+                pd.isna(stored_prediction_date)
+                or stored_prediction_date.date()
+                < prediction_start_date
+                or stored_prediction_date.date()
+                > prediction_date_limit
+            ):
+                st.session_state[
+                    "upcoming_collection_date"
+                ] = prediction_start_date
         target_date = st.date_input(
             "取得日",
-            value=tomorrow,
-            min_value=tomorrow,
+            value=prediction_start_date,
+            min_value=prediction_start_date,
             max_value=prediction_date_limit,
+            key="upcoming_collection_date",
         )
         start_date = target_date
         end_date = target_date
         st.caption(
             f"{target_date}の予想用出馬表HTMLを取得します。"
-            f"選択可能期間: {tomorrow} ～ "
-            f"{prediction_date_limit}"
+            f"選択可能期間: {prediction_start_date} ～ "
+            f"{prediction_date_limit}。"
+            "システム日付当日は午前5:00より前まで"
+            "選択できます。"
         )
 
     force = st.checkbox("保存済みHTMLを再取得する", value=False)
@@ -638,9 +824,23 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
 
 elif page == "データベース作成":
     st.header("データベース作成")
-    mode = st.radio("作成方法", ["デモデータを生成", "取得済みHTMLから作成"], horizontal=True)
+    mode = st.radio(
+        "作成方法",
+        [
+            "取得済みHTMLから作成",
+            "デモデータを作成",
+            "登録内容確認",
+        ],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
-    if mode == "デモデータを生成":
+    if mode == "デモデータを作成":
+        st.info(
+            "デモデータは既存データを残したまま追加登録されます。"
+            "デモデータを削除する場合は、メンテナンス画面の"
+            "「ダミーデータ」から削除してください。"
+        )
         st.write("実サイトへアクセスせず、学習・評価・予想を試せる合成データを保存します。")
         historical_races = st.slider("過去レース数", min_value=100, max_value=1000, value=360, step=20)
         upcoming_races = st.slider("週末レース数", min_value=1, max_value=12, value=6)
@@ -681,7 +881,14 @@ elif page == "データベース作成":
             except Exception as exc:
                 logger.exception(f"デモデータ生成失敗: {exc}")
                 st.exception(exc)
-    else:
+    elif mode == "取得済みHTMLから作成":
+        st.info(
+            "別の年・日付を指定して作成したデータは、"
+            "既存データを残したまま追加登録されます。"
+            "同じレースID・競走馬ID・データ種別のデータを"
+            "再登録した場合だけ、該当データを最新内容へ更新します。"
+            "既に登録されている別年のデータは削除されません。"
+        )
         dataset_type_label = st.radio(
             "対象", ["学習用の過去結果", "予想用の出馬表"], horizontal=True
         )
@@ -691,9 +898,39 @@ elif page == "データベース作成":
             else "upcoming"
         )
         if dataset_type == "historical":
+            database_years = race_record_years("historical")
+            historical_years = list(
+                range(date.today().year, 1985, -1)
+            )
+            html_years = {
+                year
+                for year in historical_years
+                if any(
+                    (
+                        PATHS.historical_html
+                        / str(year)
+                        / "result"
+                    ).glob("*.html")
+                )
+            }
+
+            def database_year_label(year: int) -> str:
+                statuses: list[str] = []
+                if year in html_years:
+                    statuses.append("※HTML取得済み")
+                if year in database_years:
+                    statuses.append("※データベース作成済み")
+                suffix = (
+                    " " + " ".join(statuses)
+                    if statuses
+                    else ""
+                )
+                return f"{year}年{suffix}"
+
             selected_year = st.selectbox(
                 "対象年",
-                list(range(date.today().year, 1985, -1)),
+                historical_years,
+                format_func=database_year_label,
                 key="database_year",
             )
             start_date = date(int(selected_year), 1, 1)
@@ -704,82 +941,387 @@ elif page == "データベース作成":
             )
             start_date = target_date
             end_date = target_date
-        st.caption("ネットワークアクセスは行わず、取得済みHTMLだけを解析します。")
-        if st.button("取得済みHTMLからデータベースを作成", type="primary"):
-            run_id = f"database_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
-            started = datetime.now()
-            logger = new_logger()
-            scraper = NetkeibaScraper(logger=logger)
-            progress_bar = st.progress(0.0, text="解析中")
+
+        if dataset_type == "upcoming":
+            html_race_count = _cached_race_html_count(
+                dataset_type,
+                start_date,
+                end_date,
+            )
+            database_summary = race_record_summary(
+                dataset_type,
+                start_date,
+                end_date,
+            )
+            status_messages: list[str] = []
+            if html_race_count > 0:
+                status_messages.append(
+                    f"※HTML取得済み（{html_race_count:,}レース）"
+                )
+            if database_summary["race_count"] > 0:
+                status_messages.append(
+                    "※データベース作成済み"
+                    f"（{database_summary['race_count']:,}レース・"
+                    f"{database_summary['row_count']:,}頭）"
+                )
+            if status_messages:
+                st.success("　".join(status_messages))
+
+        st.caption(
+            "ネットワークアクセスは行わず、取得済みHTMLだけを"
+            "バックグラウンドで解析・登録します。"
+            "画面を移動しても処理は継続します。"
+        )
+        database_jobs = list_database_jobs()
+        active_database_job = next(
+            (
+                job
+                for job in database_jobs
+                if job["status"] in {
+                    "running",
+                    "cancelling",
+                }
+            ),
+            None,
+        )
+        start_column, cancel_column = st.columns(2)
+        with start_column:
+            start_database = st.button(
+                "データベース作成を開始",
+                type="primary",
+                disabled=active_database_job is not None,
+                use_container_width=True,
+            )
+        with cancel_column:
+            cancel_database = st.button(
+                "処理を中止",
+                key="cancel_database_creation",
+                disabled=active_database_job is None,
+                use_container_width=True,
+            )
+
+        if start_database:
             try:
-                frame = scraper.parse_cached_date_range(
+                job_id = start_database_job(
+                    dataset_type=dataset_type,
                     start_date=start_date,
                     end_date=end_date,
-                    dataset_type=dataset_type,
-                    progress_callback=lambda value: progress_bar.progress(
-                        min(max(float(value), 0.0), 1.0),
-                        text=f"解析中 {float(value):.0%}",
-                    ),
                 )
-                if frame.empty:
-                    raise ValueError(
-                        "対象期間の解析可能なHTMLがありません。先にHTML収集を実行してください。"
-                    )
-                save_race_records(frame, run_id, dataset_type)
-                save_collection_run(
-                    {
-                        "run_id": run_id,
-                        "started_at": started,
-                        "completed_at": datetime.now(),
-                        "status": "completed",
-                        "dataset_type": dataset_type,
-                        "source": "cached_html",
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "race_count": frame["race_id"].nunique(),
-                        "row_count": len(frame),
-                        "output_path": "",
-                        "message": "取得済みHTMLからデータベース作成完了",
-                    }
-                )
-                progress_bar.progress(1.0, text="完了")
                 st.success(
-                    f"{frame['race_id'].nunique()}レース、{len(frame)}行を保存しました。"
+                    "バックグラウンドでデータベース作成を"
+                    f"開始しました。実行ID: {job_id}"
                 )
-                st.caption(f"保存先: {PATHS.database}")
+                st.rerun()
             except Exception as exc:
-                logger.exception(f"データベース作成失敗: {exc}")
-                progress_bar.empty()
-                save_collection_run(
-                    {
-                        "run_id": run_id,
-                        "started_at": started,
-                        "completed_at": datetime.now(),
-                        "status": "failed",
-                        "dataset_type": dataset_type,
-                        "source": "cached_html",
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "race_count": 0,
-                        "row_count": 0,
-                        "output_path": "",
-                        "message": str(exc),
-                    }
+                st.error(str(exc))
+
+        if cancel_database:
+            if (
+                active_database_job
+                and cancel_database_job(
+                    str(active_database_job["job_id"])
                 )
-                st.exception(exc)
+            ):
+                st.warning(
+                    "中止を要求しました。現在の解析単位が"
+                    "完了した後に停止します。"
+                )
+                st.rerun()
+            else:
+                st.info(
+                    "中止できるデータベース作成はありません。"
+                )
+
+        if active_database_job is not None:
+            _render_active_database_creation_status()
+        else:
+            _render_database_creation_status()
+
+    else:
+        confirmation_type_label = st.radio(
+            "確認対象",
+            ["学習用の過去結果", "予想用の出馬表"],
+            horizontal=True,
+            key="registered_data_type",
+        )
+        confirmation_dataset_type = (
+            "historical"
+            if confirmation_type_label == "学習用の過去結果"
+            else "upcoming"
+        )
+        records = load_records(confirmation_dataset_type)
+        if records.empty:
+            st.info(
+                f"{confirmation_type_label}としてデータベースに"
+                "登録されているレースデータはありません。"
+            )
+        else:
+            records = records.copy()
+            records["race_date"] = pd.to_datetime(
+                records["race_date"],
+                errors="coerce",
+            )
+            records = records[
+                records["race_date"].notna()
+            ].copy()
+
+            if records.empty:
+                st.info(
+                    "開催日を確認できる登録データがありません。"
+                )
+            else:
+                records["race_year"] = (
+                    records["race_date"].dt.year.astype(int)
+                )
+                registered_years = sorted(
+                    records["race_year"].unique().tolist(),
+                    reverse=True,
+                )
+                selected_registered_year = st.selectbox(
+                    "開催年",
+                    registered_years,
+                    key="registered_data_year",
+                )
+                year_records = records[
+                    records["race_year"]
+                    == int(selected_registered_year)
+                ].copy()
+
+                race_options = (
+                    year_records.sort_values(
+                        [
+                            "race_date",
+                            "course_name",
+                            "race_number",
+                            "race_id",
+                        ]
+                    )
+                    .drop_duplicates(
+                        ["dataset_type", "race_id"]
+                    )
+                    .reset_index(drop=True)
+                )
+                dataset_labels = {
+                    "historical": "学習用",
+                    "upcoming": "予想用",
+                }
+
+                def registered_race_label(index: int) -> str:
+                    row = race_options.iloc[index]
+                    race_number = (
+                        f"{int(row['race_number'])}R"
+                        if pd.notna(row["race_number"])
+                        else "レース番号不明"
+                    )
+                    return (
+                        f"{row['race_date']:%Y-%m-%d} "
+                        f"{row['course_name']} "
+                        f"{race_number} "
+                        f"{row['race_name']} "
+                        f"[{dataset_labels.get(str(row['dataset_type']), str(row['dataset_type']))}]"
+                    )
+
+                race_indices = list(range(len(race_options)))
+                selected_race_index = st.selectbox(
+                    "開催レース",
+                    race_indices,
+                    format_func=registered_race_label,
+                    key="registered_data_race",
+                )
+                selected_race = race_options.iloc[
+                    int(selected_race_index)
+                ]
+                selected_rows = year_records[
+                    (
+                        year_records["race_id"].astype(str)
+                        == str(selected_race["race_id"])
+                    )
+                    & (
+                        year_records["dataset_type"].astype(str)
+                        == str(selected_race["dataset_type"])
+                    )
+                ].sort_values("horse_number")
+
+                st.subheader("レース情報")
+                race_columns = [
+                    "race_id",
+                    "race_date",
+                    "dataset_type",
+                    "course_name",
+                    "race_number",
+                    "race_name",
+                    "surface",
+                    "distance",
+                    "weather",
+                    "track_condition",
+                ]
+                race_display = selected_rows[
+                    [
+                        column
+                        for column in race_columns
+                        if column in selected_rows.columns
+                    ]
+                ].head(1).copy()
+                race_display["dataset_type"] = (
+                    race_display["dataset_type"]
+                    .astype(str)
+                    .map(dataset_labels)
+                    .fillna(race_display["dataset_type"])
+                )
+                st.dataframe(
+                    race_display,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.subheader(
+                    f"出走馬情報（{len(selected_rows):,}頭）"
+                )
+                horse_columns = [
+                    "horse_number",
+                    "frame_number",
+                    "horse_id",
+                    "horse_name",
+                    "sex",
+                    "age",
+                    "carried_weight",
+                    "jockey_name",
+                    "trainer_name",
+                    "sire_name",
+                    "dam_name",
+                    "damsire_name",
+                    "odds",
+                    "popularity",
+                    "body_weight",
+                    "body_weight_change",
+                    "finish_position",
+                    "time_seconds",
+                ]
+                st.dataframe(
+                    selected_rows[
+                        [
+                            column
+                            for column in horse_columns
+                            if column in selected_rows.columns
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 elif page == "モデル学習":
     st.header("ディープラーニングモデル学習")
+    pending_training_parameters = st.session_state.pop(
+        "pending_training_parameters",
+        None,
+    )
+    if pending_training_parameters:
+        for parameter_key, parameter_value in (
+            pending_training_parameters.items()
+        ):
+            st.session_state[parameter_key] = parameter_value
+        st.success(
+            "学習評価画面の調整案を入力欄へ反映しました。"
+        )
+    model_type = st.selectbox(
+        "学習モデル",
+        ["各馬が3着以内に入る確率を予測する"],
+        key="training_model_type",
+        help=(
+            "今後、予測目的の異なるモデルを追加した場合に、"
+            "ここから学習するモデルを選択します。"
+        ),
+    )
+    st.caption(
+        f"選択中: {model_type}モデル。"
+        "レース条件、馬の過去成績、騎手・調教師、"
+        "父・母・母父の情報を使って学習します。"
+    )
     historical = load_records("historical")
     st.write(f"利用可能な過去データ: **{len(historical):,}行 / {historical['race_id'].nunique() if not historical.empty else 0:,}レース**")
     c1, c2, c3 = st.columns(3)
-    epochs = c1.number_input("最大エポック数", min_value=10, max_value=500, value=80, step=10)
-    batch_size = c2.selectbox("バッチサイズ", [32, 64, 128, 256], index=2)
-    learning_rate = c3.selectbox("学習率", [0.0001, 0.0003, 0.001, 0.003], index=2)
+    epochs = c1.number_input(
+        "最大エポック数",
+        min_value=10,
+        max_value=500,
+        value=80,
+        step=10,
+        key="training_epochs",
+        help=(
+            "学習データ全体を繰り返し学習する上限回数です。"
+            "少ないと学習不足、多すぎると時間増加や過学習につながります。"
+            "Early Stoppingを併用するため、まずは80程度が目安です。"
+        ),
+    )
+    batch_size = c2.selectbox(
+        "バッチサイズ",
+        [32, 64, 128, 256],
+        index=2,
+        key="training_batch_size",
+        help=(
+            "1回の重み更新に使うデータ数です。小さいほど細かく学習しますが"
+            "時間がかかり、大きいほど高速ですがメモリを多く使います。"
+            "通常は64～128が目安です。"
+        ),
+    )
+    learning_rate = c3.selectbox(
+        "学習率",
+        [0.0001, 0.0003, 0.001, 0.003],
+        index=2,
+        key="training_learning_rate",
+        help=(
+            "1回の更新でモデルを変化させる大きさです。"
+            "大きすぎると学習が不安定になり、小さすぎると収束が遅くなります。"
+            "まずは0.001を基準に調整します。"
+        ),
+    )
     c4, c5, c6 = st.columns(3)
-    hidden_dim = c4.selectbox("隠れ層サイズ", [32, 64, 128, 256], index=1)
-    dropout = c5.slider("Dropout", 0.0, 0.7, 0.25, 0.05)
-    patience = c6.number_input("Early Stopping待機", 3, 50, 12)
+    hidden_dim = c4.selectbox(
+        "隠れ層サイズ",
+        [32, 64, 128, 256],
+        index=1,
+        key="training_hidden_dim",
+        help=(
+            "ニューラルネットワークが学習できる表現の大きさです。"
+            "大きいほど複雑な関係を学べますが、処理負荷と過学習の可能性が"
+            "高まります。まずは64が目安です。"
+        ),
+    )
+    dropout = c5.slider(
+        "Dropout",
+        0.0,
+        0.7,
+        0.25,
+        0.05,
+        key="training_dropout",
+        help=(
+            "学習中に一部のニューロンを無効化して過学習を抑える割合です。"
+            "過学習時は増やし、学習不足なら減らします。0.2～0.4が目安です。"
+        ),
+    )
+    patience = c6.number_input(
+        "Early Stopping待機",
+        3,
+        50,
+        12,
+        key="training_patience",
+        help=(
+            "検証結果が改善しなくなってから学習を止めるまでの待機回数です。"
+            "小さいほど早く停止し、大きいほど改善を長く待ちます。"
+            "まずは10～15が目安です。"
+        ),
+    )
+    with st.expander("学習パラメータの説明と設定のポイント"):
+        st.markdown(
+            """
+- **最大エポック数**：学習データ全体を繰り返す上限です。学習・検証Lossがまだ改善している場合は増やし、早い段階で停止する場合は増やす必要はありません。
+- **バッチサイズ**：一度に処理する頭数です。小さくすると学習が細かくなり、大きくすると高速化しやすい反面、メモリ使用量が増えます。
+- **学習率**：重みを更新する幅です。Lossが大きく上下する場合は下げ、ほとんど改善しない場合は少し上げることを検討します。
+- **隠れ層サイズ**：モデルの表現力です。複雑な傾向を学ばせる場合は増やせますが、検証性能が悪化する場合は小さくします。
+- **Dropout**：過学習を抑える強さです。学習AUCだけが高くなる場合は増やし、学習・検証の両方が低い場合は減らします。
+- **Early Stopping待機**：検証Lossの改善を待つ回数です。結果が揺れやすい場合は増やし、過学習を早く止めたい場合は減らします。
+            """
+        )
     st.caption("開催日順に70%／15%／15%へ分割し、未来データが学習側へ混ざらないようにします。")
     if st.button("モデル学習を開始", type="primary", disabled=historical.empty):
         logger = new_logger()
@@ -811,8 +1353,51 @@ elif page == "学習評価":
     if runs.empty:
         st.warning("学習済みモデルがありません。")
     else:
-        selected_id = st.selectbox("モデル", runs["model_run_id"].tolist())
+        model_type_labels = {
+            "top3": "各馬が3着以内に入る確率を予測するモデル",
+        }
+
+        def evaluation_model_label(model_run_id: str) -> str:
+            row = runs[
+                runs["model_run_id"] == model_run_id
+            ].iloc[0]
+            model_type = model_type_labels.get(
+                str(row["target"]),
+                f"モデル種別: {row['target']}",
+            )
+            created_at = pd.to_datetime(
+                row["created_at"],
+                errors="coerce",
+            )
+            created_text = (
+                created_at.strftime("%Y-%m-%d %H:%M:%S")
+                if pd.notna(created_at)
+                else "作成日時不明"
+            )
+            test_auc = (
+                f"{float(row['test_auc']):.3f}"
+                if pd.notna(row["test_auc"])
+                else "-"
+            )
+            return (
+                f"{model_type}｜{created_text}｜"
+                f"テストAUC {test_auc}｜{model_run_id}"
+            )
+
+        selected_id = st.selectbox(
+            "評価するモデル",
+            runs["model_run_id"].tolist(),
+            format_func=evaluation_model_label,
+        )
         selected = runs[runs["model_run_id"] == selected_id].iloc[0]
+        selected_model_type = model_type_labels.get(
+            str(selected["target"]),
+            f"モデル種別: {selected['target']}",
+        )
+        st.info(
+            f"選択中：{selected_model_type}\n\n"
+            f"モデルID：`{selected_id}`"
+        )
         model_dir = Path(selected["model_path"])
         history = pd.read_csv(model_dir / "training_history.csv")
         metrics = json.loads((model_dir / "metrics.json").read_text(encoding="utf-8"))
@@ -821,6 +1406,34 @@ elif page == "学習評価":
         c2.metric("テストAUC", f"{metrics['test_auc']:.3f}")
         c3.metric("テストLog Loss", f"{metrics['test_log_loss']:.3f}")
         c4.metric("最良エポック", str(metrics["best_epoch"]))
+        c5, c6, c7 = st.columns(3)
+        c5.metric(
+            "テスト正解率",
+            f"{metrics.get('test_accuracy', float('nan')):.3f}",
+        )
+        c6.metric(
+            "テスト適合率",
+            f"{metrics.get('test_precision', float('nan')):.3f}",
+        )
+        c7.metric(
+            "テスト再現率",
+            f"{metrics.get('test_recall', float('nan')):.3f}",
+        )
+
+        with st.expander("各評価指標の説明と、望ましい状態"):
+            st.markdown(
+                """
+- **検証AUC**：学習中の調整に使わない検証データで、3着以内の馬をどれだけ正しく上位に並べられるかを示します。0.5はランダム相当、1.0に近いほど良好です。目安として0.7以上を一つの基準にし、学習AUCとの差が小さい状態が望まれます。
+- **テストAUC**：最後まで学習に使わなかった将来側のデータに対する順位判別性能です。検証AUCと同程度で、かつ0.7以上を維持できる状態が望まれます。検証AUCより大きく低下する場合は汎化性能に注意が必要です。
+- **テストLog Loss**：予測確率の外れ方を評価します。小さいほど良く、自信を持った誤予測には大きなペナルティが付きます。モデル同士を同じテスト期間で比較し、より小さい状態が望まれます。
+- **正解率（Accuracy）**：3着以内／圏外の判定が合った割合です。高いほど良いですが、圏外馬の多さだけでも高くなるため、単独では判断しません。
+- **適合率（Precision）**：モデルが3着以内と判定した馬のうち、実際に3着以内だった割合です。買い目候補の無駄を抑えたい場合は高い状態が望まれます。
+- **再現率（Recall）**：実際に3着以内だった馬をモデルが拾えた割合です。有力馬の見逃しを抑えたい場合は高い状態が望まれます。適合率とのバランスを確認します。
+- **最良エポック**：検証Lossが最も小さかった学習回数です。極端に早い場合は学習率やモデルの複雑さ、後半の場合は最大エポック数を見直します。
+- **学習Loss／検証Loss**：予測確率の誤差です。両方が下がり、近い値で安定する状態が望まれます。学習Lossだけ下がって検証Lossが上がる場合は過学習です。
+- **学習AUC／検証AUC**：学習データと検証データの判別性能です。両方が上がり、差が小さい状態が望まれます。差が0.08以上なら軽度、0.15以上なら強い過学習の目安です。
+                """
+            )
 
         loss_long = history.melt(
             id_vars="epoch", value_vars=["train_loss", "validation_loss"],
@@ -831,21 +1444,183 @@ elif page == "学習評価":
             var_name="series", value_name="auc"
         )
         st.plotly_chart(px.line(loss_long, x="epoch", y="loss", color="series", title="学習Lossと検証Loss"), use_container_width=True)
+        with st.expander(
+            "学習Lossと検証Lossのグラフの読み方",
+            expanded=True,
+        ):
+            st.markdown(
+                """
+- **横軸（epoch）**は学習データ全体を繰り返した回数、**縦軸（loss）**は予測確率の誤差です。Lossは低いほど良い値です。
+- **train_loss（学習Loss）**は学習に使用したデータの誤差、**validation_loss（検証Loss）**は学習に直接使用していないデータの誤差です。
+- **理想的な状態**は、学習の進行に伴って両方のLossが下がり、近い値を保ったまま低い位置で安定することです。検証Lossが最小になった地点が、基本的にモデルを保存する最良エポックです。
+- 学習Lossだけが下がり続け、検証Lossが途中から上昇する場合は**過学習**です。Dropoutを増やす、隠れ層を小さくする、Early Stopping待機を短くするなどを検討します。
+- 両方のLossが高いままほとんど下がらない場合は**学習不足**です。隠れ層を大きくする、Dropoutを下げる、学習率や最大エポック数を見直します。
+- Lossが大きく上下して安定しない場合は、学習率が高すぎる可能性があります。
+                """
+            )
         st.plotly_chart(px.line(auc_long, x="epoch", y="auc", color="series", title="学習AUCと検証AUC"), use_container_width=True)
+        with st.expander(
+            "学習AUCと検証AUCのグラフの読み方",
+            expanded=True,
+        ):
+            st.markdown(
+                """
+- **横軸（epoch）**は学習回数、**縦軸（AUC）**は3着以内の馬を圏外の馬より上位に評価できる性能です。AUCは1.0に近いほど良く、0.5はランダム相当です。
+- **train_auc（学習AUC）**は学習データでの性能、**validation_auc（検証AUC）**は学習に直接使用していないデータでの性能です。
+- **理想的な状態**は、両方のAUCが上昇し、差が小さいまま高い値で安定することです。一つの目安として検証AUCが0.7以上で、学習AUCとの差が0.08未満の状態を確認します。
+- 学習AUCだけが上昇し、検証AUCが伸びない、または低下する場合は**過学習**です。特に差が0.15以上ある場合は強い過学習の可能性があります。
+- 両方のAUCが0.5付近に留まる場合は、モデルが有効な傾向を十分に学習できていません。特徴量、データ量、学習率、モデルの大きさを見直します。
+- 検証AUCは開催時期やデータ件数でも変動するため、1回の上下だけでなく、全体の傾向とテストAUCも合わせて判断します。
+                """
+            )
 
         best = history.iloc[int(metrics["best_epoch"]) - 1]
         auc_gap = float(best["train_auc"] - best["validation_auc"])
         last_val_loss = float(history.iloc[-1]["validation_loss"])
         best_val_loss = float(history["validation_loss"].min())
+        best_train_auc = float(best["train_auc"])
+        config = metrics.get("config", {})
+        current_parameters = {
+            "最大エポック数": int(config.get("epochs", 80)),
+            "バッチサイズ": int(config.get("batch_size", 128)),
+            "学習率": float(config.get("learning_rate", 0.001)),
+            "隠れ層サイズ": int(config.get("hidden_dim", 64)),
+            "Dropout": float(config.get("dropout", 0.25)),
+            "Early Stopping待機": int(config.get("patience", 12)),
+        }
+        recommended_parameters = current_parameters.copy()
+        recommendation_reasons: list[str] = []
         if auc_gap >= 0.15 or last_val_loss > best_val_loss * 1.15:
             st.error(
                 f"過学習の可能性があります。最良時点の学習AUC−検証AUC={auc_gap:.3f}。"
                 "Dropout増加、特徴量削減、データ追加を検討してください。"
             )
+            recommended_parameters["Dropout"] = min(
+                round(current_parameters["Dropout"] + 0.10, 2),
+                0.70,
+            )
+            hidden_sizes = [32, 64, 128, 256]
+            current_hidden_index = hidden_sizes.index(
+                current_parameters["隠れ層サイズ"]
+            )
+            recommended_parameters["隠れ層サイズ"] = hidden_sizes[
+                max(0, current_hidden_index - 1)
+            ]
+            recommended_parameters["Early Stopping待機"] = max(
+                5,
+                current_parameters["Early Stopping待機"] - 3,
+            )
+            recommendation_reasons.append(
+                "過学習を抑えるため、Dropoutを増やし、"
+                "隠れ層と待機回数を小さくします。"
+            )
         elif auc_gap >= 0.08:
             st.warning(f"軽度の過学習傾向があります。AUC差={auc_gap:.3f}。")
+            recommended_parameters["Dropout"] = min(
+                round(current_parameters["Dropout"] + 0.05, 2),
+                0.70,
+            )
+            recommendation_reasons.append(
+                "軽度の過学習を抑えるため、Dropoutを少し増やします。"
+            )
         else:
             st.success(f"大きな過学習は確認されません。AUC差={auc_gap:.3f}。")
+
+        if best_train_auc < 0.70:
+            hidden_sizes = [32, 64, 128, 256]
+            current_hidden_index = hidden_sizes.index(
+                recommended_parameters["隠れ層サイズ"]
+            )
+            recommended_parameters["隠れ層サイズ"] = hidden_sizes[
+                min(len(hidden_sizes) - 1, current_hidden_index + 1)
+            ]
+            recommended_parameters["Dropout"] = max(
+                round(recommended_parameters["Dropout"] - 0.05, 2),
+                0.0,
+            )
+            recommendation_reasons.append(
+                "学習AUCが低いため、隠れ層を増やし、"
+                "Dropoutを少し下げて表現力を上げます。"
+            )
+
+        best_epoch = int(metrics["best_epoch"])
+        if best_epoch <= 3:
+            learning_rates = [0.0001, 0.0003, 0.001, 0.003]
+            current_rate_index = learning_rates.index(
+                current_parameters["学習率"]
+            )
+            recommended_parameters["学習率"] = learning_rates[
+                max(0, current_rate_index - 1)
+            ]
+            recommendation_reasons.append(
+                "最良エポックが非常に早いため、学習率を一段下げて"
+                "より緩やかに学習します。"
+            )
+        elif (
+            len(history) >= current_parameters["最大エポック数"]
+            and best_epoch >= len(history) * 0.9
+        ):
+            recommended_parameters["最大エポック数"] = min(
+                current_parameters["最大エポック数"] + 20,
+                500,
+            )
+            recommendation_reasons.append(
+                "学習終了付近まで改善しているため、"
+                "最大エポック数を増やします。"
+            )
+
+        if not recommendation_reasons:
+            recommendation_reasons.append(
+                "大きな問題が見られないため、現在値を維持します。"
+            )
+
+        st.subheader("結果を踏まえたパラメータ調整案")
+        st.write(" ".join(recommendation_reasons))
+        recommendation_rows = [
+            {
+                "パラメータ": name,
+                "現在値": current_parameters[name],
+                "推奨値": recommended_parameters[name],
+            }
+            for name in current_parameters
+        ]
+        st.dataframe(
+            pd.DataFrame(recommendation_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+        if st.button(
+            "調整案をモデル学習画面に反映",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.session_state["pending_training_parameters"] = {
+                "training_model_type": (
+                    "各馬が3着以内に入る確率を予測する"
+                ),
+                "training_epochs": int(
+                    recommended_parameters["最大エポック数"]
+                ),
+                "training_batch_size": int(
+                    recommended_parameters["バッチサイズ"]
+                ),
+                "training_learning_rate": float(
+                    recommended_parameters["学習率"]
+                ),
+                "training_hidden_dim": int(
+                    recommended_parameters["隠れ層サイズ"]
+                ),
+                "training_dropout": float(
+                    recommended_parameters["Dropout"]
+                ),
+                "training_patience": int(
+                    recommended_parameters["Early Stopping待機"]
+                ),
+            }
+            st.success(
+                "調整案を保存しました。左メニューから"
+                "「モデル学習」を開くと、入力欄へ反映されます。"
+            )
         with st.expander("全評価指標"):
             st.json(metrics)
 
@@ -1217,6 +1992,14 @@ elif page == "メンテナンス":
         st.info(
             "スクレイピングデータの削除では、DB上の収集データと"
             "関連する出力データのみ削除します。取得済みHTMLは削除しません。"
+        )
+    elif maintenance_tab == "ダミーデータ":
+        st.info(
+            "ダミーデータの削除では、選択したダミー生成実行に"
+            "関連する学習用・予想用データだけを削除します。"
+            "HTMLから作成した実データと取得済みHTMLは残ります。"
+            "「まとめて削除」を選んだ場合も、削除対象は"
+            "ダミーデータだけです。"
         )
     elif maintenance_tab == "取得HTML":
         st.info(

@@ -8,13 +8,13 @@ import pandas as pd
 
 NUMERIC_FEATURES = [
     "race_number", "distance", "horse_number", "frame_number", "age",
-    "carried_weight", "odds", "popularity", "body_weight", "body_weight_change",
-    "prior_starts", "prior_win_rate", "prior_top3_rate", "prior_avg_finish",
-    "prior_avg_odds", "days_since_last_race",
+    "carried_weight", "odds", "popularity", "prior_starts",
+    "prior_win_rate", "prior_top3_rate", "prior_avg_finish", "prior_avg_odds",
+    "days_since_last_race",
 ]
 CATEGORICAL_FEATURES = [
     "course_name", "surface", "weather", "track_condition", "sex",
-    "jockey_id", "trainer_id",
+    "jockey_id", "trainer_id", "sire_id", "dam_id", "damsire_id",
 ]
 MODEL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 

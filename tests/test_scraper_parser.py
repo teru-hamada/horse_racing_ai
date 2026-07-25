@@ -61,6 +61,51 @@ def test_result_parser(tmp_path):
     assert row["time_seconds"] == 119.8
 
 
+def test_result_parser_ignores_broken_auxiliary_table(tmp_path):
+    html = RESULT_HTML.replace(
+        "</body>",
+        "<table class=\"pay_table_01\"><thead></thead></table></body>",
+    )
+    logger = AppLogger(tmp_path)
+    scraper = NetkeibaScraper(logger, interval_seconds=0.5)
+
+    parsed = scraper._parse_page(
+        html,
+        "202603020611",
+        date(2026, 7, 12),
+        "historical",
+    )
+
+    assert len(parsed) == 1
+    assert parsed.iloc[0]["horse_id"] == "2020100001"
+
+
+def test_upcoming_odds_are_embedded_in_saved_html():
+    html = """
+    <html><body>
+      <span id="odds-1_01">---.-</span>
+      <span id="ninki-1_01">**</span>
+      <span id="odds-1_02">---.-</span>
+      <span id="ninki-1_02">**</span>
+    </body></html>
+    """
+    enriched, count = NetkeibaScraper._embed_win_odds(
+        html,
+        {
+            "01": ["3.2", "0", "1"],
+            "02": ["8.6", "0", "2"],
+        },
+        "2026-07-26 09:30:00",
+    )
+
+    assert count == 2
+    assert 'id="odds-1_01">3.2<' in enriched
+    assert 'id="ninki-1_01">1<' in enriched
+    assert 'id="odds-1_02">8.6<' in enriched
+    assert 'id="ninki-1_02">2<' in enriched
+    assert NetkeibaScraper._has_embedded_win_odds(enriched)
+
+
 def test_pedigree_parser():
     parsed = NetkeibaScraper._parse_pedigree_html(
         PEDIGREE_HTML

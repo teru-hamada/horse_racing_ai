@@ -199,6 +199,45 @@ def load_records(dataset_type: str | None = None) -> pd.DataFrame:
         return con.execute("SELECT * FROM race_records ORDER BY race_date, race_id, horse_number").df()
 
 
+def race_record_summary(
+    dataset_type: str,
+    start_date: Any,
+    end_date: Any,
+) -> dict[str, int]:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS row_count,
+                COUNT(DISTINCT race_id) AS race_count
+            FROM race_records
+            WHERE dataset_type = ?
+              AND race_date BETWEEN ? AND ?
+            """,
+            [dataset_type, start_date, end_date],
+        ).fetchone()
+    return {
+        "row_count": int(row[0]),
+        "race_count": int(row[1]),
+    }
+
+
+def race_record_years(
+    dataset_type: str,
+) -> set[int]:
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT DISTINCT YEAR(race_date)
+            FROM race_records
+            WHERE dataset_type = ?
+              AND race_date IS NOT NULL
+            """,
+            [dataset_type],
+        ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
 def collection_runs() -> pd.DataFrame:
     with connect() as con:
         return con.execute("SELECT * FROM collection_runs ORDER BY started_at DESC").df()

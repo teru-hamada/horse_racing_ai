@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import time
@@ -11,7 +12,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 
 from .config import PATHS
 from .logging_utils import AppLogger
@@ -50,7 +51,7 @@ def _flatten_columns(columns: pd.Index) -> list[str]:
         "人 気" -> "人気"
     """
     flattened: list[str] = []
-    for col in columns:
+    for index, col in enumerate(columns):
         if isinstance(col, tuple):
             parts = [
                 str(x)
@@ -63,6 +64,8 @@ def _flatten_columns(columns: pd.Index) -> list[str]:
             name = str(col)
 
         normalized = re.sub(r"\s+", "", name)
+        if not normalized:
+            normalized = f"column_{index}"
         flattened.append(normalized)
 
     return flattened
@@ -151,6 +154,9 @@ class NetkeibaScraper:
     RESULT_URL = "https://race.netkeiba.com/race/result.html?race_id={race_id}"
     RESULT_FALLBACK_URL = "https://db.netkeiba.com/race/{race_id}/"
     HORSE_PEDIGREE_URL = "https://db.netkeiba.com/horse/ped/{horse_id}/"
+    JRA_ODDS_API_URL = (
+        "https://race.netkeiba.com/api/api_get_jra_odds.html"
+    )
 
     def __init__(self, logger: AppLogger, interval_seconds: float = 2.0, timeout: int = 30) -> None:
         self.logger = logger
@@ -236,6 +242,161 @@ class NetkeibaScraper:
         )
         return normalized
 
+    @staticmethod
+    def _has_embedded_win_odds(html: str) -> bool:
+        """全出走馬の単勝オッズ・人気がHTMLへ入っているか確認する。"""
+        soup = BeautifulSoup(html, "lxml")
+        odds_nodes = soup.select('[id^="odds-1_"]')
+        if not odds_nodes:
+            return False
+        for odds_node in odds_nodes:
+            suffix = str(odds_node.get("id", "")).removeprefix(
+                "odds-1_"
+            )
+            popularity_node = soup.select_one(f"#ninki-1_{suffix}")
+            odds_text = odds_node.get_text(strip=True)
+            popularity_text = (
+                popularity_node.get_text(strip=True)
+                if popularity_node
+                else ""
+            )
+            if (
+                re.fullmatch(r"\d+(?:\.\d+)?", odds_text) is None
+                or not popularity_text.isdigit()
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _embed_win_odds(
+        html: str,
+        odds_rows: dict[str, object],
+        official_datetime: str = "",
+    ) -> tuple[str, int]:
+        """公式APIの単勝オッズと人気を出馬表HTMLへ埋め込む。"""
+        soup = BeautifulSoup(html, "lxml")
+        embedded_count = 0
+        for horse_number, values in odds_rows.items():
+            if not isinstance(values, (list, tuple)) or len(values) < 3:
+                continue
+            suffix = str(horse_number).zfill(2)
+            odds_node = soup.select_one(f"#odds-1_{suffix}")
+            popularity_node = soup.select_one(f"#ninki-1_{suffix}")
+            if odds_node is None or popularity_node is None:
+                continue
+            odds_text = str(values[0]).strip()
+            popularity_text = str(values[2]).strip()
+            if (
+                re.fullmatch(r"\d+(?:\.\d+)?", odds_text) is None
+                or not popularity_text.isdigit()
+            ):
+                continue
+            odds_node.string = odds_text
+            popularity_node.string = popularity_text
+            embedded_count += 1
+
+        if embedded_count:
+            marker = soup.new_string(
+                "\nnetkeiba-odds-embedded: "
+                f"{official_datetime or datetime.now().isoformat()}\n",
+                Comment,
+            )
+            if soup.body is not None:
+                soup.body.insert(0, marker)
+        return str(soup), embedded_count
+
+    def _enrich_upcoming_html_with_odds(
+        self,
+        html: str,
+        race_id: str,
+        cache_path: Path,
+        force: bool = False,
+    ) -> str:
+        """
+        出馬表の静的HTMLにない単勝オッズ・人気を公式APIから補完する。
+
+        既に全頭分が埋め込まれている場合は、再取得指定時を除いて
+        APIへアクセスしない。
+        """
+        if self._has_embedded_win_odds(html) and not force:
+            self.logger.info(
+                f"{race_id}: 保存HTMLのオッズ・人気を再利用"
+            )
+            return html
+
+        api_url = self.JRA_ODDS_API_URL
+        self.current_url = api_url
+        self.last_url = api_url
+        if api_url not in self.requested_urls:
+            self.requested_urls.append(api_url)
+        try:
+            response = self.session.get(
+                api_url,
+                params={
+                    "pid": "api_get_jra_odds",
+                    "input": "UTF-8",
+                    "output": "json",
+                    "race_id": race_id,
+                    "type": "1",
+                    "action": "init",
+                    "sort": "odds",
+                    "compress": "0",
+                },
+                headers={
+                    "Referer": self.CARD_URL.format(race_id=race_id),
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data")
+            if isinstance(data, str) and data:
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                self.logger.info(
+                    f"{race_id}: オッズ・人気はまだ公開されていません。"
+                )
+                return html
+            odds = data.get("odds", {})
+            win_odds = (
+                odds.get("1", {})
+                if isinstance(odds, dict)
+                else {}
+            )
+            if not isinstance(win_odds, dict) or not win_odds:
+                self.logger.info(
+                    f"{race_id}: 単勝オッズ・人気はまだ公開されていません。"
+                )
+                return html
+            enriched_html, embedded_count = self._embed_win_odds(
+                html,
+                win_odds,
+                str(data.get("official_datetime", "")),
+            )
+            if not embedded_count:
+                self.logger.warning(
+                    f"{race_id}: オッズAPIに値がありますが、"
+                    "HTMLの出走馬へ対応付けできませんでした。"
+                )
+                return html
+            enriched_html = self._write_utf8_html(
+                cache_path,
+                enriched_html,
+            )
+            self.logger.info(
+                f"{race_id}: 単勝オッズ・人気を"
+                f"{embedded_count}頭分HTMLへ埋め込みました。"
+            )
+            return enriched_html
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                f"{race_id}: オッズAPI取得失敗。"
+                f"出馬表HTMLのみ保存します: {exc}"
+            )
+            return html
+        finally:
+            time.sleep(self.interval_seconds)
+
     def _find_existing_html(
         self,
         cache_path: Path,
@@ -279,6 +440,18 @@ class NetkeibaScraper:
             candidates,
             key=lambda path: path.stat().st_mtime,
         )
+
+    @staticmethod
+    def _resolve_race_cache_path(cache_path: Path) -> Path:
+        """IDだけの仮パスから、名称付与後の既存HTMLを解決する。"""
+        if cache_path.exists():
+            return cache_path
+        candidates = sorted(
+            cache_path.parent.glob(f"{cache_path.stem}*.html"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0] if candidates else cache_path
 
     def _download(self, url: str, cache_path: Path, force: bool = False) -> str:
         self.current_url = url
@@ -639,6 +812,16 @@ class NetkeibaScraper:
                         cache_path,
                         force=force,
                     )
+                    if dataset_type == "upcoming":
+                        cache_path = self._resolve_race_cache_path(
+                            cache_path
+                        )
+                        html = self._enrich_upcoming_html_with_odds(
+                            html,
+                            race_id,
+                            cache_path,
+                            force=force,
+                        )
                     metadata = self._metadata(
                         BeautifulSoup(html, "lxml"),
                         html,
@@ -758,9 +941,22 @@ class NetkeibaScraper:
     def fetch_card(self, race_id: str, race_date: date, run_id: str, force: bool = False) -> pd.DataFrame:
         url = self.CARD_URL.format(race_id=race_id)
         self.logger.info(f"出馬表解析対象URL: {url}")
+        cache_path = self._cache_path(
+            "upcoming",
+            run_id,
+            "card",
+            race_id,
+        )
         html = self._download(
             url,
-            self._cache_path("upcoming", run_id, "card", race_id),
+            cache_path,
+            force=force,
+        )
+        cache_path = self._resolve_race_cache_path(cache_path)
+        html = self._enrich_upcoming_html_with_odds(
+            html,
+            race_id,
+            cache_path,
             force=force,
         )
         frame = self._parse_page(
@@ -849,7 +1045,25 @@ class NetkeibaScraper:
         )
 
     def _select_table(self, html: str, dataset_type: str) -> pd.DataFrame:
-        tables = pd.read_html(StringIO(html))
+        # ページ全体を pd.read_html() に渡すと、古い保存HTMLに含まれる
+        # 空または崩れた払戻テーブルなどで IndexError になり、正常な
+        # レース結果表まで解析できないことがある。レース表を優先して
+        # 1件ずつ解析し、解析不能な補助表は読み飛ばす。
+        soup = BeautifulSoup(html, "lxml")
+        table_nodes = soup.select("table.RaceTable01, table.race_table_01")
+        if not table_nodes:
+            table_nodes = soup.find_all("table")
+
+        tables: list[pd.DataFrame] = []
+        for table_node in table_nodes:
+            try:
+                tables.extend(pd.read_html(StringIO(str(table_node))))
+            except (IndexError, TypeError, ValueError) as exc:
+                self.logger.warning(
+                    "解析不能なHTMLテーブルをスキップしました: %s",
+                    exc,
+                )
+
         scored: list[tuple[int, pd.DataFrame]] = []
         for table in tables:
             table = table.copy()
@@ -1540,6 +1754,34 @@ class NetkeibaScraper:
             "trainer_name": at(12),
         }
 
+    @staticmethod
+    def _upcoming_positional_columns(
+        table: pd.DataFrame,
+    ) -> dict[str, str | None]:
+        """
+        現行出馬表の列位置によるフォールバック。
+
+        オッズ列は見出しが画像等で空になるため、列名だけでは
+        特定できない場合がある。
+        """
+        columns = list(map(str, table.columns))
+
+        def at(index: int) -> str | None:
+            return columns[index] if index < len(columns) else None
+
+        return {
+            "frame_number": at(0),
+            "horse_number": at(1),
+            "horse_name": at(3),
+            "sex_age": at(4),
+            "carried_weight": at(5),
+            "jockey_name": at(6),
+            "trainer_name": at(7),
+            "body_weight": at(8),
+            "odds": at(9),
+            "popularity": at(10),
+        }
+
     def _parse_page(self, html: str, race_id: str, race_date: date, dataset_type: str) -> pd.DataFrame:
         soup = BeautifulSoup(html, "lxml")
         table = self._select_table(html, dataset_type)
@@ -1585,6 +1827,11 @@ class NetkeibaScraper:
                     for key, value in columns.items()
                 )
             )
+        else:
+            positional = self._upcoming_positional_columns(table)
+            for key, fallback_column in positional.items():
+                if columns.get(key) is None and fallback_column is not None:
+                    columns[key] = fallback_column
 
         if not columns["horse_name"]:
             raise ValueError(
