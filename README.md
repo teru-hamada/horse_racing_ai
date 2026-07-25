@@ -29,7 +29,8 @@ streamlit run app.py
 
 ## 保存場所
 
-- `data/raw_html/`: 取得した元HTML
+- `data/raw_html/historical/`: 過去レース・学習用の元HTML
+- `data/raw_html/upcoming/`: 今後レース・予想用の元HTML
 - `data/racing.duckdb`: 統合データベース
 - `data/predictions/`: 実行単位の予想結果
 - `models/`: モデル、前処理器、学習履歴、評価指標
@@ -64,11 +65,14 @@ streamlit run app.py
 - 過去結果は結果ページ、週末データは出馬表ページから取得
 - 取得間隔は内部定数で2秒に固定
 - HTML収集はバックグラウンドで実行され、メニュー移動後も継続
-- HTMLは `data/raw_html/<年>/` に年単位でキャッシュ
+- 過去レースHTMLは `data/raw_html/historical/<年>/` に年単位でキャッシュ
+- 競走馬の血統HTMLは `data/raw_html/historical/horse/` に `<horse_id>_<競走馬名>.html` 形式で保存し、父・母・母父をデータベースへ登録
+- 予想用HTMLは `data/raw_html/upcoming/<年>/` に年単位でキャッシュ
+- 予想対象馬の血統HTMLは `data/raw_html/upcoming/horse/` に保存し、学習用に同じ競走馬HTMLがあれば再利用
 - データベース作成時はネットワークへアクセスせず、取得済みHTMLだけを解析
 - 解析できないページはログを残し、他レースの処理を継続
 
-WebサイトのHTML構造は変更される可能性があります。解析エラー時は `data/raw_html/<年>/` のHTMLとログを確認し、パーサーの列名候補やCSSセレクタを調整してください。
+WebサイトのHTML構造は変更される可能性があります。解析エラー時は `data/raw_html/historical/<年>/` または `data/raw_html/upcoming/<年>/` のHTMLとログを確認し、パーサーの列名候補やCSSセレクタを調整してください。
 
 ## AIを使って今後開発する際の進め方
 

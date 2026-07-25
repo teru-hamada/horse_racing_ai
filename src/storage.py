@@ -16,6 +16,8 @@ RACE_RECORD_COLUMNS = [
     "surface", "distance", "weather", "track_condition", "horse_id",
     "horse_name", "horse_number", "frame_number", "sex", "age",
     "carried_weight", "jockey_id", "jockey_name", "trainer_id", "trainer_name",
+    "sire_id", "sire_name", "dam_id", "dam_name",
+    "damsire_id", "damsire_name",
     "odds", "popularity", "body_weight", "body_weight_change", "finish_position",
     "time_seconds", "dataset_type", "collection_run_id", "collected_at",
 ]
@@ -58,6 +60,12 @@ CREATE TABLE IF NOT EXISTS race_records (
     jockey_name VARCHAR,
     trainer_id VARCHAR,
     trainer_name VARCHAR,
+    sire_id VARCHAR,
+    sire_name VARCHAR,
+    dam_id VARCHAR,
+    dam_name VARCHAR,
+    damsire_id VARCHAR,
+    damsire_name VARCHAR,
     odds DOUBLE,
     popularity DOUBLE,
     body_weight DOUBLE,
@@ -100,6 +108,18 @@ def connect() -> duckdb.DuckDBPyConnection:
     PATHS.database.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(PATHS.database))
     con.execute(SCHEMA_SQL)
+    for column in [
+        "sire_id",
+        "sire_name",
+        "dam_id",
+        "dam_name",
+        "damsire_id",
+        "damsire_name",
+    ]:
+        con.execute(
+            f"ALTER TABLE race_records "
+            f"ADD COLUMN IF NOT EXISTS {column} VARCHAR"
+        )
     return con
 
 
@@ -161,7 +181,11 @@ def save_race_records(
               AND race_records.dataset_type = incoming.dataset_type
             """
         )
-        con.execute("INSERT INTO race_records SELECT * FROM incoming")
+        column_list = ", ".join(RACE_RECORD_COLUMNS)
+        con.execute(
+            f"INSERT INTO race_records ({column_list}) "
+            f"SELECT {column_list} FROM incoming"
+        )
         con.unregister("incoming")
 
 

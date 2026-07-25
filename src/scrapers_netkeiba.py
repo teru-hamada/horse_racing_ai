@@ -135,13 +135,22 @@ class NetkeibaScraper:
     markup changes, the raw page remains available for parser adjustment without re-downloading.
     """
 
-    # 現行一覧はJavaScript描画のため使用しない。
     RACE_LIST_URL = "https://race.netkeiba.com/top/race_list.html?kaisai_date={date}"
+    RACE_DATE_LIST_URL = (
+        "https://race.netkeiba.com/top/"
+        "race_list_get_date_list.html"
+        "?kaisai_date={date}&encoding=UTF-8"
+    )
+    RACE_LIST_SUB_URL = (
+        "https://race.netkeiba.com/top/race_list_sub.html"
+        "?kaisai_date={date}&current_group={current_group}"
+    )
     RACE_LIST_FALLBACK_URL = "https://db.netkeiba.com/race/list/{date}/"
     CARD_URL = "https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
     # 過去結果では使用しない。将来の拡張用に定義のみ残す。
     RESULT_URL = "https://race.netkeiba.com/race/result.html?race_id={race_id}"
     RESULT_FALLBACK_URL = "https://db.netkeiba.com/race/{race_id}/"
+    HORSE_PEDIGREE_URL = "https://db.netkeiba.com/horse/ped/{horse_id}/"
 
     def __init__(self, logger: AppLogger, interval_seconds: float = 2.0, timeout: int = 30) -> None:
         self.logger = logger
@@ -164,10 +173,31 @@ class NetkeibaScraper:
         self.requested_urls: list[str] = []
         self.race_urls: list[str] = []
         self.diagnostics: list[dict[str, object]] = []
+        self.pedigree_cache: dict[
+            tuple[str, str],
+            dict[str, str | None],
+        ] = {}
 
-    def _cache_path(self, storage_key: str, kind: str, key: str) -> Path:
+    @staticmethod
+    def _html_root(dataset_type: str) -> Path:
+        if dataset_type == "historical":
+            return PATHS.historical_html
+        if dataset_type == "upcoming":
+            return PATHS.upcoming_html
+        raise ValueError(f"Unsupported dataset_type: {dataset_type}")
+
+    def _cache_path(
+        self,
+        dataset_type: str,
+        storage_key: str,
+        kind: str,
+        key: str,
+    ) -> Path:
         """年単位の保存先を返す（storage_key は YYYY）。"""
-        directory = PATHS.raw_html / storage_key / kind
+        if kind == "horse":
+            directory = self._html_root(dataset_type) / "horse"
+        else:
+            directory = self._html_root(dataset_type) / storage_key / kind
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"{key}.html"
 
@@ -214,12 +244,15 @@ class NetkeibaScraper:
         別の年フォルダで保存済みの同種HTMLを検索する。
 
         例:
-            raw_html/2026/result/202602011003.html
-            raw_html/2026/race_list_db/20260712.html
+            raw_html/historical/2026/result/202602011003.html
+            raw_html/upcoming/2026/race_list_db/20260712.html
         """
         kind = cache_path.parent.name
         filename = cache_path.name
         key = cache_path.stem
+
+        if kind == "horse":
+            return None
 
         # result/cardは先頭12桁のrace_idをキーに検索する。
         # 例: 202610020612.html と
@@ -231,7 +264,7 @@ class NetkeibaScraper:
 
         candidates = [
             path
-            for path in PATHS.raw_html.glob(
+            for path in cache_path.parents[2].glob(
                 f"*/{kind}/{filename_pattern}"
             )
             if path.is_file()
@@ -257,8 +290,17 @@ class NetkeibaScraper:
             current_kind = cache_path.parent.name
             current_key = cache_path.stem
             if (
-                current_kind in {"result", "card"}
-                and re.fullmatch(r"\d{12}", current_key)
+                (
+                    current_kind in {"result", "card"}
+                    and re.fullmatch(r"\d{12}", current_key)
+                )
+                or (
+                    current_kind == "horse"
+                    and re.fullmatch(
+                        r"[0-9a-zA-Z]+",
+                        current_key,
+                    )
+                )
             ):
                 current_candidates = sorted(
                     cache_path.parent.glob(
@@ -366,8 +408,8 @@ class NetkeibaScraper:
     def _extract_race_ids(html: str, date_text: str) -> list[str]:
         """現行・旧DB双方のHTMLから対象日の12桁レースIDを抽出する。"""
         patterns = [
-            r"[?&]race_id=(\\d{12})(?:&|[\"'<>\\s]|$)",
-            r"/race/(\\d{12})/?(?:[?\"'<>\\s]|$)",
+            r"[?&]race_id=(\d{12})(?:&|[\"'<>\s]|$)",
+            r"/race/(\d{12})/?(?:[?\"'<>\s]|$)",
             r"race_id[=/](\d{12})",
             r"(?<!\d)(\d{12})(?!\d)",
         ]
@@ -389,19 +431,98 @@ class NetkeibaScraper:
             and race_id[-2:] in {f"{number:02d}" for number in range(1, 13)}
         )
 
-    def race_ids_for_date(self, target_date: date, run_id: str, force: bool = False) -> list[str]:
-        """静的HTMLを取得できる旧DB一覧だけを使用してレースIDを取得する。"""
+    @staticmethod
+    def _extract_current_group(
+        html: str,
+        date_text: str,
+    ) -> str | None:
+        soup = BeautifulSoup(html, "lxml")
+        for node in soup.select("[date][group]"):
+            if str(node.get("date", "")) == date_text:
+                current_group = str(
+                    node.get("group", "")
+                ).strip()
+                if current_group:
+                    return current_group
+        return None
+
+    def race_ids_for_date(
+        self,
+        target_date: date,
+        run_id: str,
+        dataset_type: str,
+        force: bool = False,
+    ) -> list[str]:
+        """対象日の中央競馬レースIDを取得する。"""
         date_text = target_date.strftime("%Y%m%d")
-        list_url = self.RACE_LIST_FALLBACK_URL.format(date=date_text)
+
+        if dataset_type == "upcoming":
+            date_list_url = self.RACE_DATE_LIST_URL.format(
+                date=date_text
+            )
+            self.logger.info(
+                f"開催日一覧取得対象URL: {date_list_url}"
+            )
+            date_list_html = self._download(
+                date_list_url,
+                self._cache_path(
+                    dataset_type,
+                    run_id,
+                    "race_date_list",
+                    date_text,
+                ),
+                force=force,
+            )
+            current_group = self._extract_current_group(
+                date_list_html,
+                date_text,
+            )
+            if not current_group:
+                raise ValueError(
+                    f"{target_date}: current_groupを"
+                    "取得できませんでした。"
+                )
+            list_url = self.RACE_LIST_SUB_URL.format(
+                date=date_text,
+                current_group=current_group,
+            )
+        else:
+            list_url = self.RACE_LIST_FALLBACK_URL.format(
+                date=date_text
+            )
 
         self.logger.info(f"レース一覧取得対象URL: {list_url}")
+        list_cache_path = self._cache_path(
+            dataset_type,
+            run_id,
+            "race_list_db",
+            date_text,
+        )
         html = self._download(
             list_url,
-            self._cache_path(run_id, "race_list_db", date_text),
+            list_cache_path,
             force=force,
         )
 
         race_ids = self._extract_race_ids(html, date_text)
+        if (
+            dataset_type == "upcoming"
+            and not force
+            and not race_ids
+        ):
+            self.logger.warning(
+                f"{target_date}: 保存済みレース一覧に"
+                "race_idがないため、現行一覧を再取得します。"
+            )
+            html = self._download(
+                list_url,
+                list_cache_path,
+                force=True,
+            )
+            race_ids = self._extract_race_ids(
+                html,
+                date_text,
+            )
         self.logger.info(
             f"{target_date}: race_list_dbから中央競馬{len(race_ids)}レースを検出 / "
             f"URL: {list_url}"
@@ -438,7 +559,10 @@ class NetkeibaScraper:
         for date_index, target_date in enumerate(dates, start=1):
             storage_key = str(target_date.year)
             race_ids = self.race_ids_for_date(
-                target_date, storage_key, force=force
+                target_date,
+                storage_key,
+                dataset_type,
+                force=force,
             )
             if not race_ids:
                 self.logger.error(
@@ -488,11 +612,15 @@ class NetkeibaScraper:
         ]
         list_count = 0
         race_count = 0
+        collected_horse_ids: set[str] = set()
         total_dates = len(dates)
         for date_index, target_date in enumerate(dates, start=1):
             storage_key = str(target_date.year)
             race_ids = self.race_ids_for_date(
-                target_date, storage_key, force=force
+                target_date,
+                storage_key,
+                dataset_type,
+                force=force,
             )
             list_count += 1
             for race_index, race_id in enumerate(race_ids, start=1):
@@ -504,7 +632,7 @@ class NetkeibaScraper:
                         url = self.CARD_URL.format(race_id=race_id)
                         kind = "card"
                     cache_path = self._cache_path(
-                        storage_key, kind, race_id
+                        dataset_type, storage_key, kind, race_id
                     )
                     html = self._download(
                         url,
@@ -517,6 +645,27 @@ class NetkeibaScraper:
                         race_id,
                         target_date,
                     )
+                    horses = self._extract_horse_links(
+                        BeautifulSoup(html, "lxml")
+                    )
+                    for horse_id, horse_name in dict(
+                        horses
+                    ).items():
+                        try:
+                            self._horse_pedigree(
+                                horse_id,
+                                storage_key,
+                                dataset_type=dataset_type,
+                                horse_name=horse_name,
+                                download=True,
+                                force=force,
+                            )
+                            collected_horse_ids.add(horse_id)
+                        except Exception as exc:  # noqa: BLE001
+                            self.logger.error(
+                                f"{horse_id}: "
+                                f"血統HTML取得・解析失敗: {exc}"
+                            )
                     self._rename_race_html(
                         cache_path,
                         race_id,
@@ -538,7 +687,11 @@ class NetkeibaScraper:
                     progress_callback(min(float(fraction), 1.0))
             if progress_callback:
                 progress_callback(date_index / total_dates)
-        return {"date_count": list_count, "race_count": race_count}
+        return {
+            "date_count": list_count,
+            "race_count": race_count,
+            "horse_count": len(collected_horse_ids),
+        }
 
     def parse_cached_date_range(
         self,
@@ -559,7 +712,7 @@ class NetkeibaScraper:
         for index, target_date in enumerate(dates, start=1):
             date_text = target_date.strftime("%Y%m%d")
             list_path = (
-                PATHS.raw_html / str(target_date.year)
+                self._html_root(dataset_type) / str(target_date.year)
                 / "race_list_db" / f"{date_text}.html"
             )
             if not list_path.exists():
@@ -569,7 +722,11 @@ class NetkeibaScraper:
             list_html = list_path.read_text(encoding="utf-8", errors="replace")
             for race_id in self._extract_race_ids(list_html, date_text):
                 candidates = sorted(
-                    (PATHS.raw_html / str(target_date.year) / kind).glob(
+                    (
+                        self._html_root(dataset_type)
+                        / str(target_date.year)
+                        / kind
+                    ).glob(
                         f"{race_id}*.html"
                     )
                 )
@@ -581,6 +738,12 @@ class NetkeibaScraper:
                     )
                     frame = self._parse_page(
                         html, race_id, target_date, dataset_type
+                    )
+                    frame = self._add_pedigrees(
+                        frame,
+                        str(target_date.year),
+                        dataset_type=dataset_type,
+                        download=False,
                     )
                     if not frame.empty:
                         frames.append(frame)
@@ -597,10 +760,22 @@ class NetkeibaScraper:
         self.logger.info(f"出馬表解析対象URL: {url}")
         html = self._download(
             url,
-            self._cache_path(run_id, "card", race_id),
+            self._cache_path("upcoming", run_id, "card", race_id),
             force=force,
         )
-        return self._parse_page(html, race_id, race_date, dataset_type="upcoming")
+        frame = self._parse_page(
+            html,
+            race_id,
+            race_date,
+            dataset_type="upcoming",
+        )
+        return self._add_pedigrees(
+            frame,
+            str(race_date.year),
+            dataset_type="upcoming",
+            download=True,
+            force=force,
+        )
 
     def fetch_result(
         self,
@@ -613,10 +788,12 @@ class NetkeibaScraper:
         過去レース結果は旧DBページだけを取得する。
 
         保存先:
-            raw_html/<year>/result/<race_id>.html
+            raw_html/historical/<year>/result/<race_id>.html
         """
         url = self.RESULT_FALLBACK_URL.format(race_id=race_id)
-        cache = self._cache_path(run_id, "result", race_id)
+        cache = self._cache_path(
+            "historical", run_id, "result", race_id
+        )
 
         self.logger.info(f"過去結果解析対象URL: {url}")
 
@@ -663,7 +840,13 @@ class NetkeibaScraper:
             course_name,
             race_number,
         )
-        return frame
+        return self._add_pedigrees(
+            frame,
+            str(race_date.year),
+            dataset_type="historical",
+            download=True,
+            force=force,
+        )
 
     def _select_table(self, html: str, dataset_type: str) -> pd.DataFrame:
         tables = pd.read_html(StringIO(html))
@@ -987,6 +1170,329 @@ class NetkeibaScraper:
         )
         return target
 
+    def _rename_horse_html(
+        self,
+        cache_path: Path,
+        horse_id: str,
+        horse_name: object,
+    ) -> Path:
+        safe_horse_name = _safe_filename_part(
+            horse_name or "競走馬名不明"
+        )
+        target = cache_path.with_name(
+            f"{horse_id}_{safe_horse_name}.html"
+        )
+
+        if not cache_path.exists():
+            candidates = sorted(
+                cache_path.parent.glob(f"{horse_id}*.html"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            if not candidates:
+                return cache_path
+            cache_path = candidates[0]
+
+        if cache_path.resolve() == target.resolve():
+            return target
+        if target.exists():
+            target.unlink()
+
+        cache_path.replace(target)
+        self.logger.info(
+            f"競走馬HTMLファイル名変更: "
+            f"{cache_path.name} -> {target.name}"
+        )
+        return target
+
+    @staticmethod
+    def _parse_pedigree_html(
+        html: str,
+    ) -> dict[str, str | None]:
+        """Parse sire, dam and damsire from netkeiba's pedigree table."""
+        empty = {
+            "sire_id": None,
+            "sire_name": None,
+            "dam_id": None,
+            "dam_name": None,
+            "damsire_id": None,
+            "damsire_name": None,
+        }
+        soup = BeautifulSoup(html, "lxml")
+        table = soup.select_one(
+            "table.blood_table, table.pedigree_table"
+        )
+        if table is None:
+            return empty
+
+        grid: dict[tuple[int, int], object] = {}
+        rows = table.find_all("tr")
+        for row_index, row in enumerate(rows):
+            column_index = 0
+            cells = row.find_all(["td", "th"], recursive=False)
+            for cell in cells:
+                while (row_index, column_index) in grid:
+                    column_index += 1
+                try:
+                    rowspan = max(int(cell.get("rowspan", 1)), 1)
+                except (TypeError, ValueError):
+                    rowspan = 1
+                try:
+                    colspan = max(int(cell.get("colspan", 1)), 1)
+                except (TypeError, ValueError):
+                    colspan = 1
+                for row_offset in range(rowspan):
+                    for column_offset in range(colspan):
+                        grid[
+                            (
+                                row_index + row_offset,
+                                column_index + column_offset,
+                            )
+                        ] = cell
+                column_index += colspan
+
+        def pedigree_value(
+            row_index: int,
+            column_index: int,
+        ) -> tuple[str | None, str | None]:
+            cell = grid.get((row_index, column_index))
+            if cell is None:
+                return None, None
+            anchor = cell.find(
+                "a",
+                href=re.compile(r"/horse/(?:ped/)?[0-9a-zA-Z]+"),
+            )
+            if anchor is None:
+                return None, None
+            href = str(anchor.get("href", ""))
+            match = re.search(
+                r"/horse/(?:ped/)?([0-9a-zA-Z]+)",
+                href,
+            )
+            name = anchor.get_text(" ", strip=True) or None
+            return (match.group(1) if match else None), name
+
+        sire_cell = grid.get((0, 0))
+        try:
+            dam_row = max(
+                int(sire_cell.get("rowspan", 1)),
+                1,
+            )
+        except (AttributeError, TypeError, ValueError):
+            dam_row = max(len(rows) // 2, 1)
+
+        sire_id, sire_name = pedigree_value(0, 0)
+        dam_id, dam_name = pedigree_value(dam_row, 0)
+        damsire_id, damsire_name = pedigree_value(dam_row, 1)
+        return {
+            "sire_id": sire_id,
+            "sire_name": sire_name,
+            "dam_id": dam_id,
+            "dam_name": dam_name,
+            "damsire_id": damsire_id,
+            "damsire_name": damsire_name,
+        }
+
+    def _cached_pedigree_path(
+        self,
+        horse_id: str,
+        dataset_type: str,
+        *,
+        include_other: bool = True,
+    ) -> Path | None:
+        roots = [self._html_root(dataset_type)]
+        if include_other:
+            other_type = (
+                "upcoming"
+                if dataset_type == "historical"
+                else "historical"
+            )
+            roots.append(self._html_root(other_type))
+        for root in roots:
+            candidates = sorted(
+                (root / "horse").glob(f"{horse_id}*.html"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                return candidates[0]
+        return None
+
+    def _horse_pedigree(
+        self,
+        horse_id: str,
+        storage_key: str,
+        *,
+        dataset_type: str,
+        horse_name: str | None = None,
+        download: bool,
+        force: bool = False,
+    ) -> dict[str, str | None]:
+        cache_key = (dataset_type, horse_id)
+        if cache_key in self.pedigree_cache:
+            return self.pedigree_cache[cache_key]
+
+        if download:
+            url = self.HORSE_PEDIGREE_URL.format(
+                horse_id=horse_id
+            )
+            cache_path = self._cache_path(
+                dataset_type,
+                storage_key,
+                "horse",
+                horse_id,
+            )
+            other_cache = (
+                self._cached_pedigree_path(
+                    horse_id,
+                    dataset_type,
+                    include_other=True,
+                )
+                if not force
+                else None
+            )
+            if (
+                other_cache is not None
+                and other_cache.parent
+                != cache_path.parent
+            ):
+                cache_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                shutil.copy2(other_cache, cache_path)
+                html = cache_path.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                self.logger.info(
+                    "別用途の保存済み競走馬HTMLを再利用: "
+                    f"{other_cache} -> {cache_path}"
+                )
+            else:
+                html = self._download(
+                    url,
+                    cache_path,
+                    force=force,
+                )
+            self._rename_horse_html(
+                cache_path,
+                horse_id,
+                horse_name,
+            )
+        else:
+            path = self._cached_pedigree_path(
+                horse_id,
+                dataset_type,
+            )
+            if path is None:
+                pedigree = self._parse_pedigree_html("")
+                self.pedigree_cache[cache_key] = pedigree
+                return pedigree
+            html = path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+
+        pedigree = self._parse_pedigree_html(html)
+        self.pedigree_cache[cache_key] = pedigree
+        return pedigree
+
+    def _add_pedigrees(
+        self,
+        frame: pd.DataFrame,
+        storage_key: str,
+        *,
+        dataset_type: str,
+        download: bool,
+        force: bool = False,
+    ) -> pd.DataFrame:
+        result = frame.copy()
+        pedigree_columns = [
+            "sire_id",
+            "sire_name",
+            "dam_id",
+            "dam_name",
+            "damsire_id",
+            "damsire_name",
+        ]
+        if result.empty:
+            for column in pedigree_columns:
+                result[column] = pd.Series(dtype="string")
+            return result
+
+        pedigrees: dict[str, dict[str, str | None]] = {}
+        horse_names = (
+            result.dropna(subset=["horse_id"])
+            .assign(horse_id=lambda frame: frame["horse_id"].astype(str))
+            .drop_duplicates("horse_id")
+            .set_index("horse_id")["horse_name"]
+            .to_dict()
+            if {"horse_id", "horse_name"} <= set(result.columns)
+            else {}
+        )
+        horse_ids = (
+            result["horse_id"].dropna().astype(str).unique()
+            if "horse_id" in result.columns
+            else []
+        )
+        for horse_id in horse_ids:
+            try:
+                pedigrees[horse_id] = self._horse_pedigree(
+                    horse_id,
+                    storage_key,
+                    dataset_type=dataset_type,
+                    horse_name=(
+                        str(horse_names[horse_id])
+                        if horse_id in horse_names
+                        and pd.notna(horse_names[horse_id])
+                        else None
+                    ),
+                    download=download,
+                    force=force,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error(
+                    f"{horse_id}: 血統HTML取得・解析失敗: {exc}"
+                )
+
+        for column in pedigree_columns:
+            result[column] = result["horse_id"].map(
+                lambda value: (
+                    pedigrees.get(str(value), {}).get(column)
+                    if pd.notna(value)
+                    else None
+                )
+            )
+        return result
+
+    @staticmethod
+    def _extract_horse_links(
+        soup: BeautifulSoup,
+    ) -> list[tuple[str, str]]:
+        horses: list[tuple[str, str]] = []
+        rows = soup.select(
+            "tr.HorseList, table.RaceTable01 tr, "
+            "table.race_table_01 tr"
+        )
+        for row in rows:
+            if not row.find_all("td"):
+                continue
+            anchor = row.find(
+                "a",
+                href=re.compile(r"/horse/[0-9a-zA-Z]+"),
+            )
+            if anchor is None:
+                continue
+            match = re.search(
+                r"/horse/([0-9a-zA-Z]+)",
+                str(anchor.get("href", "")),
+            )
+            horse_name = anchor.get_text(" ", strip=True)
+            if match and horse_name:
+                horses.append((match.group(1), horse_name))
+        return horses
+
     def _extract_link_ids(self, soup: BeautifulSoup) -> tuple[list[str | None], list[str | None], list[str | None]]:
         rows = soup.select("tr.HorseList, table.RaceTable01 tr, table.race_table_01 tr")
         horse_ids: list[str | None] = []
@@ -996,7 +1502,7 @@ class NetkeibaScraper:
             if not row.find_all("td"):
                 continue
             html = str(row)
-            horse = re.search(r"/horse/(\d+)", html)
+            horse = re.search(r"/horse/([0-9a-zA-Z]+)", html)
             jockey = re.search(r"/jockey/(?:result/recent/)?(\d+)", html)
             trainer = re.search(r"/trainer/(?:result/recent/)?(\d+)", html)
             horse_ids.append(horse.group(1) if horse else None)

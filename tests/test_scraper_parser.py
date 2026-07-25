@@ -17,6 +17,35 @@ RESULT_HTML = """
 </body></html>
 """
 
+PEDIGREE_HTML = """
+<html><body>
+<table class="blood_table">
+<tr>
+  <td rowspan="4"><a href="/horse/ped/sire001/">父馬</a></td>
+  <td rowspan="2"><a href="/horse/ped/ss001/">父父</a></td>
+  <td><a href="/horse/ped/sss001/">父父父</a></td>
+</tr>
+<tr><td><a href="/horse/ped/ssd001/">父父母</a></td></tr>
+<tr>
+  <td rowspan="2"><a href="/horse/ped/sd001/">父母</a></td>
+  <td><a href="/horse/ped/sds001/">父母父</a></td>
+</tr>
+<tr><td><a href="/horse/ped/sdd001/">父母母</a></td></tr>
+<tr>
+  <td rowspan="4"><a href="/horse/ped/dam001/">母馬</a></td>
+  <td rowspan="2"><a href="/horse/ped/damsire001/">母父馬</a></td>
+  <td><a href="/horse/ped/dss001/">母父父</a></td>
+</tr>
+<tr><td><a href="/horse/ped/dsd001/">母父母</a></td></tr>
+<tr>
+  <td rowspan="2"><a href="/horse/ped/dd001/">母母</a></td>
+  <td><a href="/horse/ped/dds001/">母母父</a></td>
+</tr>
+<tr><td><a href="/horse/ped/ddd001/">母母母</a></td></tr>
+</table>
+</body></html>
+"""
+
 
 def test_result_parser(tmp_path):
     logger = AppLogger(tmp_path)
@@ -30,3 +59,35 @@ def test_result_parser(tmp_path):
     assert row["surface"] == "芝"
     assert row["distance"] == 2000
     assert row["time_seconds"] == 119.8
+
+
+def test_pedigree_parser():
+    parsed = NetkeibaScraper._parse_pedigree_html(
+        PEDIGREE_HTML
+    )
+    assert parsed == {
+        "sire_id": "sire001",
+        "sire_name": "父馬",
+        "dam_id": "dam001",
+        "dam_name": "母馬",
+        "damsire_id": "damsire001",
+        "damsire_name": "母父馬",
+    }
+
+
+def test_extract_current_group():
+    html = """
+    <ul>
+      <li date="20260725" group="1020260725"></li>
+      <li class="Active"
+          date="20260726"
+          group="1020260725"></li>
+    </ul>
+    """
+    assert (
+        NetkeibaScraper._extract_current_group(
+            html,
+            "20260726",
+        )
+        == "1020260725"
+    )
