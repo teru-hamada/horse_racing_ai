@@ -1979,7 +1979,7 @@ elif page == "メンテナンス":
     maintenance_tab = st.radio(
         "削除対象",
         [
-            "スクレイピングデータ",
+            "収集データ",
             "ダミーデータ",
             "学習結果",
             "取得HTML",
@@ -1988,10 +1988,11 @@ elif page == "メンテナンス":
         horizontal=True,
     )
 
-    if maintenance_tab == "スクレイピングデータ":
+    if maintenance_tab == "収集データ":
         st.info(
-            "スクレイピングデータの削除では、DB上の収集データと"
-            "関連する出力データのみ削除します。取得済みHTMLは削除しません。"
+            "収集データの削除では、スクレイピング結果と、"
+            "保存済みHTMLから作成したDBデータの両方を削除します。"
+            "取得済みHTMLは削除しません。"
         )
     elif maintenance_tab == "ダミーデータ":
         st.info(
@@ -2004,7 +2005,7 @@ elif page == "メンテナンス":
     elif maintenance_tab == "取得HTML":
         st.info(
             "取得HTMLの削除では、保存済みHTMLのみ削除します。"
-            "DB上のスクレイピングデータは削除しません。"
+            "DB上の収集データは削除しません。"
         )
 
     delete_mode = st.radio(
@@ -2014,19 +2015,19 @@ elif page == "メンテナンス":
         key=f"delete_mode_{maintenance_tab}",
     )
 
-    if maintenance_tab in {"スクレイピングデータ", "ダミーデータ"}:
+    if maintenance_tab in {"収集データ", "ダミーデータ"}:
         runs = collection_runs()
 
         if runs.empty:
             st.info("削除できるデータ収集履歴がありません。")
         else:
-            source_name = (
-                "netkeiba"
-                if maintenance_tab == "スクレイピングデータ"
-                else "generator"
+            source_names = (
+                {"netkeiba", "cached_html"}
+                if maintenance_tab == "収集データ"
+                else {"generator"}
             )
             target_runs = runs[
-                runs["source"].astype(str) == source_name
+                runs["source"].astype(str).isin(source_names)
             ].copy()
 
             if target_runs.empty:
@@ -2135,10 +2136,12 @@ elif page == "メンテナンス":
                         hide_index=True,
                     )
 
-                    confirm = st.checkbox(
-                        f"{maintenance_tab}をすべて削除する",
-                        key=f"confirm_collection_bulk_{maintenance_tab}",
-                    )
+                    confirm = True
+                    if maintenance_tab != "収集データ":
+                        confirm = st.checkbox(
+                            f"{maintenance_tab}をすべて削除する",
+                            key=f"confirm_collection_bulk_{maintenance_tab}",
+                        )
                     confirmation_word = st.text_input(
                         "確認のため「全削除」と入力",
                         key=f"typed_collection_bulk_{maintenance_tab}",
