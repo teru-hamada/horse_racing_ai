@@ -4,12 +4,21 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from importlib import import_module
 from typing import Any
 
-from .config import PATHS
-from .logging_utils import AppLogger
-from .scrapers_netkeiba import NetkeibaScraper
-from .storage import save_collection_run, save_race_records
+from .scrapers_database_creation_netkeiba import (
+    NetkeibaDatabaseCreator,
+)
+
+
+AppLogger = import_module(
+    "src.00_common.logging_utils"
+).AppLogger
+PATHS = import_module("src.00_common.config").PATHS
+_storage = import_module("src.00_common.storage")
+save_collection_run = _storage.save_collection_run
+save_race_records = _storage.save_race_records
 
 
 @dataclass
@@ -174,7 +183,7 @@ def _run_job(job_id: str) -> None:
             )
 
     logger = AppLogger(PATHS.logs, callback=log_callback)
-    scraper = NetkeibaScraper(logger=logger)
+    scraper = NetkeibaDatabaseCreator(logger=logger)
     try:
         logger.info(
             f"データベース作成開始: "

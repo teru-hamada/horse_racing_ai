@@ -1,5 +1,4 @@
-from src.demo_data import generate_demo_records
-from src.storage import normalize_race_frame
+from src.public_api import generate_demo_records, normalize_race_frame
 
 
 def test_normalize_race_frame_has_expected_columns():
@@ -9,4 +8,6 @@ def test_normalize_race_frame_has_expected_columns():
     normalized = normalize_race_frame(historical)
     assert "race_id" in normalized.columns
     assert "finish_position" in normalized.columns
+    assert "passing_position_1" in normalized.columns
+    assert "passing_position_4" in normalized.columns
     assert len(normalized) == len(historical)

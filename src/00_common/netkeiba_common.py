@@ -95,6 +95,18 @@ def _finish_position(value: object) -> float | None:
     return float(match.group(1)) if match else None
 
 
+def _passing_positions(value: object) -> tuple[int | None, ...]:
+    """通過順を左から最大4地点に分割する。"""
+    if value is None or pd.isna(value):
+        return (None, None, None, None)
+
+    positions = [
+        int(position)
+        for position in re.findall(r"\d+", str(value))[:4]
+    ]
+    return tuple(positions + [None] * (4 - len(positions)))
+
+
 def _time_to_seconds(value: object) -> float | None:
     if value is None or pd.isna(value):
         return None
@@ -131,7 +143,7 @@ def _safe_filename_part(value: object, max_length: int = 80) -> str:
     return text[:max_length] or "レース名不明"
 
 
-class NetkeibaScraper:
+class NetkeibaCommon:
     """Small, cache-friendly scraper for netkeiba race-list, card and result pages.
 
     The parser intentionally uses multiple fallbacks and saves every HTML page. If the source
@@ -765,7 +777,7 @@ class NetkeibaScraper:
                     progress_callback(min(float(fraction), 1.0))
         return pd.concat(all_records, ignore_index=True) if all_records else pd.DataFrame()
 
-    def collect_html_date_range(
+    def _collect_html_date_range(
         self,
         start_date: date,
         end_date: date,
@@ -876,7 +888,7 @@ class NetkeibaScraper:
             "horse_count": len(collected_horse_ids),
         }
 
-    def parse_cached_date_range(
+    def _parse_cached_date_range(
         self,
         start_date: date,
         end_date: date,
@@ -1805,6 +1817,7 @@ class NetkeibaScraper:
             "odds": ["単勝", "オッズ"],
             "popularity": ["人気"],
             "body_weight": ["馬体重"],
+            "passing_positions": ["通過"],
         }
         columns = {
             key: _first_column(table, candidates)
@@ -1865,6 +1878,11 @@ class NetkeibaScraper:
             body_weight, body_weight_change = (
                 _parse_body_weight(row[columns["body_weight"]]) if columns["body_weight"] else (None, None)
             )
+            passing_positions = (
+                _passing_positions(row[columns["passing_positions"]])
+                if columns["passing_positions"]
+                else (None, None, None, None)
+            )
             record = dict(metadata)
             record.update(
                 {
@@ -1885,6 +1903,10 @@ class NetkeibaScraper:
                     "body_weight_change": body_weight_change,
                     "finish_position": _finish_position(row[columns["finish_position"]]) if columns["finish_position"] else None,
                     "time_seconds": _time_to_seconds(row[columns["time_seconds"]]) if columns["time_seconds"] else None,
+                    "passing_position_1": passing_positions[0],
+                    "passing_position_2": passing_positions[1],
+                    "passing_position_3": passing_positions[2],
+                    "passing_position_4": passing_positions[3],
                     "dataset_type": dataset_type,
                 }
             )

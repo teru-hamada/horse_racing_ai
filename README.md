@@ -59,7 +59,32 @@ streamlit run app.py
 
 ## スクレイピングについて
 
-`src/scrapers_netkeiba.py` に取得・解析処理を分離しています。
+HTML収集とデータベース作成を次のフォルダに分離しています。
+
+- `src/10_scrapers_html_collection/`
+  - `scrapers_html_collection_netkeiba.py`: netkeiba HTML収集の公開窓口
+  - `html_collection_jobs.py`: HTML収集のバックグラウンド実行管理
+- `src/20_scrapers_database_creation/`
+  - `scrapers_database_creation_netkeiba.py`: 保存済みHTMLの解析窓口
+  - `database_creation_jobs.py`: DB作成のバックグラウンド実行管理
+  - `demo_data.py`: 動作確認用デモデータ生成
+- `src/30_ai_modeling/`
+  - `registry.py`: 利用可能な予測タスクの登録
+  - `service.py`: 学習・予想をタスク名で呼び分ける統一窓口
+  - `common/`: 特徴量、時系列分割、前処理、評価、保存形式、学習設定
+  - `estimators/mlp.py`: MLPアルゴリズム
+  - `tasks/top3/`: 3着以内確率の目的変数、学習、評価、予想
+- `src/00_common/`
+  - `config.py`: データ、HTML、DB、モデル、予想結果、ログの保存先定義
+  - `netkeiba_common.py`: URL定義、保存先規則、HTML解析補助などの共通実装
+  - `logging_utils.py`: ファイルと画面表示で共用するログ出力
+  - `storage.py`: DuckDBのテーブル定義、保存、読込、実行履歴、集計
+- `src/public_api.py`: アプリから用途別パッケージを通常のimport文で利用する公開窓口
+
+学習済みモデルは予測タスクごとに
+`models/<task_name>/<model_run_id>/` へ保存します。
+各モデルの `manifest.json` にタスク名、アルゴリズム名、
+モデル・特徴量バージョン、目的変数、学習期間を記録します。
 
 - 開催日ページから12桁のレースIDを検出
 - 過去結果は結果ページ、週末データは出馬表ページから取得

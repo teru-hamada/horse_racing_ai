@@ -5,6 +5,7 @@ import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Callable
 
@@ -20,82 +21,35 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from .config import PATHS
-from .features import CATEGORICAL_FEATURES, MODEL_FEATURES, NUMERIC_FEATURES, build_prediction_frame, build_training_frame
-from .storage import json_dump, save_model_run, save_prediction_run
+PATHS = import_module("src.00_common.config").PATHS
+from ...common.datasets import chronological_split
+from ...common.evaluation import safe_auc
+from ...common.artifacts import save_manifest
+from ...common.features import (
+    CATEGORICAL_FEATURES,
+    MODEL_FEATURES,
+    NUMERIC_FEATURES,
+    build_prediction_frame,
+)
+from ...common.preprocessing import (
+    make_preprocessor,
+    prepare_feature_frame,
+)
+from ...common.types import TrainConfig
+from ...estimators.mlp import MLP
+from .config import (
+    ESTIMATOR_NAME,
+    FEATURE_VERSION,
+    MODEL_VERSION,
+    TARGET_COLUMN,
+    TASK_NAME,
+)
+from .target import build_training_frame
 
-
-class MLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 64, dropout: float = 0.25) -> None:
-        super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, max(16, hidden_dim // 2)),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(max(16, hidden_dim // 2), 1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x).squeeze(1)
-
-
-def _safe_auc(y_true: np.ndarray, probabilities: np.ndarray) -> float:
-    return float(roc_auc_score(y_true, probabilities)) if len(np.unique(y_true)) > 1 else float("nan")
-
-
-def _chronological_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    dates = np.array(sorted(pd.to_datetime(df["race_date"]).dropna().unique()))
-    if len(dates) < 8:
-        raise ValueError("時系列分割には少なくとも8開催日分の履歴データが必要です。")
-    train_end = max(1, int(len(dates) * 0.70))
-    val_end = max(train_end + 1, int(len(dates) * 0.85))
-    train_dates = set(dates[:train_end])
-    val_dates = set(dates[train_end:val_end])
-    test_dates = set(dates[val_end:])
-    date_series = pd.to_datetime(df["race_date"])
-    train = df[date_series.isin(train_dates)].copy()
-    validation = df[date_series.isin(val_dates)].copy()
-    test = df[date_series.isin(test_dates)].copy()
-    if min(len(train), len(validation), len(test)) == 0:
-        raise ValueError("学習・検証・テストのいずれかが0件です。データ期間を増やしてください。")
-    return train, validation, test
-
-
-def _make_preprocessor() -> ColumnTransformer:
-    numeric = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
-    )
-    categorical = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False, min_frequency=2)),
-        ]
-    )
-    return ColumnTransformer(
-        transformers=[
-            ("numeric", numeric, NUMERIC_FEATURES),
-            ("categorical", categorical, CATEGORICAL_FEATURES),
-        ],
-        remainder="drop",
-    )
-
-
-@dataclass
-class TrainConfig:
-    epochs: int = 80
-    batch_size: int = 128
-    learning_rate: float = 0.001
-    hidden_dim: int = 64
-    dropout: float = 0.25
-    patience: int = 12
-    random_seed: int = 42
+_storage = import_module("src.00_common.storage")
+json_dump = _storage.json_dump
+save_model_run = _storage.save_model_run
+save_prediction_run = _storage.save_prediction_run
 
 
 def train_model(
@@ -107,7 +61,7 @@ def train_model(
     torch.manual_seed(config.random_seed)
     np.random.seed(config.random_seed)
     model_run_id = f"model_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
-    model_dir = PATHS.models / model_run_id
+    model_dir = PATHS.models / "top3" / model_run_id
     model_dir.mkdir(parents=True, exist_ok=True)
 
     original_rows = len(historical_records)
@@ -186,13 +140,19 @@ def train_model(
             "実行ログの欠損列・不足列を確認してください。"
         )
 
-    train_df, val_df, test_df = _chronological_split(training)
+    train_df, val_df, test_df = chronological_split(training)
     log(f"時系列分割: 学習={len(train_df)}、検証={len(val_df)}、テスト={len(test_df)}")
 
-    preprocessor = _make_preprocessor()
-    x_train = preprocessor.fit_transform(train_df[MODEL_FEATURES]).astype("float32")
-    x_val = preprocessor.transform(val_df[MODEL_FEATURES]).astype("float32")
-    x_test = preprocessor.transform(test_df[MODEL_FEATURES]).astype("float32")
+    preprocessor = make_preprocessor()
+    x_train = preprocessor.fit_transform(
+        prepare_feature_frame(train_df, MODEL_FEATURES)
+    ).astype("float32")
+    x_val = preprocessor.transform(
+        prepare_feature_frame(val_df, MODEL_FEATURES)
+    ).astype("float32")
+    x_test = preprocessor.transform(
+        prepare_feature_frame(test_df, MODEL_FEATURES)
+    ).astype("float32")
     y_train = train_df["target_top3"].to_numpy(dtype="float32")
     y_val = val_df["target_top3"].to_numpy(dtype="float32")
     y_test = test_df["target_top3"].to_numpy(dtype="float32")
@@ -242,8 +202,8 @@ def train_model(
             val_loss = float(criterion(val_logits, y_val_t).item())
             train_prob = torch.sigmoid(model(x_train_t)).cpu().numpy()
             val_prob = torch.sigmoid(val_logits).cpu().numpy()
-        train_auc = _safe_auc(y_train, train_prob)
-        val_auc = _safe_auc(y_val, val_prob)
+        train_auc = safe_auc(y_train, train_prob)
+        val_auc = safe_auc(y_val, val_prob)
         history.append(
             {
                 "epoch": epoch,
@@ -280,10 +240,14 @@ def train_model(
     test_pred = (test_prob >= 0.5).astype(int)
     metrics = {
         "model_run_id": model_run_id,
+        "task_name": TASK_NAME,
+        "estimator_name": ESTIMATOR_NAME,
+        "model_version": MODEL_VERSION,
+        "feature_version": FEATURE_VERSION,
         "best_epoch": best_epoch,
         "best_validation_loss": best_loss,
         "validation_auc": float(history[best_epoch - 1]["validation_auc"]),
-        "test_auc": _safe_auc(y_test, test_prob),
+        "test_auc": safe_auc(y_test, test_prob),
         "test_log_loss": float(log_loss(y_test, np.clip(test_prob, 1e-6, 1 - 1e-6))),
         "test_accuracy": float(accuracy_score(y_test, test_pred)),
         "test_precision": float(precision_score(y_test, test_pred, zero_division=0)),
@@ -323,13 +287,32 @@ def train_model(
         }
     ).to_parquet(model_dir / "test_predictions.parquet", index=False)
     json_dump(model_dir / "metrics.json", metrics)
+    save_manifest(
+        model_dir,
+        {
+            "model_run_id": model_run_id,
+            "task_name": TASK_NAME,
+            "estimator_name": ESTIMATOR_NAME,
+            "model_version": MODEL_VERSION,
+            "feature_version": FEATURE_VERSION,
+            "target_column": TARGET_COLUMN,
+            "features": MODEL_FEATURES,
+            "created_at": datetime.now(),
+            "data_start_date": training["race_date"].min(),
+            "data_end_date": training["race_date"].max(),
+        },
+    )
 
     save_model_run(
         {
             "model_run_id": model_run_id,
             "created_at": datetime.now(),
             "status": "completed",
-            "target": "top3",
+            "target": TASK_NAME,
+            "task_name": TASK_NAME,
+            "estimator_name": ESTIMATOR_NAME,
+            "model_version": MODEL_VERSION,
+            "feature_version": FEATURE_VERSION,
             "train_rows": len(train_df),
             "validation_rows": len(val_df),
             "test_rows": len(test_df),
@@ -441,7 +424,7 @@ def predict_historical_race(
 
     model_features = _features_for_saved_model(metrics)
     matrix = preprocessor.transform(
-        target[model_features]
+        prepare_feature_frame(target, model_features)
     ).astype("float32")
     with torch.no_grad():
         probability = torch.sigmoid(
@@ -605,7 +588,7 @@ def predict_race(
         raise ValueError("指定したレースの出走データがありません。")
     model_features = _features_for_saved_model(metrics)
     matrix = preprocessor.transform(
-        target[model_features]
+        prepare_feature_frame(target, model_features)
     ).astype("float32")
     with torch.no_grad():
         probability = torch.sigmoid(model(torch.from_numpy(matrix))).numpy()

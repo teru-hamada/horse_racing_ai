@@ -186,7 +186,7 @@ def add_historical_features(
     )
 
 
-def build_training_frame(
+def build_historical_training_base(
     records: pd.DataFrame,
     log: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
@@ -218,10 +218,6 @@ def build_training_frame(
                 "finish_positionが全行欠損、"
                 "または数値変換できない値です。"
             )
-
-    featured["target_top3"] = (
-        featured["finish_position"] <= 3
-    ).astype(int)
 
     return featured.sort_values(
         ["race_date", "race_id", "horse_number"]

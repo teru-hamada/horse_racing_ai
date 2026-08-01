@@ -4,14 +4,19 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from importlib import import_module
 from typing import Any
 
-from .config import PATHS
-from .logging_utils import AppLogger
-from .scrapers_netkeiba import (
+from .scrapers_html_collection_netkeiba import (
     PAGE_REQUEST_INTERVAL_SECONDS,
-    NetkeibaScraper,
+    NetkeibaHtmlCollector,
 )
+
+
+AppLogger = import_module(
+    "src.00_common.logging_utils"
+).AppLogger
+PATHS = import_module("src.00_common.config").PATHS
 
 
 @dataclass
@@ -137,7 +142,7 @@ def _run_job(job_id: str) -> None:
             job.progress = min(max(float(value), 0.0), 1.0)
 
     logger = AppLogger(PATHS.logs, callback=log_callback)
-    scraper = NetkeibaScraper(
+    scraper = NetkeibaHtmlCollector(
         logger=logger,
         interval_seconds=PAGE_REQUEST_INTERVAL_SECONDS,
     )

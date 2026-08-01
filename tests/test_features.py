@@ -1,5 +1,5 @@
-from src.demo_data import generate_demo_records
-from src.features import (
+from src.public_api import (
+    generate_demo_records,
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
     build_prediction_frame,

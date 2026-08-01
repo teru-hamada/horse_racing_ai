@@ -18,7 +18,7 @@ class AppPaths:
 
 
 def get_paths(root: Path | None = None) -> AppPaths:
-    root_path = (root or Path(__file__).resolve().parents[1]).resolve()
+    root_path = (root or Path(__file__).resolve().parents[2]).resolve()
     data = root_path / "data"
     raw_html = data / "raw_html"
     paths = AppPaths(

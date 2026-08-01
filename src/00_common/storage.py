@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pandas as pd
 
-from .config import PATHS
+PATHS = import_module("src.00_common.config").PATHS
 
 
 RACE_RECORD_COLUMNS = [
@@ -19,7 +20,17 @@ RACE_RECORD_COLUMNS = [
     "sire_id", "sire_name", "dam_id", "dam_name",
     "damsire_id", "damsire_name",
     "odds", "popularity", "body_weight", "body_weight_change", "finish_position",
-    "time_seconds", "dataset_type", "collection_run_id", "collected_at",
+    "time_seconds", "passing_position_1", "passing_position_2",
+    "passing_position_3", "passing_position_4",
+    "dataset_type", "collection_run_id", "collected_at",
+]
+
+MODEL_RUN_COLUMNS = [
+    "model_run_id", "created_at", "status", "target",
+    "train_rows", "validation_rows", "test_rows", "best_epoch",
+    "validation_auc", "test_auc", "test_log_loss", "model_path",
+    "metrics_json", "task_name", "estimator_name", "model_version",
+    "feature_version",
 ]
 
 
@@ -72,6 +83,10 @@ CREATE TABLE IF NOT EXISTS race_records (
     body_weight_change DOUBLE,
     finish_position DOUBLE,
     time_seconds DOUBLE,
+    passing_position_1 INTEGER,
+    passing_position_2 INTEGER,
+    passing_position_3 INTEGER,
+    passing_position_4 INTEGER,
     dataset_type VARCHAR,
     collection_run_id VARCHAR,
     collected_at TIMESTAMP
@@ -90,7 +105,11 @@ CREATE TABLE IF NOT EXISTS model_runs (
     test_auc DOUBLE,
     test_log_loss DOUBLE,
     model_path VARCHAR,
-    metrics_json VARCHAR
+    metrics_json VARCHAR,
+    task_name VARCHAR,
+    estimator_name VARCHAR,
+    model_version VARCHAR,
+    feature_version VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS prediction_runs (
@@ -120,6 +139,26 @@ def connect() -> duckdb.DuckDBPyConnection:
             f"ALTER TABLE race_records "
             f"ADD COLUMN IF NOT EXISTS {column} VARCHAR"
         )
+    for column in [
+        "passing_position_1",
+        "passing_position_2",
+        "passing_position_3",
+        "passing_position_4",
+    ]:
+        con.execute(
+            f"ALTER TABLE race_records "
+            f"ADD COLUMN IF NOT EXISTS {column} INTEGER"
+        )
+    for column in [
+        "task_name",
+        "estimator_name",
+        "model_version",
+        "feature_version",
+    ]:
+        con.execute(
+            f"ALTER TABLE model_runs "
+            f"ADD COLUMN IF NOT EXISTS {column} VARCHAR"
+        )
     return con
 
 
@@ -139,6 +178,8 @@ def normalize_race_frame(df: pd.DataFrame) -> pd.DataFrame:
         "race_number", "distance", "horse_number", "frame_number", "age",
         "carried_weight", "odds", "popularity", "body_weight",
         "body_weight_change", "finish_position", "time_seconds",
+        "passing_position_1", "passing_position_2",
+        "passing_position_3", "passing_position_4",
     ]
     for col in numeric_cols:
         result[col] = pd.to_numeric(result[col], errors="coerce")
@@ -244,11 +285,19 @@ def collection_runs() -> pd.DataFrame:
 
 
 def save_model_run(metadata: dict[str, Any]) -> None:
-    row = pd.DataFrame([metadata])
+    normalized = {
+        column: metadata.get(column)
+        for column in MODEL_RUN_COLUMNS
+    }
+    row = pd.DataFrame([normalized])
     with connect() as con:
         con.register("model_row", row)
         con.execute("DELETE FROM model_runs USING model_row WHERE model_runs.model_run_id = model_row.model_run_id")
-        con.execute("INSERT INTO model_runs SELECT * FROM model_row")
+        columns = ", ".join(MODEL_RUN_COLUMNS)
+        con.execute(
+            f"INSERT INTO model_runs ({columns}) "
+            f"SELECT {columns} FROM model_row"
+        )
         con.unregister("model_row")
 
 

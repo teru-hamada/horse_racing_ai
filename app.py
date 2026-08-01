@@ -12,24 +12,27 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.config import PATHS
-from src.database_creation_jobs import (
-    cancel_database_job,
-    list_database_jobs,
-    start_database_job,
-)
-from src.demo_data import generate_demo_records
-from src.html_collection_jobs import cancel_job, list_jobs, start_job
-from src.logging_utils import AppLogger
-from src.modeling import TrainConfig, predict_historical_race, predict_race, train_model
-from src.scrapers_netkeiba import NetkeibaScraper
-from src.storage import (
+from src.public_api import (
+    AppLogger,
     collection_runs,
     dashboard_summary,
     load_records,
     model_runs,
+    PATHS,
+    predict_historical_race,
+    predict_race,
     race_record_summary,
     race_record_years,
+    cancel_database_job,
+    cancel_html_collection_job as cancel_job,
+    generate_demo_records,
+    list_database_jobs,
+    list_html_collection_jobs as list_jobs,
+    NetkeibaHtmlCollector,
+    start_database_job,
+    start_html_collection_job as start_job,
+    TrainConfig,
+    train_model,
     save_collection_run,
     save_race_records,
 )
@@ -464,7 +467,7 @@ def _cached_race_html_count(
                 errors="replace",
             )
             race_ids.update(
-                NetkeibaScraper._extract_race_ids(
+                NetkeibaHtmlCollector._extract_race_ids(
                     html,
                     date_text,
                 )
@@ -726,7 +729,7 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
         system_date = system_now.date()
         prediction_start_date = (
             system_date
-            if system_now.hour < 5
+            if system_now.hour < 8
             else system_date + timedelta(days=1)
         )
         prediction_date_limit = system_date + timedelta(
@@ -763,7 +766,7 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
             f"{target_date}の予想用出馬表HTMLを取得します。"
             f"選択可能期間: {prediction_start_date} ～ "
             f"{prediction_date_limit}。"
-            "システム日付当日は午前5:00より前まで"
+            "システム日付当日は午前8:00より前まで"
             "選択できます。"
         )
 

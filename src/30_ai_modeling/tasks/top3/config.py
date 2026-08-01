@@ -1,0 +1,6 @@
+TASK_NAME = "top3"
+TASK_LABEL = "3着以内確率"
+TARGET_COLUMN = "target_top3"
+ESTIMATOR_NAME = "mlp"
+MODEL_VERSION = "1"
+FEATURE_VERSION = "1"
