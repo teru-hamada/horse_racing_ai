@@ -729,7 +729,7 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
         system_date = system_now.date()
         prediction_start_date = (
             system_date
-            if system_now.hour < 8
+            if system_now.hour < 9
             else system_date + timedelta(days=1)
         )
         prediction_date_limit = system_date + timedelta(
@@ -766,7 +766,7 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
             f"{target_date}の予想用出馬表HTMLを取得します。"
             f"選択可能期間: {prediction_start_date} ～ "
             f"{prediction_date_limit}。"
-            "システム日付当日は午前8:00より前まで"
+            "システム日付当日は午前9:00より前まで"
             "選択できます。"
         )
 
@@ -1180,34 +1180,13 @@ elif page == "データベース作成":
                 st.subheader(
                     f"出走馬情報（{len(selected_rows):,}頭）"
                 )
-                horse_columns = [
-                    "horse_number",
-                    "frame_number",
-                    "horse_id",
-                    "horse_name",
-                    "sex",
-                    "age",
-                    "carried_weight",
-                    "jockey_name",
-                    "trainer_name",
-                    "sire_name",
-                    "dam_name",
-                    "damsire_name",
-                    "odds",
-                    "popularity",
-                    "body_weight",
-                    "body_weight_change",
-                    "finish_position",
-                    "time_seconds",
+                registered_columns = [
+                    column
+                    for column in selected_rows.columns
+                    if column != "race_year"
                 ]
                 st.dataframe(
-                    selected_rows[
-                        [
-                            column
-                            for column in horse_columns
-                            if column in selected_rows.columns
-                        ]
-                    ],
+                    selected_rows[registered_columns],
                     use_container_width=True,
                     hide_index=True,
                 )

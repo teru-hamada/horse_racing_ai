@@ -8,6 +8,7 @@ def test_normalize_race_frame_has_expected_columns():
     normalized = normalize_race_frame(historical)
     assert "race_id" in normalized.columns
     assert "finish_position" in normalized.columns
+    assert "last_3f_time" in normalized.columns
     assert "passing_position_1" in normalized.columns
     assert "passing_position_4" in normalized.columns
     assert len(normalized) == len(historical)

@@ -20,7 +20,8 @@ RACE_RECORD_COLUMNS = [
     "sire_id", "sire_name", "dam_id", "dam_name",
     "damsire_id", "damsire_name",
     "odds", "popularity", "body_weight", "body_weight_change", "finish_position",
-    "time_seconds", "passing_position_1", "passing_position_2",
+    "time_seconds", "last_3f_time",
+    "passing_position_1", "passing_position_2",
     "passing_position_3", "passing_position_4",
     "dataset_type", "collection_run_id", "collected_at",
 ]
@@ -83,6 +84,7 @@ CREATE TABLE IF NOT EXISTS race_records (
     body_weight_change DOUBLE,
     finish_position DOUBLE,
     time_seconds DOUBLE,
+    last_3f_time DOUBLE,
     passing_position_1 INTEGER,
     passing_position_2 INTEGER,
     passing_position_3 INTEGER,
@@ -140,6 +142,13 @@ def connect() -> duckdb.DuckDBPyConnection:
             f"ADD COLUMN IF NOT EXISTS {column} VARCHAR"
         )
     for column in [
+        "last_3f_time",
+    ]:
+        con.execute(
+            f"ALTER TABLE race_records "
+            f"ADD COLUMN IF NOT EXISTS {column} DOUBLE"
+        )
+    for column in [
         "passing_position_1",
         "passing_position_2",
         "passing_position_3",
@@ -178,6 +187,7 @@ def normalize_race_frame(df: pd.DataFrame) -> pd.DataFrame:
         "race_number", "distance", "horse_number", "frame_number", "age",
         "carried_weight", "odds", "popularity", "body_weight",
         "body_weight_change", "finish_position", "time_seconds",
+        "last_3f_time",
         "passing_position_1", "passing_position_2",
         "passing_position_3", "passing_position_4",
     ]

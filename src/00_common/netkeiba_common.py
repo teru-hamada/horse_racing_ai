@@ -1069,6 +1069,15 @@ class NetkeibaCommon:
         tables: list[pd.DataFrame] = []
         for table_node in table_nodes:
             try:
+                # 旧DB結果表では通過・上り等が独自要素内にある。
+                # 要素を展開し、表示されない有料指数列を除去して
+                # ヘッダーとデータの列位置を一致させる。
+                for wrapper in table_node.find_all("diary_snap_cut"):
+                    wrapper.unwrap()
+                for hidden_index in table_node.select(
+                    '[class*="TimeIndex"]'
+                ):
+                    hidden_index.decompose()
                 tables.extend(pd.read_html(StringIO(str(table_node))))
             except (IndexError, TypeError, ValueError) as exc:
                 self.logger.warning(
@@ -1743,8 +1752,8 @@ class NetkeibaCommon:
 
         旧DBの標準列:
         0 着順 / 1 枠番 / 2 馬番 / 3 馬名 / 4 性齢 / 5 斤量 /
-        6 騎手 / 7 タイム / 8 着差 / 10 通過 / 11 上り /
-        12 単勝 / 13 人気 / 14 馬体重 / 18 調教師 / 19 馬主
+        6 騎手 / 7 タイム / 8 着差 / 9 通過 / 10 上り /
+        11 単勝 / 12 人気 / 13 馬体重 / 17 調教師 / 18 馬主
         """
         columns = list(map(str, table.columns))
 
@@ -1760,10 +1769,12 @@ class NetkeibaCommon:
             "carried_weight": at(5),
             "jockey_name": at(6),
             "time_seconds": at(7),
-            "odds": at(9),
-            "popularity": at(10),
-            "body_weight": at(11),
-            "trainer_name": at(12),
+            "passing_positions": at(9),
+            "last_3f_time": at(10),
+            "odds": at(11),
+            "popularity": at(12),
+            "body_weight": at(13),
+            "trainer_name": at(17),
         }
 
     @staticmethod
@@ -1818,6 +1829,7 @@ class NetkeibaCommon:
             "popularity": ["人気"],
             "body_weight": ["馬体重"],
             "passing_positions": ["通過"],
+            "last_3f_time": ["上り", "上がり"],
         }
         columns = {
             key: _first_column(table, candidates)
@@ -1903,6 +1915,7 @@ class NetkeibaCommon:
                     "body_weight_change": body_weight_change,
                     "finish_position": _finish_position(row[columns["finish_position"]]) if columns["finish_position"] else None,
                     "time_seconds": _time_to_seconds(row[columns["time_seconds"]]) if columns["time_seconds"] else None,
+                    "last_3f_time": _to_float(row[columns["last_3f_time"]]) if columns["last_3f_time"] else None,
                     "passing_position_1": passing_positions[0],
                     "passing_position_2": passing_positions[1],
                     "passing_position_3": passing_positions[2],
