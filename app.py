@@ -1143,7 +1143,10 @@ elif page == "データベース作成":
                         year_records["dataset_type"].astype(str)
                         == str(selected_race["dataset_type"])
                     )
-                ].sort_values("horse_number")
+                ].sort_values(
+                    ["finish_position", "horse_number"],
+                    na_position="last",
+                )
 
                 st.subheader("レース情報")
                 race_columns = [
