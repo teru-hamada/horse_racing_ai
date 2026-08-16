@@ -631,7 +631,7 @@ def _render_active_database_creation_status(
 with st.sidebar:
     page = st.radio(
         "メニュー",
-        ["ダッシュボード", "HTML収集（学習用）", "HTML収集（予想用）", "データベース作成", "モデル学習", "学習評価", "週末予想", "ログ・保存結果", "メンテナンス"],
+        ["ダッシュボード", "HTML収集（学習用）", "HTML収集（予想用）", "データベース作成", "モデル学習", "週末予想", "ログ・保存結果", "メンテナンス"],
     )
     st.divider()
     st.caption(f"DB: {PATHS.database}")
@@ -1296,17 +1296,6 @@ elif page == "モデル学習":
             "まずは10～15が目安です。"
         ),
     )
-    with st.expander("学習パラメータの説明と設定のポイント"):
-        st.markdown(
-            """
-- **最大エポック数**：学習データ全体を繰り返す上限です。学習・検証Lossがまだ改善している場合は増やし、早い段階で停止する場合は増やす必要はありません。
-- **バッチサイズ**：一度に処理する頭数です。小さくすると学習が細かくなり、大きくすると高速化しやすい反面、メモリ使用量が増えます。
-- **学習率**：重みを更新する幅です。Lossが大きく上下する場合は下げ、ほとんど改善しない場合は少し上げることを検討します。
-- **隠れ層サイズ**：モデルの表現力です。複雑な傾向を学ばせる場合は増やせますが、検証性能が悪化する場合は小さくします。
-- **Dropout**：過学習を抑える強さです。学習AUCだけが高くなる場合は増やし、学習・検証の両方が低い場合は減らします。
-- **Early Stopping待機**：検証Lossの改善を待つ回数です。結果が揺れやすい場合は増やし、過学習を早く止めたい場合は減らします。
-            """
-        )
     st.caption("開催日順に70%／15%／15%へ分割し、未来データが学習側へ混ざらないようにします。")
     if st.button("モデル学習を開始", type="primary", disabled=historical.empty):
         logger = new_logger()
@@ -1332,7 +1321,8 @@ elif page == "モデル学習":
             logger.exception(f"学習失敗: {exc}")
             st.exception(exc)
 
-elif page == "学習評価":
+if page == "モデル学習":
+    st.divider()
     st.header("学習結果・過学習チェック")
     runs = model_runs()
     if runs.empty:
@@ -1575,7 +1565,7 @@ elif page == "学習評価":
             hide_index=True,
         )
         if st.button(
-            "調整案をモデル学習画面に反映",
+            "調整案を上の学習設定に反映",
             type="primary",
             use_container_width=True,
         ):
@@ -1602,10 +1592,7 @@ elif page == "学習評価":
                     recommended_parameters["Early Stopping待機"]
                 ),
             }
-            st.success(
-                "調整案を保存しました。左メニューから"
-                "「モデル学習」を開くと、入力欄へ反映されます。"
-            )
+            st.rerun()
         with st.expander("全評価指標"):
             st.json(metrics)
 
