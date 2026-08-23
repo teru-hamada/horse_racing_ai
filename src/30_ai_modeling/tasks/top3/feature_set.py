@@ -26,6 +26,7 @@ def build_top3_prediction_features(
     if targets["race_date"].isna().any():
         raise ValueError("Prediction targets contain invalid race_date values")
     keys = targets[["race_id", "horse_id", "race_date"]]
+    target_horses = set(targets["horse_id"].dropna().tolist())
 
     baseline = RecentFormGenerator().transform(
         keys,
@@ -35,6 +36,7 @@ def build_top3_prediction_features(
         }),
     )
     speed_history = load_performance_features("speed_index", "1.0.0")
+    speed_history = speed_history[speed_history["horse_id"].isin(target_horses)]
     recent_speed = RecentSpeedGenerator().transform(
         keys,
         speed_history,
@@ -42,8 +44,11 @@ def build_top3_prediction_features(
             "recent_speed": {"half_life_days": 180.0, "max_lookback_days": 1095}
         }),
     )
+    relevant_entries = historical_records[
+        historical_records["horse_id"].isin(target_horses)
+    ]
     entry_history = pd.concat(
-        [historical_records, target_records], ignore_index=True, sort=False
+        [relevant_entries, target_records], ignore_index=True, sort=False
     )
     race_entry = RaceEntryGenerator().transform(
         keys,

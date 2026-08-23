@@ -156,6 +156,11 @@ class RecentFormGenerator(FeatureGenerator):
         _require_columns(targets, REQUIRED_TARGET_COLUMNS, "Targets")
         half_life_days, max_lookback_days = _settings(context.parameters)
         prepared = prepare_historical_performances(history)
+        # Prediction targets contain only one race. Race-relative values must be
+        # calculated with the full history first, but histories for horses that
+        # are not in the target race do not need to be indexed afterward.
+        target_horses = set(targets["horse_id"].dropna().tolist())
+        prepared = prepared[prepared["horse_id"].isin(target_horses)]
         histories_by_horse = {}
         grouped = prepared.groupby("horse_id", sort=False)
         group_count = max(grouped.ngroups, 1)
