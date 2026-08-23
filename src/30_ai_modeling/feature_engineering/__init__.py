@@ -13,6 +13,7 @@ from .common import (
 from .pipeline import FeaturePipeline
 from .registry import FeatureRegistry, FeatureSetDefinition
 from .generators import RecentFormGenerator, prepare_historical_performances
+from .freshness import feature_freshness, source_data_state, source_state_token
 from .service import (
     FeatureGenerationCancelled,
     RecentFormRunConfig,
@@ -26,6 +27,7 @@ __all__ = [
     "FeaturePipeline",
     "FeatureRegistry",
     "FeatureSetDefinition",
+    "feature_freshness",
     "RecentFormGenerator",
     "RecentFormRunConfig",
     "calculate_elapsed_days",
@@ -36,4 +38,6 @@ __all__ = [
     "weighted_sum",
     "prepare_historical_performances",
     "generate_recent_form_features",
+    "source_data_state",
+    "source_state_token",
 ]

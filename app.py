@@ -28,6 +28,7 @@ from src.public_api import (
     cancel_html_collection_job as cancel_job,
     generate_demo_records,
     feature_runs,
+    feature_freshness,
     feature_store_summary,
     clear_features,
     list_database_jobs,
@@ -1258,6 +1259,7 @@ elif page == "前準備（特徴量エンジニアリング）":
     feature_set_name = "baseline"
     feature_set_version = "1.1.0"
     summary = feature_store_summary(feature_set_name, feature_set_version)
+    freshness = feature_freshness(feature_set_name, feature_set_version)
     metric1, metric2, metric3 = st.columns(3)
     metric1.metric("特徴量セット", f"{feature_set_name}:{feature_set_version}")
     metric2.metric("保存行数", f"{int(summary['row_count']):,}")
@@ -1278,6 +1280,37 @@ elif page == "前準備（特徴量エンジニアリング）":
         )
         if fingerprint:
             st.caption(f"元データ指紋: {fingerprint}")
+
+    freshness_status = str(freshness["status"])
+    if freshness_status == "fresh":
+        st.success("同期状態: 最新の元データと同期済みです。")
+    elif freshness_status == "stale":
+        st.warning(
+            "同期状態: 元データが更新されています。モデル学習前に特徴量を再生成してください。"
+        )
+        differences = freshness.get("differences", {})
+        if differences:
+            difference_rows = [
+                {
+                    "項目": key,
+                    "特徴量生成時": values.get("generated"),
+                    "現在": values.get("current"),
+                }
+                for key, values in differences.items()
+            ]
+            with st.expander("元データの変更内容"):
+                st.dataframe(
+                    pd.DataFrame(difference_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+    elif freshness_status == "missing":
+        st.warning("同期状態: 特徴量が未生成です。特徴量生成を実行してください。")
+    else:
+        st.warning(
+            "同期状態: 既存の特徴量には元データ世代情報がないため判定できません。"
+            "一度再生成してください。"
+        )
 
     st.subheader("生成設定")
     setting1, setting2 = st.columns(2)

@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS feature_runs (
     feature_set_name VARCHAR NOT NULL,
     feature_set_version VARCHAR NOT NULL,
     source_data_fingerprint VARCHAR,
+    source_state_token VARCHAR,
+    source_state_json VARCHAR,
     generated_at TIMESTAMP NOT NULL,
     start_date DATE,
     end_date DATE,
@@ -51,6 +53,12 @@ def connect(path: Path | None = None) -> duckdb.DuckDBPyConnection:
     database.parent.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(str(database))
     connection.execute(SCHEMA_SQL)
+    connection.execute(
+        "ALTER TABLE feature_runs ADD COLUMN IF NOT EXISTS source_state_token VARCHAR"
+    )
+    connection.execute(
+        "ALTER TABLE feature_runs ADD COLUMN IF NOT EXISTS source_state_json VARCHAR"
+    )
     return connection
 
 
@@ -72,6 +80,10 @@ def save_feature_run(metadata: dict[str, Any], path: Path | None = None) -> None
         "feature_set_name": metadata["feature_set_name"],
         "feature_set_version": metadata["feature_set_version"],
         "source_data_fingerprint": metadata.get("source_data_fingerprint"),
+        "source_state_token": metadata.get("source_state_token"),
+        "source_state_json": json.dumps(
+            metadata.get("source_state", {}), ensure_ascii=False, default=str
+        ),
         "generated_at": metadata.get("generated_at", datetime.now()),
         "start_date": metadata.get("start_date"),
         "end_date": metadata.get("end_date"),
@@ -225,9 +237,11 @@ def feature_store_summary(
         ).fetchone()
         latest = con.execute(
             """
-            SELECT feature_run_id, status, source_data_fingerprint, config_json, message
+            SELECT feature_run_id, status, source_data_fingerprint, config_json, message,
+                   source_state_token, source_state_json
             FROM feature_runs
             WHERE feature_set_name = ? AND feature_set_version = ?
+              AND status = 'completed'
             ORDER BY generated_at DESC
             LIMIT 1
             """,
@@ -244,4 +258,6 @@ def feature_store_summary(
         "source_data_fingerprint": latest[2] if latest else None,
         "config_json": latest[3] if latest else None,
         "message": latest[4] if latest else None,
+        "source_state_token": latest[5] if latest else None,
+        "source_state_json": latest[6] if latest else None,
     }

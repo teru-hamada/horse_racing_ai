@@ -11,6 +11,7 @@ from typing import Callable
 import pandas as pd
 
 from .generators import RecentFormGenerator, prepare_historical_performances
+from .freshness import source_data_state, source_state_token
 from .pipeline import FeaturePipeline
 from .registry import FeatureRegistry, FeatureSetDefinition
 from .storage import replace_features, save_feature_run
@@ -93,6 +94,7 @@ def generate_recent_form_features(
         check_cancelled()
         if log:
             log("Loading and normalizing historical race results")
+        initial_source_state = source_data_state()
         raw_history = _source_storage.load_records("historical")
         history = prepare_historical_performances(raw_history)
         if progress:
@@ -129,6 +131,12 @@ def generate_recent_form_features(
         features["feature_run_id"] = run_id
         features["generated_at"] = generated_at
 
+        final_source_state = source_data_state()
+        if final_source_state != initial_source_state:
+            raise RuntimeError(
+                "Historical source data changed during feature generation; run it again"
+            )
+
         if log:
             log("Replacing the stored feature-set version atomically")
         if progress:
@@ -139,6 +147,8 @@ def generate_recent_form_features(
         completed = {
             **running_metadata,
             "source_data_fingerprint": fingerprint,
+            "source_state_token": source_state_token(final_source_state),
+            "source_state": final_source_state,
             "start_date": targets["race_date"].min().date(),
             "end_date": targets["race_date"].max().date(),
             "row_count": len(features),
