@@ -16,6 +16,10 @@ FEATURE_KEY_COLUMNS = [
     "race_id", "horse_id", "race_date", "feature_set_name",
     "feature_set_version", "history_cutoff", "feature_run_id", "generated_at",
 ]
+PERFORMANCE_KEY_COLUMNS = [
+    "race_id", "horse_id", "race_date", "performance_feature_name",
+    "performance_feature_version", "history_cutoff", "feature_run_id", "generated_at",
+]
 _SAFE_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 SCHEMA_SQL = """
@@ -44,6 +48,27 @@ CREATE TABLE IF NOT EXISTS race_features (
     history_cutoff TIMESTAMP NOT NULL,
     feature_run_id VARCHAR NOT NULL,
     generated_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS performance_features (
+    race_id VARCHAR NOT NULL,
+    horse_id VARCHAR NOT NULL,
+    race_date DATE NOT NULL,
+    performance_feature_name VARCHAR NOT NULL,
+    performance_feature_version VARCHAR NOT NULL,
+    history_cutoff TIMESTAMP NOT NULL,
+    feature_run_id VARCHAR NOT NULL,
+    generated_at TIMESTAMP NOT NULL,
+    speed_index DOUBLE,
+    speed_index_raw DOUBLE,
+    speed_index_was_clipped BOOLEAN,
+    speed_standard_time DOUBLE,
+    speed_time_difference DOUBLE,
+    speed_weight_adjustment DOUBLE,
+    speed_track_adjustment DOUBLE,
+    speed_reference_race_count DOUBLE,
+    speed_reference_effective_count DOUBLE,
+    speed_fallback_level VARCHAR
 );
 """
 
@@ -177,6 +202,147 @@ def replace_features(frame: pd.DataFrame, path: Path | None = None) -> None:
     """Atomically replace every row for one feature-set version."""
 
     _write_features(frame, path, replace_version=True)
+
+
+def replace_performance_features(
+    frame: pd.DataFrame,
+    path: Path | None = None,
+) -> None:
+    """Atomically replace one version of per-performance features."""
+
+    missing = set(PERFORMANCE_KEY_COLUMNS).difference(frame.columns)
+    if missing:
+        raise ValueError(f"Performance frame is missing columns: {sorted(missing)}")
+    if frame.empty:
+        raise ValueError("Performance feature frame is empty")
+    identities = frame[
+        ["performance_feature_name", "performance_feature_version"]
+    ].drop_duplicates()
+    if len(identities) != 1:
+        raise ValueError("Replacement requires one performance feature and version")
+    if frame.duplicated(
+        ["race_id", "horse_id", "performance_feature_name", "performance_feature_version"]
+    ).any():
+        raise ValueError("Performance feature frame contains duplicate keys")
+    feature_columns = [
+        column for column in frame.columns if column not in PERFORMANCE_KEY_COLUMNS
+    ]
+    invalid = [column for column in feature_columns if not _SAFE_COLUMN.fullmatch(column)]
+    if invalid:
+        raise ValueError(f"Unsafe performance feature columns: {invalid}")
+
+    identity = identities.iloc[0]
+    with connect(path) as con:
+        con.execute("BEGIN TRANSACTION")
+        try:
+            existing = {
+                row[1]
+                for row in con.execute(
+                    "PRAGMA table_info('performance_features')"
+                ).fetchall()
+            }
+            for column in feature_columns:
+                if column not in existing:
+                    con.execute(
+                        f'ALTER TABLE performance_features ADD COLUMN "{column}" '
+                        f'{_sql_type(frame[column])}'
+                    )
+            con.execute(
+                "DELETE FROM performance_features "
+                "WHERE performance_feature_name = ? "
+                "AND performance_feature_version = ?",
+                [
+                    identity["performance_feature_name"],
+                    identity["performance_feature_version"],
+                ],
+            )
+            con.register("incoming_performance", frame)
+            columns = list(frame.columns)
+            quoted = ", ".join(f'"{column}"' for column in columns)
+            con.execute(
+                f"INSERT INTO performance_features ({quoted}) "
+                f"SELECT {quoted} FROM incoming_performance"
+            )
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+
+
+def load_performance_features(
+    performance_feature_name: str,
+    performance_feature_version: str,
+    path: Path | None = None,
+) -> pd.DataFrame:
+    with connect(path) as con:
+        return con.execute(
+            "SELECT * FROM performance_features "
+            "WHERE performance_feature_name = ? AND performance_feature_version = ? "
+            "ORDER BY race_date, race_id, horse_id",
+            [performance_feature_name, performance_feature_version],
+        ).df()
+
+
+def clear_performance_features(
+    performance_feature_name: str,
+    performance_feature_version: str,
+    path: Path | None = None,
+) -> int:
+    with connect(path) as con:
+        count = int(con.execute(
+            "SELECT COUNT(*) FROM performance_features "
+            "WHERE performance_feature_name = ? AND performance_feature_version = ?",
+            [performance_feature_name, performance_feature_version],
+        ).fetchone()[0])
+        con.execute(
+            "DELETE FROM performance_features "
+            "WHERE performance_feature_name = ? AND performance_feature_version = ?",
+            [performance_feature_name, performance_feature_version],
+        )
+        return count
+
+
+def performance_feature_summary(
+    performance_feature_name: str,
+    performance_feature_version: str,
+    path: Path | None = None,
+) -> dict[str, object]:
+    with connect(path) as con:
+        row = con.execute(
+            """
+            SELECT COUNT(*), COUNT(DISTINCT race_id), MIN(race_date), MAX(race_date),
+                   MAX(generated_at), COUNT(speed_index),
+                   COUNT(*) FILTER (WHERE speed_index_was_clipped)
+            FROM performance_features
+            WHERE performance_feature_name = ? AND performance_feature_version = ?
+            """,
+            [performance_feature_name, performance_feature_version],
+        ).fetchone()
+        latest = con.execute(
+            """
+            SELECT feature_run_id, source_data_fingerprint, source_state_token,
+                   source_state_json, config_json
+            FROM feature_runs
+            WHERE feature_set_name = ? AND feature_set_version = ?
+              AND status = 'completed'
+            ORDER BY generated_at DESC LIMIT 1
+            """,
+            [performance_feature_name, performance_feature_version],
+        ).fetchone()
+    return {
+        "row_count": int(row[0]),
+        "race_count": int(row[1]),
+        "start_date": row[2],
+        "end_date": row[3],
+        "generated_at": row[4],
+        "available_count": int(row[5]),
+        "clipped_count": int(row[6]),
+        "latest_run_id": latest[0] if latest else None,
+        "source_data_fingerprint": latest[1] if latest else None,
+        "source_state_token": latest[2] if latest else None,
+        "source_state_json": latest[3] if latest else None,
+        "config_json": latest[4] if latest else None,
+    }
 
 
 def load_features(

@@ -34,6 +34,16 @@ _feature_storage = import_module(
 _feature_jobs = import_module(
     "src.30_ai_modeling.feature_engineering.jobs"
 )
+_speed_jobs = import_module(
+    "src.30_ai_modeling.feature_engineering.speed_jobs"
+)
+_recent_speed_jobs = import_module(
+    "src.30_ai_modeling.feature_engineering.recent_speed_jobs"
+)
+_race_entry_jobs = import_module(
+    "src.30_ai_modeling.feature_engineering.race_entry_jobs"
+)
+_training_dataset = import_module("src.30_ai_modeling.training_dataset")
 
 cancel_html_collection_job = _html_jobs.cancel_job
 list_html_collection_jobs = _html_jobs.list_jobs
@@ -90,6 +100,15 @@ FeaturePipeline = _feature_engineering.FeaturePipeline
 FeatureRegistry = _feature_engineering.FeatureRegistry
 FeatureSetDefinition = _feature_engineering.FeatureSetDefinition
 RecentFormGenerator = _feature_engineering.RecentFormGenerator
+RecentSpeedGenerator = _feature_engineering.RecentSpeedGenerator
+RecentSpeedRunConfig = _feature_engineering.RecentSpeedRunConfig
+generate_recent_speed_features = _feature_engineering.generate_recent_speed_features
+RaceEntryGenerator = _feature_engineering.RaceEntryGenerator
+RaceEntryRunConfig = _feature_engineering.RaceEntryRunConfig
+generate_race_entry_features = _feature_engineering.generate_race_entry_features
+SpeedIndexGenerator = _feature_engineering.SpeedIndexGenerator
+SpeedIndexRunConfig = _feature_engineering.SpeedIndexRunConfig
+generate_speed_index_features = _feature_engineering.generate_speed_index_features
 RecentFormRunConfig = _feature_engineering.RecentFormRunConfig
 generate_recent_form_features = (
     _feature_engineering.generate_recent_form_features
@@ -97,6 +116,7 @@ generate_recent_form_features = (
 prepare_historical_performances = (
     _feature_engineering.prepare_historical_performances
 )
+prepare_speed_performances = _feature_engineering.prepare_speed_performances
 calculate_elapsed_days = _feature_engineering.calculate_elapsed_days
 decay_weight = _feature_engineering.decay_weight
 decay_weights = _feature_engineering.decay_weights
@@ -107,13 +127,35 @@ connect_feature_store = _feature_storage.connect
 save_feature_run = _feature_storage.save_feature_run
 save_features = _feature_storage.save_features
 replace_features = _feature_storage.replace_features
+replace_performance_features = _feature_storage.replace_performance_features
+load_performance_features = _feature_storage.load_performance_features
+clear_performance_features = _feature_storage.clear_performance_features
+performance_feature_summary = _feature_storage.performance_feature_summary
 load_features = _feature_storage.load_features
 clear_features = _feature_storage.clear_features
 feature_runs = _feature_storage.feature_runs
 feature_store_summary = _feature_storage.feature_store_summary
 feature_freshness = _feature_engineering.feature_freshness
+performance_feature_freshness = (
+    _feature_engineering.performance_feature_freshness
+)
+recent_speed_freshness = _feature_engineering.recent_speed_freshness
 source_data_state = _feature_engineering.source_data_state
 source_state_token = _feature_engineering.source_state_token
 start_feature_generation_job = _feature_jobs.start_feature_generation_job
 cancel_feature_generation_job = _feature_jobs.cancel_feature_generation_job
 list_feature_generation_jobs = _feature_jobs.list_feature_generation_jobs
+start_speed_index_job = _speed_jobs.start_speed_index_job
+cancel_speed_index_job = _speed_jobs.cancel_speed_index_job
+list_speed_index_jobs = _speed_jobs.list_speed_index_jobs
+start_recent_speed_job = _recent_speed_jobs.start_recent_speed_job
+cancel_recent_speed_job = _recent_speed_jobs.cancel_recent_speed_job
+list_recent_speed_jobs = _recent_speed_jobs.list_recent_speed_jobs
+start_race_entry_job = _race_entry_jobs.start_race_entry_job
+cancel_race_entry_job = _race_entry_jobs.cancel_race_entry_job
+list_race_entry_jobs = _race_entry_jobs.list_race_entry_jobs
+TrainingFeatureSet = _training_dataset.TrainingFeatureSet
+TrainingDatasetConfig = _training_dataset.TrainingDatasetConfig
+FeatureSetBuildReport = _training_dataset.FeatureSetBuildReport
+TrainingDataset = _training_dataset.TrainingDataset
+TrainingDatasetBuilder = _training_dataset.TrainingDatasetBuilder

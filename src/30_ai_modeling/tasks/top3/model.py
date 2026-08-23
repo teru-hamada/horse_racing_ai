@@ -25,18 +25,14 @@ PATHS = import_module("src.00_common.config").PATHS
 from ...common.datasets import chronological_split
 from ...common.evaluation import safe_auc
 from ...common.artifacts import save_manifest
-from ...common.features import (
-    CATEGORICAL_FEATURES,
-    MODEL_FEATURES,
-    NUMERIC_FEATURES,
-    build_prediction_frame,
-)
 from ...common.preprocessing import (
-    make_preprocessor,
-    prepare_feature_frame,
+    infer_feature_types,
+    make_registered_feature_preprocessor,
+    prepare_registered_feature_frame,
 )
 from ...common.types import TrainConfig
 from ...estimators.mlp import MLP
+from ...training_dataset import TrainingDatasetBuilder, TrainingDatasetConfig
 from .config import (
     ESTIMATOR_NAME,
     FEATURE_VERSION,
@@ -44,7 +40,7 @@ from .config import (
     TARGET_COLUMN,
     TASK_NAME,
 )
-from .target import build_training_frame
+from .feature_set import align_saved_top3_features, build_top3_prediction_features
 
 _storage = import_module("src.00_common.storage")
 json_dump = _storage.json_dump
@@ -76,7 +72,32 @@ def train_model(
         f"{original_races:,}レース"
     )
 
-    training = build_training_frame(historical_records, log=log)
+    if "finish_position" not in historical_records:
+        raise ValueError("学習元データにfinish_positionがありません。")
+    training_base = historical_records.copy()
+    training_base["finish_position"] = pd.to_numeric(
+        training_base["finish_position"], errors="coerce"
+    )
+    training_base = training_base[training_base["finish_position"].gt(0)].copy()
+    training_base[TARGET_COLUMN] = training_base["finish_position"].le(3).astype("int8")
+    if "horse_name" not in training_base:
+        training_base["horse_name"] = pd.NA
+
+    dataset = TrainingDatasetBuilder().build(
+        training_base,
+        TrainingDatasetConfig(
+            target_column=TARGET_COLUMN,
+            metadata_columns=("race_id", "horse_id", "race_date", "horse_name"),
+        ),
+    )
+    training = dataset.frame
+    model_features = list(dataset.feature_columns)
+    for report in dataset.reports:
+        log(
+            f"特徴量セット {report.identifier}: {len(report.feature_columns)}列 / "
+            f"結合={report.matched_rows:,}行 / 欠損キー={report.missing_rows:,}行 / "
+            f"鮮度={report.freshness_status}"
+        )
 
     processed_rows = len(training)
     removed_rows = max(original_rows - processed_rows, 0)
@@ -94,8 +115,8 @@ def train_model(
 
     diagnostic_columns = list(
         dict.fromkeys(
-            ["race_id", "race_date", "target_top3"]
-            + MODEL_FEATURES
+            ["race_id", "race_date", TARGET_COLUMN]
+            + model_features
         )
     )
 
@@ -143,19 +164,34 @@ def train_model(
     train_df, val_df, test_df = chronological_split(training)
     log(f"時系列分割: 学習={len(train_df)}、検証={len(val_df)}、テスト={len(test_df)}")
 
-    preprocessor = make_preprocessor()
+    numeric_features, categorical_features = infer_feature_types(
+        train_df, model_features
+    )
+    log(
+        f"学習特徴量: 合計={len(model_features)}列 / "
+        f"数値={len(numeric_features)}列 / カテゴリ={len(categorical_features)}列"
+    )
+    preprocessor = make_registered_feature_preprocessor(
+        numeric_features, categorical_features
+    )
     x_train = preprocessor.fit_transform(
-        prepare_feature_frame(train_df, MODEL_FEATURES)
+        prepare_registered_feature_frame(
+            train_df, numeric_features, categorical_features
+        )
     ).astype("float32")
     x_val = preprocessor.transform(
-        prepare_feature_frame(val_df, MODEL_FEATURES)
+        prepare_registered_feature_frame(
+            val_df, numeric_features, categorical_features
+        )
     ).astype("float32")
     x_test = preprocessor.transform(
-        prepare_feature_frame(test_df, MODEL_FEATURES)
+        prepare_registered_feature_frame(
+            test_df, numeric_features, categorical_features
+        )
     ).astype("float32")
-    y_train = train_df["target_top3"].to_numpy(dtype="float32")
-    y_val = val_df["target_top3"].to_numpy(dtype="float32")
-    y_test = test_df["target_top3"].to_numpy(dtype="float32")
+    y_train = train_df[TARGET_COLUMN].to_numpy(dtype="float32")
+    y_val = val_df[TARGET_COLUMN].to_numpy(dtype="float32")
+    y_test = test_df[TARGET_COLUMN].to_numpy(dtype="float32")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log(f"学習デバイス: {device}")
@@ -257,7 +293,10 @@ def train_model(
         "test_rows": len(test_df),
         "input_dim": int(x_train.shape[1]),
         "device": str(device),
-        "features": MODEL_FEATURES,
+        "features": model_features,
+        "numeric_features": numeric_features,
+        "categorical_features": categorical_features,
+        "training_dataset_manifest": dataset.manifest,
         "config": config.__dict__,
         "date_ranges": {
             "train": [str(train_df["race_date"].min()), str(train_df["race_date"].max())],
@@ -296,7 +335,10 @@ def train_model(
             "model_version": MODEL_VERSION,
             "feature_version": FEATURE_VERSION,
             "target_column": TARGET_COLUMN,
-            "features": MODEL_FEATURES,
+            "features": model_features,
+            "numeric_features": numeric_features,
+            "categorical_features": categorical_features,
+            "training_dataset": dataset.manifest,
             "created_at": datetime.now(),
             "data_start_date": training["race_date"].min(),
             "data_end_date": training["race_date"].max(),
@@ -345,13 +387,34 @@ def load_model_bundle(model_dir: Path) -> tuple[MLP, ColumnTransformer, dict[str
 def _features_for_saved_model(
     metrics: dict[str, object],
 ) -> list[str]:
-    """新旧モデルそれぞれが学習時に使用した特徴量を返す。"""
+    """Return the registered columns saved by feature-DB Top3 models."""
     saved_features = metrics.get("features")
     if isinstance(saved_features, list) and all(
         isinstance(column, str) for column in saved_features
     ):
         return saved_features
-    return MODEL_FEATURES
+    raise ValueError(
+        "このモデルには特徴量DBの列情報がありません。新方式で再学習してください。"
+    )
+
+
+def _prepare_saved_model_features(
+    target: pd.DataFrame,
+    metrics: dict[str, object],
+) -> pd.DataFrame:
+    model_features = _features_for_saved_model(metrics)
+    numeric = metrics.get("numeric_features")
+    categorical = metrics.get("categorical_features")
+    if not (
+        isinstance(numeric, list)
+        and isinstance(categorical, list)
+        and all(isinstance(column, str) for column in [*numeric, *categorical])
+    ):
+        raise ValueError(
+            "このモデルには特徴量DBの型情報がありません。新方式で再学習してください。"
+        )
+    aligned = align_saved_top3_features(target, model_features)
+    return prepare_registered_feature_frame(aligned, numeric, categorical)
 
 
 
@@ -410,7 +473,7 @@ def predict_historical_race(
                 upcoming_like[column] = "upcoming"
 
     model, preprocessor, metrics = load_model_bundle(model_dir)
-    featured = build_prediction_frame(
+    featured = build_top3_prediction_features(
         history_before,
         upcoming_like,
     )
@@ -422,9 +485,8 @@ def predict_historical_race(
             "指定レースの予想用特徴量を生成できませんでした。"
         )
 
-    model_features = _features_for_saved_model(metrics)
     matrix = preprocessor.transform(
-        prepare_feature_frame(target, model_features)
+        _prepare_saved_model_features(target, metrics)
     ).astype("float32")
     with torch.no_grad():
         probability = torch.sigmoid(
@@ -582,13 +644,12 @@ def predict_race(
     model_dir: Path,
 ) -> tuple[pd.DataFrame, Path]:
     model, preprocessor, metrics = load_model_bundle(model_dir)
-    featured = build_prediction_frame(historical_records, upcoming_records)
+    featured = build_top3_prediction_features(historical_records, upcoming_records)
     target = featured[featured["race_id"].astype(str) == str(race_id)].copy()
     if target.empty:
         raise ValueError("指定したレースの出走データがありません。")
-    model_features = _features_for_saved_model(metrics)
     matrix = preprocessor.transform(
-        prepare_feature_frame(target, model_features)
+        _prepare_saved_model_features(target, metrics)
     ).astype("float32")
     with torch.no_grad():
         probability = torch.sigmoid(model(torch.from_numpy(matrix))).numpy()

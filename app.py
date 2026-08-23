@@ -25,21 +25,37 @@ from src.public_api import (
     race_record_years,
     cancel_database_job,
     cancel_feature_generation_job,
+    cancel_speed_index_job,
+    cancel_recent_speed_job,
+    cancel_race_entry_job,
     cancel_html_collection_job as cancel_job,
     generate_demo_records,
     feature_runs,
     feature_freshness,
     feature_store_summary,
+    performance_feature_freshness,
+    performance_feature_summary,
+    recent_speed_freshness,
     clear_features,
+    clear_performance_features,
     list_database_jobs,
     list_feature_generation_jobs,
+    list_speed_index_jobs,
+    list_recent_speed_jobs,
+    list_race_entry_jobs,
     list_html_collection_jobs as list_jobs,
     NetkeibaHtmlCollector,
     start_database_job,
     start_feature_generation_job,
+    start_speed_index_job,
+    start_recent_speed_job,
+    start_race_entry_job,
     start_html_collection_job as start_job,
     TrainConfig,
     RecentFormRunConfig,
+    SpeedIndexRunConfig,
+    RecentSpeedRunConfig,
+    RaceEntryRunConfig,
     train_model,
     save_collection_run,
     save_race_records,
@@ -682,6 +698,414 @@ def _render_active_feature_generation_status() -> None:
         st.rerun()
 
 
+def _render_speed_index_status() -> bool:
+    st.subheader("スピード指数生成状況")
+    jobs = list_speed_index_jobs()
+    if not jobs:
+        st.info("この画面から開始したスピード指数生成はありません。")
+        return False
+    latest_job = jobs[0]
+    labels = {
+        "running": "生成中", "cancelling": "中止処理中",
+        "cancelled": "中止", "completed": "完了", "failed": "失敗",
+    }
+    value = float(latest_job["progress"])
+    st.progress(
+        value,
+        text=f"{labels.get(latest_job['status'], latest_job['status'])} {value:.0%}",
+    )
+    st.write(f"実行ID: `{latest_job['job_id']}`")
+    if latest_job["result"]:
+        st.success(
+            f"{int(latest_job['result'].get('row_count', 0)):,}走の指数を保存しました。"
+        )
+    if latest_job["error"]:
+        st.error(latest_job["error"])
+    with st.expander(
+        "実行ログ",
+        expanded=latest_job["status"] in {"running", "cancelling"},
+    ):
+        st.code("\n".join(latest_job["logs"][-100:]), language="text")
+    if st.button("状態を更新", key="refresh_speed_index"):
+        st.rerun()
+    return latest_job["status"] in {"running", "cancelling"}
+
+
+@st.fragment(run_every=3)
+def _render_active_speed_index_status() -> None:
+    if not _render_speed_index_status():
+        st.rerun()
+
+
+def _render_speed_index_management() -> None:
+    speed_name = "speed_index"
+    speed_version = "1.0.0"
+    summary = performance_feature_summary(speed_name, speed_version)
+    freshness = performance_feature_freshness(speed_name, speed_version)
+
+    metric1, metric2, metric3 = st.columns(3)
+    metric1.metric("特徴量セット", "1走単位スピード指数")
+    metric1.caption(f"識別子: {speed_name}:{speed_version}")
+    metric2.metric("保存走数", f"{int(summary['row_count']):,}")
+    metric3.metric("指数算出済み", f"{int(summary['available_count']):,}")
+    if summary["row_count"]:
+        st.success(
+            f"生成済み期間: {summary['start_date']} ～ {summary['end_date']}　"
+            f"実行ID: {summary['latest_run_id']}"
+        )
+        st.caption(
+            f"異常値クリップ: {int(summary['clipped_count']):,}走 / "
+            f"元データ指紋: {summary['source_data_fingerprint']}"
+        )
+
+    if freshness["status"] == "fresh":
+        st.success("同期状態: 最新の元データと同期済みです。")
+    elif freshness["status"] == "stale":
+        st.warning("同期状態: 元データが更新されています。再生成してください。")
+        if freshness["differences"]:
+            with st.expander("元データの変更内容"):
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "項目": key,
+                            "生成時": values.get("generated"),
+                            "現在": values.get("current"),
+                        }
+                        for key, values in freshness["differences"].items()
+                    ]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+    elif freshness["status"] == "missing":
+        st.warning("同期状態: スピード指数が未生成です。")
+    else:
+        st.warning("同期状態を判定できません。一度再生成してください。")
+
+    st.subheader("生成設定")
+    setting1, setting2 = st.columns(2)
+    half_life = setting1.number_input(
+        "標準タイムの半減期（日）",
+        min_value=30, max_value=3650, value=730, step=30,
+        key="selected_speed_half_life",
+        help="標準タイムに使う過去レースの時間減衰です。初期値730日。原則変更不要です。",
+    )
+    lookback = setting2.number_input(
+        "標準タイムの最大参照期間（日）",
+        min_value=365, max_value=7300, value=3650, step=365,
+        key="selected_speed_lookback",
+        help="標準タイムに使う最長期間です。初期値3650日。原則変更不要です。",
+    )
+    setting3, setting4 = st.columns(2)
+    seconds_scale = setting3.number_input(
+        "1600mの1秒差あたりの点数",
+        min_value=1.0, max_value=30.0, value=10.0, step=0.5,
+        key="selected_speed_seconds_scale",
+        help="1600mで標準より1秒速い場合の加点です。初期値10点。原則変更不要です。",
+    )
+    weight_points = setting4.number_input(
+        "斤量1kgあたりの補正点",
+        min_value=0.0, max_value=5.0, value=1.5, step=0.1,
+        key="selected_speed_weight_points",
+        help="55kgを基準にした斤量補正です。初期値1.5点。原則変更不要です。",
+    )
+
+    jobs = list_speed_index_jobs()
+    active_job = next((
+        job for job in jobs if job["status"] in {"running", "cancelling"}
+    ), None)
+    start_column, cancel_column = st.columns(2)
+    with start_column:
+        start_clicked = st.button(
+            "スピード指数生成を開始",
+            type="primary",
+            disabled=active_job is not None,
+            use_container_width=True,
+            key="selected_start_speed_index",
+        )
+    with cancel_column:
+        cancel_clicked = st.button(
+            "スピード指数生成を中止",
+            disabled=active_job is None,
+            use_container_width=True,
+            key="selected_cancel_speed_index",
+        )
+    if start_clicked:
+        try:
+            job_id = start_speed_index_job(SpeedIndexRunConfig(
+                half_life_days=float(half_life),
+                max_lookback_days=int(lookback),
+                seconds_scale_at_1600m=float(seconds_scale),
+                weight_points_per_kg=float(weight_points),
+            ))
+            st.success(f"スピード指数生成を開始しました。実行ID: {job_id}")
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+    if cancel_clicked and active_job is not None:
+        if cancel_speed_index_job(str(active_job["job_id"])):
+            st.warning("中止を要求しました。完成済みデータは維持されます。")
+            st.rerun()
+    if active_job is not None:
+        _render_active_speed_index_status()
+    else:
+        _render_speed_index_status()
+
+    st.subheader("データのクリア")
+    confirmed = st.checkbox(
+        f"1走単位スピード指数（{speed_name}:{speed_version}）をクリアする",
+        disabled=active_job is not None,
+        key="selected_confirm_clear_speed",
+    )
+    if st.button(
+        "スピード指数をクリア",
+        disabled=not confirmed or active_job is not None,
+        key="selected_clear_speed_index",
+    ):
+        deleted = clear_performance_features(speed_name, speed_version)
+        st.success(f"{deleted:,}走をクリアしました。元レースデータは変更していません。")
+        st.rerun()
+
+    runs = feature_runs()
+    speed_runs = runs[runs["feature_set_name"].eq(speed_name)] if not runs.empty else runs
+    if not speed_runs.empty:
+        st.subheader("生成履歴")
+        st.dataframe(speed_runs.head(20), use_container_width=True, hide_index=True)
+
+
+def _render_recent_speed_status() -> bool:
+    jobs = list_recent_speed_jobs()
+    st.subheader("近走スピード成績の生成状況")
+    if not jobs:
+        st.info("この画面から開始した近走スピード成績の生成はありません。")
+        return False
+    job = jobs[0]
+    labels = {
+        "running": "生成中", "cancelling": "中止処理中",
+        "cancelled": "中止", "completed": "完了", "failed": "失敗",
+    }
+    value = float(job["progress"])
+    st.progress(value, text=f"{labels.get(job['status'], job['status'])} {value:.0%}")
+    st.write(f"実行ID: `{job['job_id']}`")
+    if job["result"]:
+        st.success(f"{int(job['result'].get('row_count', 0)):,}行を保存しました。")
+    if job["error"]:
+        st.error(job["error"])
+    with st.expander("実行ログ", expanded=job["status"] in {"running", "cancelling"}):
+        st.code("\n".join(job["logs"][-100:]), language="text")
+    return job["status"] in {"running", "cancelling"}
+
+
+@st.fragment(run_every=3)
+def _render_active_recent_speed_status() -> None:
+    if not _render_recent_speed_status():
+        st.rerun()
+
+
+def _render_recent_speed_management() -> None:
+    name = "recent_speed"
+    version = "1.0.0"
+    summary = feature_store_summary(name, version)
+    freshness = recent_speed_freshness(name, version)
+    dependency = performance_feature_summary("speed_index", "1.0.0")
+
+    metric1, metric2, metric3 = st.columns(3)
+    metric1.metric("特徴量セット", "近走スピード成績")
+    metric1.caption(f"識別子: {name}:{version}")
+    metric2.metric("保存行数", f"{int(summary['row_count']):,}")
+    metric3.metric("依存する指数", "1走単位スピード指数")
+    metric3.caption("依存識別子: speed_index:1.0.0")
+    if summary["row_count"]:
+        st.success(
+            f"生成済み期間: {summary['start_date']} ～ {summary['end_date']}　"
+            f"実行ID: {summary['latest_run_id']}"
+        )
+    if freshness["status"] == "fresh":
+        st.success("同期状態: 元データ・1走単位スピード指数ともに最新です。")
+    elif freshness["status"] == "stale":
+        st.warning("同期状態: 元データまたはスピード指数が更新されています。再生成してください。")
+    elif freshness["status"] == "missing":
+        st.warning("同期状態: 近走スピード成績が未生成です。")
+    else:
+        st.warning("同期状態を判定できません。一度再生成してください。")
+    if dependency["row_count"] == 0:
+        st.error("先に1走単位スピード指数（speed_index:1.0.0）を生成してください。")
+
+    st.subheader("生成設定")
+    setting1, setting2 = st.columns(2)
+    half_life = setting1.number_input(
+        "時間減衰の半減期（日）",
+        min_value=1, max_value=3650, value=180, step=30,
+        key="recent_speed_half_life",
+        help="最近のスピード指数を重くする半減期です。初期値180日。原則変更不要です。",
+    )
+    lookback = setting2.number_input(
+        "最大参照期間（日）",
+        min_value=30, max_value=7300, value=1095, step=30,
+        key="recent_speed_lookback",
+        help="集約対象とする過去指数の最長期間です。初期値1095日。原則変更不要です。",
+    )
+    jobs = list_recent_speed_jobs()
+    active = next((job for job in jobs if job["status"] in {"running", "cancelling"}), None)
+    start_column, cancel_column = st.columns(2)
+    with start_column:
+        start_clicked = st.button(
+            "近走スピード成績の生成を開始",
+            type="primary",
+            disabled=active is not None or dependency["row_count"] == 0,
+            use_container_width=True,
+        )
+    with cancel_column:
+        cancel_clicked = st.button(
+            "近走スピード成績の生成を中止",
+            disabled=active is None,
+            use_container_width=True,
+        )
+    if start_clicked:
+        try:
+            job_id = start_recent_speed_job(RecentSpeedRunConfig(
+                half_life_days=float(half_life),
+                max_lookback_days=int(lookback),
+            ))
+            st.success(f"生成を開始しました。実行ID: {job_id}")
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+    if cancel_clicked and active is not None:
+        if cancel_recent_speed_job(str(active["job_id"])):
+            st.warning("中止を要求しました。完成済みデータは維持されます。")
+            st.rerun()
+    if active is not None:
+        _render_active_recent_speed_status()
+    else:
+        _render_recent_speed_status()
+
+    st.subheader("データのクリア")
+    confirmed = st.checkbox(
+        f"近走スピード成績（{name}:{version}）をクリアする",
+        disabled=active is not None,
+    )
+    if st.button("近走スピード成績をクリア", disabled=not confirmed or active is not None):
+        deleted = clear_features(name, version)
+        st.success(f"{deleted:,}行をクリアしました。元レース・1走指数は変更していません。")
+        st.rerun()
+    runs = feature_runs()
+    selected_runs = runs[runs["feature_set_name"].eq(name)] if not runs.empty else runs
+    if not selected_runs.empty:
+        st.subheader("生成履歴")
+        st.dataframe(selected_runs.head(20), use_container_width=True, hide_index=True)
+
+
+def _render_race_entry_status() -> bool:
+    jobs = list_race_entry_jobs()
+    st.subheader("出馬表基本条件の生成状況")
+    if not jobs:
+        st.info("この画面から開始した出馬表基本条件の生成はありません。")
+        return False
+    job = jobs[0]
+    labels = {
+        "running": "生成中", "cancelling": "中止処理中",
+        "cancelled": "中止", "completed": "完了", "failed": "失敗",
+    }
+    value = float(job["progress"])
+    st.progress(value, text=f"{labels.get(job['status'], job['status'])} {value:.0%}")
+    st.write(f"実行ID: `{job['job_id']}`")
+    if job["result"]:
+        st.success(f"{int(job['result'].get('row_count', 0)):,}行を保存しました。")
+    if job["error"]:
+        st.error(job["error"])
+    with st.expander("実行ログ", expanded=job["status"] in {"running", "cancelling"}):
+        st.code("\n".join(job["logs"][-100:]), language="text")
+    return job["status"] in {"running", "cancelling"}
+
+
+@st.fragment(run_every=3)
+def _render_active_race_entry_status() -> None:
+    if not _render_race_entry_status():
+        st.rerun()
+
+
+def _render_race_entry_management() -> None:
+    name = "race_entry"
+    version = "1.0.0"
+    summary = feature_store_summary(name, version)
+    freshness = feature_freshness(name, version)
+    metric1, metric2, metric3 = st.columns(3)
+    metric1.metric("特徴量セット", "出馬表基本条件")
+    metric1.caption(f"識別子: {name}:{version}")
+    metric2.metric("保存行数", f"{int(summary['row_count']):,}")
+    metric3.metric("生成項目数", "14")
+    if summary["row_count"]:
+        st.success(
+            f"生成済み期間: {summary['start_date']} ～ {summary['end_date']}　"
+            f"実行ID: {summary['latest_run_id']}"
+        )
+    if freshness["status"] == "fresh":
+        st.success("同期状態: 元データと同期しています。")
+    elif freshness["status"] == "stale":
+        st.warning("同期状態: 元データが更新されています。再生成してください。")
+    elif freshness["status"] == "missing":
+        st.warning("同期状態: 出馬表基本条件が未生成です。")
+    else:
+        st.warning("同期状態を判定できません。一度再生成してください。")
+
+    st.subheader("生成設定")
+    st.text_input(
+        "対象情報",
+        value="競馬場・レース番号・芝ダート・距離・馬齢・性別・斤量・枠馬番・相対値・前走距離差",
+        disabled=True,
+        help=(
+            "出馬表時点で確定する情報だけを生成します。天気・馬場状態・オッズ・人気・"
+            "馬体重は含みません。設定は固定で、原則変更不要です。"
+        ),
+    )
+    jobs = list_race_entry_jobs()
+    active = next((job for job in jobs if job["status"] in {"running", "cancelling"}), None)
+    start_column, cancel_column = st.columns(2)
+    with start_column:
+        start_clicked = st.button(
+            "出馬表基本条件の生成を開始",
+            type="primary",
+            disabled=active is not None,
+            use_container_width=True,
+        )
+    with cancel_column:
+        cancel_clicked = st.button(
+            "出馬表基本条件の生成を中止",
+            disabled=active is None,
+            use_container_width=True,
+        )
+    if start_clicked:
+        try:
+            job_id = start_race_entry_job(RaceEntryRunConfig())
+            st.success(f"生成を開始しました。実行ID: {job_id}")
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+    if cancel_clicked and active is not None:
+        if cancel_race_entry_job(str(active["job_id"])):
+            st.warning("中止を要求しました。完成済みデータは維持されます。")
+            st.rerun()
+    if active is not None:
+        _render_active_race_entry_status()
+    else:
+        _render_race_entry_status()
+
+    st.subheader("データのクリア")
+    confirmed = st.checkbox(
+        f"出馬表基本条件（{name}:{version}）をクリアする",
+        disabled=active is not None,
+    )
+    if st.button("出馬表基本条件をクリア", disabled=not confirmed or active is not None):
+        deleted = clear_features(name, version)
+        st.success(f"{deleted:,}行をクリアしました。元レースデータは変更していません。")
+        st.rerun()
+    runs = feature_runs()
+    selected_runs = runs[runs["feature_set_name"].eq(name)] if not runs.empty else runs
+    if not selected_runs.empty:
+        st.subheader("生成履歴")
+        st.dataframe(selected_runs.head(20), use_container_width=True, hide_index=True)
+
+
 with st.sidebar:
     page = st.radio(
         "メニュー",
@@ -1256,12 +1680,37 @@ elif page == "前準備（特徴量エンジニアリング）":
         "元データを更新した場合や特徴量設定を変更した場合は再生成してください。"
     )
 
+    selected_feature_set = st.selectbox(
+        "特徴量セット",
+        [
+            "baseline:1.1.0", "speed_index:1.0.0", "recent_speed:1.0.0",
+            "race_entry:1.0.0",
+        ],
+        format_func=lambda value: {
+            "baseline:1.1.0": "基礎近走成績（baseline:1.1.0）",
+            "speed_index:1.0.0": "1走単位スピード指数（speed_index:1.0.0）",
+            "recent_speed:1.0.0": "近走スピード成績（recent_speed:1.0.0）",
+            "race_entry:1.0.0": "出馬表基本条件（race_entry:1.0.0）",
+        }[value],
+        help="表示・生成・中止・クリアする特徴量セットを選択します。",
+    )
+    if selected_feature_set == "speed_index:1.0.0":
+        _render_speed_index_management()
+        st.stop()
+    if selected_feature_set == "recent_speed:1.0.0":
+        _render_recent_speed_management()
+        st.stop()
+    if selected_feature_set == "race_entry:1.0.0":
+        _render_race_entry_management()
+        st.stop()
+
     feature_set_name = "baseline"
     feature_set_version = "1.1.0"
     summary = feature_store_summary(feature_set_name, feature_set_version)
     freshness = feature_freshness(feature_set_name, feature_set_version)
     metric1, metric2, metric3 = st.columns(3)
-    metric1.metric("特徴量セット", f"{feature_set_name}:{feature_set_version}")
+    metric1.metric("特徴量セット", "基礎近走成績")
+    metric1.caption(f"識別子: {feature_set_name}:{feature_set_version}")
     metric2.metric("保存行数", f"{int(summary['row_count']):,}")
     metric3.metric("対象レース数", f"{int(summary['race_count']):,}")
     generated_at = pd.to_datetime(summary["generated_at"], errors="coerce")
@@ -1405,9 +1854,145 @@ elif page == "前準備（特徴量エンジニアリング）":
         st.rerun()
 
     runs = feature_runs()
-    if not runs.empty:
-        st.subheader("特徴量生成履歴")
-        st.dataframe(runs.head(20), use_container_width=True, hide_index=True)
+    recent_runs = runs[runs["feature_set_name"].eq(feature_set_name)] if not runs.empty else runs
+    if not recent_runs.empty:
+        st.subheader("基礎近走成績の生成履歴")
+        st.dataframe(recent_runs.head(20), use_container_width=True, hide_index=True)
+
+    # 選択中の基礎近走成績だけを表示し、下に残る旧スピード指数パネルは実行しません。
+    st.stop()
+
+    st.divider()
+    st.header("1走単位スピード指数")
+    speed_name = "speed_index"
+    speed_version = "1.0.0"
+    speed_summary = performance_feature_summary(speed_name, speed_version)
+    speed_freshness = performance_feature_freshness(speed_name, speed_version)
+    speed_metric1, speed_metric2, speed_metric3 = st.columns(3)
+    speed_metric1.metric("特徴量セット", "1走単位スピード指数")
+    speed_metric1.caption(f"識別子: {speed_name}:{speed_version}")
+    speed_metric2.metric("保存走数", f"{int(speed_summary['row_count']):,}")
+    speed_metric3.metric("指数算出済み", f"{int(speed_summary['available_count']):,}")
+    if speed_summary["row_count"]:
+        st.success(
+            f"生成済み期間: {speed_summary['start_date']} ～ {speed_summary['end_date']}　"
+            f"実行ID: {speed_summary['latest_run_id']}"
+        )
+        st.caption(
+            f"異常値クリップ: {int(speed_summary['clipped_count']):,}走 / "
+            f"元データ指紋: {speed_summary['source_data_fingerprint']}"
+        )
+    if speed_freshness["status"] == "fresh":
+        st.success("同期状態: 最新の元データと同期済みです。")
+    elif speed_freshness["status"] == "stale":
+        st.warning("同期状態: 元データが更新されています。スピード指数を再生成してください。")
+        if speed_freshness["differences"]:
+            with st.expander("元データの変更内容"):
+                st.dataframe(pd.DataFrame([
+                    {
+                        "項目": key,
+                        "生成時": values.get("generated"),
+                        "現在": values.get("current"),
+                    }
+                    for key, values in speed_freshness["differences"].items()
+                ]), use_container_width=True, hide_index=True)
+    elif speed_freshness["status"] == "missing":
+        st.warning("同期状態: スピード指数が未生成です。")
+    else:
+        st.warning("同期状態を判定できません。一度再生成してください。")
+
+    st.subheader("スピード指数の生成設定")
+    speed_setting1, speed_setting2 = st.columns(2)
+    speed_half_life = speed_setting1.number_input(
+        "標準タイムの半減期（日）",
+        min_value=30, max_value=3650, value=730, step=30,
+        help=(
+            "標準タイム算出で古いレースの影響が半分になる日数です。初期値は730日です。"
+            "検証目的がない限り、原則変更不要です。"
+        ),
+    )
+    speed_lookback = speed_setting2.number_input(
+        "標準タイムの最大参照期間（日）",
+        min_value=365, max_value=7300, value=3650, step=365,
+        help=(
+            "標準タイムの算出対象とする最長期間です。初期値3650日は約10年です。"
+            "検証目的がない限り、原則変更不要です。"
+        ),
+    )
+    speed_setting3, speed_setting4 = st.columns(2)
+    seconds_scale = speed_setting3.number_input(
+        "1600mの1秒差あたりの点数",
+        min_value=1.0, max_value=30.0, value=10.0, step=0.5,
+        help=(
+            "1600mで標準タイムより1秒速い場合に加算する点数です。距離に応じて補正されます。"
+            "初期値は10点です。原則変更不要です。"
+        ),
+    )
+    weight_points = speed_setting4.number_input(
+        "斤量1kgあたりの補正点",
+        min_value=0.0, max_value=5.0, value=1.5, step=0.1,
+        help=(
+            "55kgを基準に、重い斤量で走った実績を評価する補正です。初期値は1.5点です。"
+            "原則変更不要です。"
+        ),
+    )
+
+    speed_jobs = list_speed_index_jobs()
+    active_speed_job = next((
+        job for job in speed_jobs if job["status"] in {"running", "cancelling"}
+    ), None)
+    speed_start_column, speed_cancel_column = st.columns(2)
+    with speed_start_column:
+        start_speed = st.button(
+            "スピード指数生成を開始",
+            type="primary",
+            disabled=active_speed_job is not None,
+            use_container_width=True,
+        )
+    with speed_cancel_column:
+        cancel_speed = st.button(
+            "スピード指数生成を中止",
+            disabled=active_speed_job is None,
+            use_container_width=True,
+        )
+    if start_speed:
+        try:
+            job_id = start_speed_index_job(SpeedIndexRunConfig(
+                half_life_days=float(speed_half_life),
+                max_lookback_days=int(speed_lookback),
+                seconds_scale_at_1600m=float(seconds_scale),
+                weight_points_per_kg=float(weight_points),
+            ))
+            st.success(f"スピード指数生成を開始しました。実行ID: {job_id}")
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+    if cancel_speed and active_speed_job is not None:
+        if cancel_speed_index_job(str(active_speed_job["job_id"])):
+            st.warning("中止を要求しました。完成済みの指数は維持されます。")
+            st.rerun()
+    if active_speed_job is not None:
+        _render_active_speed_index_status()
+    else:
+        _render_speed_index_status()
+
+    st.subheader("スピード指数データのクリア")
+    confirm_speed_clear = st.checkbox(
+        f"1走単位スピード指数（{speed_name}:{speed_version}）をクリアする",
+        disabled=active_speed_job is not None,
+    )
+    if st.button(
+        "スピード指数をクリア",
+        disabled=not confirm_speed_clear or active_speed_job is not None,
+    ):
+        deleted = clear_performance_features(speed_name, speed_version)
+        st.success(f"{deleted:,}走のスピード指数をクリアしました。元レースデータは変更していません。")
+        st.rerun()
+
+    speed_runs = runs[runs["feature_set_name"].eq(speed_name)] if not runs.empty else runs
+    if not speed_runs.empty:
+        st.subheader("1走単位スピード指数の生成履歴")
+        st.dataframe(speed_runs.head(20), use_container_width=True, hide_index=True)
 
 elif page == "モデル学習":
     st.header("ディープラーニングモデル学習")
@@ -1439,6 +2024,32 @@ elif page == "モデル学習":
     )
     historical = load_records("historical")
     st.write(f"利用可能な過去データ: **{len(historical):,}行 / {historical['race_id'].nunique() if not historical.empty else 0:,}レース**")
+    training_feature_states = [
+        ("基礎近走成績", "baseline:1.1.0", feature_freshness("baseline", "1.1.0")),
+        ("近走スピード成績", "recent_speed:1.0.0", recent_speed_freshness()),
+        ("出馬表基本条件", "race_entry:1.0.0", feature_freshness("race_entry", "1.0.0")),
+    ]
+    st.subheader("学習に使用する特徴量")
+    st.dataframe(
+        pd.DataFrame([
+            {
+                "特徴量セット": label,
+                "識別子": identifier,
+                "鮮度": state["status"],
+            }
+            for label, identifier, state in training_feature_states
+        ]),
+        use_container_width=True,
+        hide_index=True,
+    )
+    features_ready = all(
+        state["status"] == "fresh" for _, _, state in training_feature_states
+    )
+    if not features_ready:
+        st.error(
+            "未生成または古い特徴量があります。前準備（特徴量エンジニアリング）で"
+            "対象セットを生成してから学習してください。"
+        )
     c1, c2, c3 = st.columns(3)
     epochs = c1.number_input(
         "最大エポック数",
@@ -1512,7 +2123,11 @@ elif page == "モデル学習":
         ),
     )
     st.caption("開催日順に70%／15%／15%へ分割し、未来データが学習側へ混ざらないようにします。")
-    if st.button("モデル学習を開始", type="primary", disabled=historical.empty):
+    if st.button(
+        "モデル学習を開始",
+        type="primary",
+        disabled=historical.empty or not features_ready,
+    ):
         logger = new_logger()
         progress_bar = st.progress(0.0, text="学習中")
         try:
@@ -1592,38 +2207,38 @@ if page == "モデル学習":
         history = pd.read_csv(model_dir / "training_history.csv")
         metrics = json.loads((model_dir / "metrics.json").read_text(encoding="utf-8"))
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("検証AUC", f"{metrics['validation_auc']:.3f}")
-        c2.metric("テストAUC", f"{metrics['test_auc']:.3f}")
-        c3.metric("テストLog Loss", f"{metrics['test_log_loss']:.3f}")
-        c4.metric("最良エポック", str(metrics["best_epoch"]))
+        c1.metric(
+            "検証AUC", f"{metrics['validation_auc']:.3f}",
+            help="検証期間で3着以内馬を上位に並べる性能です。0.5はランダム相当、1.0に近いほど良好です。0.7以上を一つの目安とし、学習AUCとの差も確認します。",
+        )
+        c2.metric(
+            "テストAUC", f"{metrics['test_auc']:.3f}",
+            help="学習にも調整にも使わなかった将来期間の順位判別性能です。検証AUCと同程度で、0.7以上が一つの目安です。",
+        )
+        c3.metric(
+            "テストLog Loss", f"{metrics['test_log_loss']:.3f}",
+            help="予測確率の正確さです。小さいほど良く、自信を持った誤予測を強く減点します。同じテスト期間のモデル同士で比較します。",
+        )
+        c4.metric(
+            "最良エポック", str(metrics["best_epoch"]),
+            help="検証Lossが最小になった学習回数です。極端に早ければ学習率やモデルの複雑さ、上限付近なら最大エポック数を確認します。",
+        )
         c5, c6, c7 = st.columns(3)
         c5.metric(
             "テスト正解率",
             f"{metrics.get('test_accuracy', float('nan')):.3f}",
+            help="3着以内／圏外の判定が一致した割合です。圏外馬が多いだけでも高くなるため、他の指標と合わせて評価します。",
         )
         c6.metric(
             "テスト適合率",
             f"{metrics.get('test_precision', float('nan')):.3f}",
+            help="モデルが3着以内と判定した馬のうち、実際に3着以内だった割合です。高いほど候補馬の無駄が少ないことを示します。",
         )
         c7.metric(
             "テスト再現率",
             f"{metrics.get('test_recall', float('nan')):.3f}",
+            help="実際の3着以内馬をモデルが拾えた割合です。高いほど有力馬の見逃しが少なく、適合率とのバランスを確認します。",
         )
-
-        with st.expander("各評価指標の説明と、望ましい状態"):
-            st.markdown(
-                """
-- **検証AUC**：学習中の調整に使わない検証データで、3着以内の馬をどれだけ正しく上位に並べられるかを示します。0.5はランダム相当、1.0に近いほど良好です。目安として0.7以上を一つの基準にし、学習AUCとの差が小さい状態が望まれます。
-- **テストAUC**：最後まで学習に使わなかった将来側のデータに対する順位判別性能です。検証AUCと同程度で、かつ0.7以上を維持できる状態が望まれます。検証AUCより大きく低下する場合は汎化性能に注意が必要です。
-- **テストLog Loss**：予測確率の外れ方を評価します。小さいほど良く、自信を持った誤予測には大きなペナルティが付きます。モデル同士を同じテスト期間で比較し、より小さい状態が望まれます。
-- **正解率（Accuracy）**：3着以内／圏外の判定が合った割合です。高いほど良いですが、圏外馬の多さだけでも高くなるため、単独では判断しません。
-- **適合率（Precision）**：モデルが3着以内と判定した馬のうち、実際に3着以内だった割合です。買い目候補の無駄を抑えたい場合は高い状態が望まれます。
-- **再現率（Recall）**：実際に3着以内だった馬をモデルが拾えた割合です。有力馬の見逃しを抑えたい場合は高い状態が望まれます。適合率とのバランスを確認します。
-- **最良エポック**：検証Lossが最も小さかった学習回数です。極端に早い場合は学習率やモデルの複雑さ、後半の場合は最大エポック数を見直します。
-- **学習Loss／検証Loss**：予測確率の誤差です。両方が下がり、近い値で安定する状態が望まれます。学習Lossだけ下がって検証Lossが上がる場合は過学習です。
-- **学習AUC／検証AUC**：学習データと検証データの判別性能です。両方が上がり、差が小さい状態が望まれます。差が0.08以上なら軽度、0.15以上なら強い過学習の目安です。
-                """
-            )
 
         loss_long = history.melt(
             id_vars="epoch", value_vars=["train_loss", "validation_loss"],
@@ -1633,26 +2248,17 @@ if page == "モデル学習":
             id_vars="epoch", value_vars=["train_auc", "validation_auc"],
             var_name="series", value_name="auc"
         )
-        st.plotly_chart(px.line(loss_long, x="epoch", y="loss", color="series", title="学習Lossと検証Loss"), use_container_width=True)
-        with st.expander(
-            "学習Lossと検証Lossのグラフの読み方",
-            expanded=True,
-        ):
-            st.markdown(
-                """
-- **横軸（epoch）**は学習データ全体を繰り返した回数、**縦軸（loss）**は予測確率の誤差です。Lossは低いほど良い値です。
-- **train_loss（学習Loss）**は学習に使用したデータの誤差、**validation_loss（検証Loss）**は学習に直接使用していないデータの誤差です。
-- **理想的な状態**は、学習の進行に伴って両方のLossが下がり、近い値を保ったまま低い位置で安定することです。検証Lossが最小になった地点が、基本的にモデルを保存する最良エポックです。
-- 学習Lossだけが下がり続け、検証Lossが途中から上昇する場合は**過学習**です。Dropoutを増やす、隠れ層を小さくする、Early Stopping待機を短くするなどを検討します。
-- 両方のLossが高いままほとんど下がらない場合は**学習不足**です。隠れ層を大きくする、Dropoutを下げる、学習率や最大エポック数を見直します。
-- Lossが大きく上下して安定しない場合は、学習率が高すぎる可能性があります。
-                """
-            )
-        st.plotly_chart(px.line(auc_long, x="epoch", y="auc", color="series", title="学習AUCと検証AUC"), use_container_width=True)
-        with st.expander(
-            "学習AUCと検証AUCのグラフの読み方",
-            expanded=True,
-        ):
+        st.subheader(
+            "学習Lossと検証Loss",
+            help="両方が下がり近い値で安定する状態が理想です。学習Lossだけ下がり検証Lossが上がる場合は過学習、両方が高止まりする場合は学習不足、激しく上下する場合は学習率過大を疑います。",
+        )
+        st.plotly_chart(px.line(loss_long, x="epoch", y="loss", color="series"), use_container_width=True)
+        st.subheader(
+            "学習AUCと検証AUC",
+            help="両方が上昇し差が0.08未満なら良好な目安です。差が0.08以上なら軽度、0.15以上なら強い過学習の可能性があります。",
+        )
+        st.plotly_chart(px.line(auc_long, x="epoch", y="auc", color="series"), use_container_width=True)
+        if False:  # 詳細説明は見出しの「？」ヘルプへ移行済み。
             st.markdown(
                 """
 - **横軸（epoch）**は学習回数、**縦軸（AUC）**は3着以内の馬を圏外の馬より上位に評価できる性能です。AUCは1.0に近いほど良く、0.5はランダム相当です。

@@ -9,6 +9,8 @@ from src.public_api import (
     connect_feature_store,
     load_features,
     replace_features,
+    replace_performance_features,
+    load_performance_features,
     save_feature_run,
     save_features,
 )
@@ -82,3 +84,25 @@ def test_replace_features_removes_stale_rows_for_same_version(tmp_path):
     loaded = load_features("baseline", "1", feature_db)
     assert len(loaded) == 1
     assert loaded["sample_score"].iloc[0] == 3.0
+
+
+def test_performance_features_are_stored_separately(tmp_path):
+    feature_db = tmp_path / "features.duckdb"
+    frame = pd.DataFrame([{
+        "race_id": "r1",
+        "horse_id": "h1",
+        "race_date": "2026-01-01",
+        "performance_feature_name": "speed_index",
+        "performance_feature_version": "1.0.0",
+        "history_cutoff": datetime(2026, 1, 1),
+        "feature_run_id": "speed-run",
+        "generated_at": datetime(2026, 1, 2),
+        "speed_index": 100.0,
+    }])
+
+    replace_performance_features(frame, feature_db)
+    loaded = load_performance_features("speed_index", "1.0.0", feature_db)
+
+    assert len(loaded) == 1
+    assert loaded["speed_index"].iloc[0] == 100.0
+    assert load_features("baseline", "1", feature_db).empty

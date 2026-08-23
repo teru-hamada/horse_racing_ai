@@ -7,7 +7,7 @@ from pathlib import Path
 
 import duckdb
 
-from .storage import feature_store_summary
+from .storage import feature_store_summary, performance_feature_summary
 
 
 PATHS = import_module("src.00_common.config").PATHS
@@ -94,4 +94,82 @@ def feature_freshness(
         "current_token": current_token,
         "stored_token": stored_token,
         "differences": differences,
+    }
+
+
+def performance_feature_freshness(
+    performance_feature_name: str,
+    performance_feature_version: str,
+    *,
+    source_database: Path | None = None,
+    feature_database: Path | None = None,
+) -> dict[str, object]:
+    current = source_data_state(source_database)
+    current_token = source_state_token(current)
+    summary = performance_feature_summary(
+        performance_feature_name, performance_feature_version, feature_database
+    )
+    stored_token = summary.get("source_state_token")
+    try:
+        stored = json.loads(str(summary.get("source_state_json") or "{}"))
+    except json.JSONDecodeError:
+        stored = {}
+    if int(summary["row_count"]) == 0:
+        status = "missing"
+    elif not stored_token:
+        status = "unknown"
+    elif stored_token == current_token:
+        status = "fresh"
+    else:
+        status = "stale"
+    differences = {
+        key: {"generated": stored.get(key), "current": current.get(key)}
+        for key in current
+        if stored and stored.get(key) != current.get(key)
+    }
+    return {
+        "status": status,
+        "current_state": current,
+        "stored_state": stored,
+        "current_token": current_token,
+        "stored_token": stored_token,
+        "differences": differences,
+    }
+
+
+def recent_speed_freshness(
+    feature_set_name: str = "recent_speed",
+    feature_set_version: str = "1.0.0",
+    *,
+    feature_database: Path | None = None,
+) -> dict[str, object]:
+    result = feature_freshness(
+        feature_set_name, feature_set_version, feature_database=feature_database
+    )
+    if result["status"] != "fresh":
+        return result
+    summary = feature_store_summary(
+        feature_set_name, feature_set_version, feature_database
+    )
+    dependency = performance_feature_summary(
+        "speed_index", "1.0.0", feature_database
+    )
+    try:
+        config = json.loads(str(summary.get("config_json") or "{}"))
+    except json.JSONDecodeError:
+        config = {}
+    stored_run = config.get("dependency_run_id")
+    current_run = dependency.get("latest_run_id")
+    if stored_run == current_run:
+        return result
+    return {
+        **result,
+        "status": "stale",
+        "differences": {
+            **result.get("differences", {}),
+            "dependency_run_id": {
+                "generated": stored_run,
+                "current": current_run,
+            },
+        },
     }
