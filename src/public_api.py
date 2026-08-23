@@ -86,6 +86,10 @@ FeatureGenerator = _feature_engineering.FeatureGenerator
 FeaturePipeline = _feature_engineering.FeaturePipeline
 FeatureRegistry = _feature_engineering.FeatureRegistry
 FeatureSetDefinition = _feature_engineering.FeatureSetDefinition
+RecentFormGenerator = _feature_engineering.RecentFormGenerator
+prepare_historical_performances = (
+    _feature_engineering.prepare_historical_performances
+)
 calculate_elapsed_days = _feature_engineering.calculate_elapsed_days
 decay_weight = _feature_engineering.decay_weight
 decay_weights = _feature_engineering.decay_weights

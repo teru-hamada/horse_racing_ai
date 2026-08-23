@@ -12,6 +12,7 @@ from .common import (
 )
 from .pipeline import FeaturePipeline
 from .registry import FeatureRegistry, FeatureSetDefinition
+from .generators import RecentFormGenerator, prepare_historical_performances
 
 __all__ = [
     "FeatureContext",
@@ -19,10 +20,12 @@ __all__ = [
     "FeaturePipeline",
     "FeatureRegistry",
     "FeatureSetDefinition",
+    "RecentFormGenerator",
     "calculate_elapsed_days",
     "decay_weight",
     "decay_weights",
     "effective_count",
     "weighted_mean",
     "weighted_sum",
+    "prepare_historical_performances",
 ]
