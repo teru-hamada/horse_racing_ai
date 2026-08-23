@@ -89,7 +89,7 @@ def save_feature_run(metadata: dict[str, Any], path: Path | None = None) -> None
         con.execute("INSERT INTO feature_runs BY NAME SELECT * FROM incoming_run")
 
 
-def save_features(frame: pd.DataFrame, path: Path | None = None) -> None:
+def _validate_feature_frame(frame: pd.DataFrame) -> list[str]:
     missing = set(FEATURE_KEY_COLUMNS).difference(frame.columns)
     if missing:
         raise ValueError(f"Feature frame is missing metadata columns: {sorted(missing)}")
@@ -103,24 +103,68 @@ def save_features(frame: pd.DataFrame, path: Path | None = None) -> None:
     if invalid:
         raise ValueError(f"Unsafe feature column names: {invalid}")
 
+    return feature_columns
+
+
+def _write_features(
+    frame: pd.DataFrame,
+    path: Path | None,
+    *,
+    replace_version: bool,
+) -> None:
+    feature_columns = _validate_feature_frame(frame)
     with connect(path) as con:
-        existing = {
-            row[1] for row in con.execute("PRAGMA table_info('race_features')").fetchall()
-        }
-        for column in feature_columns:
-            if column not in existing:
-                con.execute(f'ALTER TABLE race_features ADD COLUMN "{column}" {_sql_type(frame[column])}')
-        con.register("incoming_features", frame)
-        con.execute(
-            "DELETE FROM race_features USING incoming_features "
-            "WHERE race_features.race_id = incoming_features.race_id "
-            "AND race_features.horse_id = incoming_features.horse_id "
-            "AND race_features.feature_set_name = incoming_features.feature_set_name "
-            "AND race_features.feature_set_version = incoming_features.feature_set_version"
-        )
-        columns = list(frame.columns)
-        quoted = ", ".join(f'"{column}"' for column in columns)
-        con.execute(f"INSERT INTO race_features ({quoted}) SELECT {quoted} FROM incoming_features")
+        con.execute("BEGIN TRANSACTION")
+        try:
+            if replace_version:
+                identities = frame[["feature_set_name", "feature_set_version"]].drop_duplicates()
+                if len(identities) != 1:
+                    raise ValueError("Replacement requires exactly one feature set and version")
+                identity = identities.iloc[0]
+                con.execute(
+                    "DELETE FROM race_features "
+                    "WHERE feature_set_name = ? AND feature_set_version = ?",
+                    [identity["feature_set_name"], identity["feature_set_version"]],
+                )
+            existing = {
+                row[1]
+                for row in con.execute("PRAGMA table_info('race_features')").fetchall()
+            }
+            for column in feature_columns:
+                if column not in existing:
+                    con.execute(
+                        f'ALTER TABLE race_features ADD COLUMN "{column}" '
+                        f'{_sql_type(frame[column])}'
+                    )
+            con.register("incoming_features", frame)
+            if not replace_version:
+                con.execute(
+                    "DELETE FROM race_features USING incoming_features "
+                    "WHERE race_features.race_id = incoming_features.race_id "
+                    "AND race_features.horse_id = incoming_features.horse_id "
+                    "AND race_features.feature_set_name = incoming_features.feature_set_name "
+                    "AND race_features.feature_set_version = incoming_features.feature_set_version"
+                )
+            columns = list(frame.columns)
+            quoted = ", ".join(f'"{column}"' for column in columns)
+            con.execute(
+                f"INSERT INTO race_features ({quoted}) "
+                f"SELECT {quoted} FROM incoming_features"
+            )
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+
+
+def save_features(frame: pd.DataFrame, path: Path | None = None) -> None:
+    _write_features(frame, path, replace_version=False)
+
+
+def replace_features(frame: pd.DataFrame, path: Path | None = None) -> None:
+    """Atomically replace every row for one feature-set version."""
+
+    _write_features(frame, path, replace_version=True)
 
 
 def load_features(
@@ -162,3 +206,42 @@ def clear_features(
 def feature_runs(path: Path | None = None) -> pd.DataFrame:
     with connect(path) as con:
         return con.execute("SELECT * FROM feature_runs ORDER BY generated_at DESC").df()
+
+
+def feature_store_summary(
+    feature_set_name: str,
+    feature_set_version: str,
+    path: Path | None = None,
+) -> dict[str, object]:
+    with connect(path) as con:
+        row = con.execute(
+            """
+            SELECT COUNT(*), COUNT(DISTINCT race_id), MIN(race_date), MAX(race_date),
+                   MAX(generated_at)
+            FROM race_features
+            WHERE feature_set_name = ? AND feature_set_version = ?
+            """,
+            [feature_set_name, feature_set_version],
+        ).fetchone()
+        latest = con.execute(
+            """
+            SELECT feature_run_id, status, source_data_fingerprint, config_json, message
+            FROM feature_runs
+            WHERE feature_set_name = ? AND feature_set_version = ?
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            [feature_set_name, feature_set_version],
+        ).fetchone()
+    return {
+        "row_count": int(row[0]),
+        "race_count": int(row[1]),
+        "start_date": row[2],
+        "end_date": row[3],
+        "generated_at": row[4],
+        "latest_run_id": latest[0] if latest else None,
+        "latest_status": latest[1] if latest else None,
+        "source_data_fingerprint": latest[2] if latest else None,
+        "config_json": latest[3] if latest else None,
+        "message": latest[4] if latest else None,
+    }

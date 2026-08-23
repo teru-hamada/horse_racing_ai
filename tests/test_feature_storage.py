@@ -8,6 +8,7 @@ from src.public_api import (
     clear_features,
     connect_feature_store,
     load_features,
+    replace_features,
     save_feature_run,
     save_features,
 )
@@ -66,3 +67,18 @@ def test_feature_run_configuration_is_recorded(tmp_path):
         ).fetchone()
     assert row[0] == "1"
     assert '"half_life_days": 180' in row[1]
+
+
+def test_replace_features_removes_stale_rows_for_same_version(tmp_path):
+    feature_db = tmp_path / "features.duckdb"
+    original = pd.concat([
+        _feature_frame("1", 1.0),
+        _feature_frame("1", 2.0).assign(race_id="stale", horse_id="stale"),
+    ], ignore_index=True)
+    save_features(original, feature_db)
+
+    replace_features(_feature_frame("1", 3.0), feature_db)
+
+    loaded = load_features("baseline", "1", feature_db)
+    assert len(loaded) == 1
+    assert loaded["sample_score"].iloc[0] == 3.0

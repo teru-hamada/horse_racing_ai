@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import pandas as pd
 
 from ..base import FEATURE_ID_COLUMNS, FeatureGenerator
-from ..common import decay_weights, effective_count, weighted_mean
 from ..context import FeatureContext
 
 
@@ -95,6 +94,24 @@ def _settings(parameters: Mapping[str, Any]) -> tuple[float, int]:
     return half_life_days, max_lookback_days
 
 
+def _nanmean(values: np.ndarray) -> float:
+    valid = values[~np.isnan(values)]
+    return float(valid.mean()) if len(valid) else np.nan
+
+
+def _nanstd(values: np.ndarray) -> float:
+    valid = values[~np.isnan(values)]
+    return float(valid.std(ddof=0)) if len(valid) else np.nan
+
+
+def _weighted_array_mean(values: np.ndarray, weights: np.ndarray) -> float:
+    valid = ~np.isnan(values) & ~np.isnan(weights)
+    total_weight = float(weights[valid].sum())
+    if not valid.any() or total_weight <= 0:
+        return np.nan
+    return float(np.dot(values[valid], weights[valid]) / total_weight)
+
+
 class RecentFormGenerator(FeatureGenerator):
     """Aggregate point-in-time form without odds, body weight, or speed indexes."""
 
@@ -122,6 +139,14 @@ class RecentFormGenerator(FeatureGenerator):
         "recent_effective_starts",
     )
 
+    def __init__(
+        self,
+        progress: Callable[[float], None] | None = None,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> None:
+        self._progress = progress
+        self._check_cancelled = check_cancelled
+
     def transform(
         self,
         targets: pd.DataFrame,
@@ -131,86 +156,111 @@ class RecentFormGenerator(FeatureGenerator):
         _require_columns(targets, REQUIRED_TARGET_COLUMNS, "Targets")
         half_life_days, max_lookback_days = _settings(context.parameters)
         prepared = prepare_historical_performances(history)
-        histories_by_horse = {
-            horse_id: group
-            for horse_id, group in prepared.groupby("horse_id", sort=False)
-        }
+        histories_by_horse = {}
+        grouped = prepared.groupby("horse_id", sort=False)
+        group_count = max(grouped.ngroups, 1)
+        for group_position, (horse_id, group) in enumerate(grouped):
+            if self._check_cancelled and group_position % 250 == 0:
+                self._check_cancelled()
+            if self._progress and group_position % 250 == 0:
+                self._progress(0.25 * group_position / group_count)
+            ordered = group.sort_values(["race_date", "race_id"], kind="stable")
+            histories_by_horse[horse_id] = {
+                "dates": ordered["race_date"].to_numpy(dtype="datetime64[ns]"),
+                "finish": ordered["finish_position"].to_numpy(dtype=float),
+                "relative": ordered["relative_finish"].to_numpy(dtype=float),
+                "win": ordered["is_win"].to_numpy(dtype=float, na_value=np.nan),
+                "top3": ordered["is_top3"].to_numpy(dtype=float, na_value=np.nan),
+                "last3f": ordered["last3f_rank_rate"].to_numpy(dtype=float),
+            }
         target_dates = pd.to_datetime(targets["race_date"], errors="coerce")
         if target_dates.isna().any():
             raise ValueError("Target race_date cannot be missing or invalid")
 
         rows: list[dict[str, object]] = []
-        for position, (_, target) in enumerate(targets.iterrows()):
+        target_count = max(len(targets), 1)
+        for position, target in enumerate(targets.itertuples(index=False)):
+            if self._check_cancelled and position % 1000 == 0:
+                self._check_cancelled()
+            if self._progress and position % 1000 == 0:
+                self._progress(0.25 + 0.75 * position / target_count)
             target_date = target_dates.iloc[position]
-            all_horse_history = histories_by_horse.get(target["horse_id"])
-            if all_horse_history is None:
-                horse_history = prepared.iloc[0:0].copy()
-            else:
-                horse_history = all_horse_history[
-                    all_horse_history["race_date"].lt(target_date)
-                ].copy()
-            horse_history = horse_history.sort_values(
-                ["race_date", "race_id"], kind="stable"
-            )
+            arrays = histories_by_horse.get(target.horse_id)
             rows.append(
                 self._aggregate(
-                    target,
+                    target.race_id,
+                    target.horse_id,
                     target_date,
-                    horse_history,
+                    arrays,
                     half_life_days,
                     max_lookback_days,
                 )
             )
+        if self._progress:
+            self._progress(1.0)
         return pd.DataFrame(rows, columns=FEATURE_ID_COLUMNS + self.output_columns)
 
     def _aggregate(
         self,
-        target: pd.Series,
+        race_id: object,
+        horse_id: object,
         target_date: pd.Timestamp,
-        horse_history: pd.DataFrame,
+        arrays: dict[str, np.ndarray] | None,
         half_life_days: float,
         max_lookback_days: int,
     ) -> dict[str, object]:
         result: dict[str, object] = {
-            "race_id": target["race_id"],
-            "horse_id": target["horse_id"],
-            "recent_starts_total": float(len(horse_history)),
+            "race_id": race_id,
+            "horse_id": horse_id,
         }
-        if horse_history.empty:
+        if arrays is None:
+            result["recent_starts_total"] = 0.0
             result.update({column: np.nan for column in self.output_columns[1:]})
             result["recent_finish_available_count_5"] = 0.0
             result["recent_effective_starts"] = 0.0
             return result
 
-        elapsed_days = (target_date - horse_history["race_date"]).dt.total_seconds() / 86_400
-        result["recent_days_since_last"] = float(elapsed_days.iloc[-1])
-        last_three = horse_history.tail(3)
-        last_five = horse_history.tail(5)
-        decay_history = horse_history[elapsed_days.le(max_lookback_days)].copy()
-        decay_elapsed = elapsed_days.loc[decay_history.index]
-        weights = decay_weights(decay_elapsed, half_life_days)
+        target_value = np.datetime64(target_date.to_datetime64(), "ns")
+        starts = int(np.searchsorted(arrays["dates"], target_value, side="left"))
+        result["recent_starts_total"] = float(starts)
+        if starts == 0:
+            result.update({column: np.nan for column in self.output_columns[1:]})
+            result["recent_finish_available_count_5"] = 0.0
+            result["recent_effective_starts"] = 0.0
+            return result
+
+        dates = arrays["dates"][:starts]
+        finish = arrays["finish"][:starts]
+        relative = arrays["relative"][:starts]
+        win = arrays["win"][:starts]
+        top3 = arrays["top3"][:starts]
+        last3f = arrays["last3f"][:starts]
+        elapsed_days = (target_value - dates) / np.timedelta64(1, "D")
+        decay_mask = elapsed_days <= max_lookback_days
+        weights = np.power(0.5, elapsed_days[decay_mask] / half_life_days)
 
         result.update({
-            "recent_finish_last": horse_history["finish_position"].iloc[-1],
-            "recent_finish_mean_3": last_three["finish_position"].mean(),
-            "recent_finish_mean_5": last_five["finish_position"].mean(),
-            "recent_relative_finish_last": horse_history["relative_finish"].iloc[-1],
-            "recent_relative_finish_mean_3": last_three["relative_finish"].mean(),
-            "recent_relative_finish_mean_5": last_five["relative_finish"].mean(),
-            "recent_relative_finish_decay_mean": weighted_mean(
-                decay_history["relative_finish"], weights
+            "recent_days_since_last": float(elapsed_days[-1]),
+            "recent_finish_last": finish[-1],
+            "recent_finish_mean_3": _nanmean(finish[-3:]),
+            "recent_finish_mean_5": _nanmean(finish[-5:]),
+            "recent_relative_finish_last": relative[-1],
+            "recent_relative_finish_mean_3": _nanmean(relative[-3:]),
+            "recent_relative_finish_mean_5": _nanmean(relative[-5:]),
+            "recent_relative_finish_decay_mean": _weighted_array_mean(
+                relative[decay_mask], weights
             ),
-            "recent_win_rate_5": last_five["is_win"].mean(),
-            "recent_top3_rate_5": last_five["is_top3"].mean(),
-            "recent_win_rate_decay": weighted_mean(decay_history["is_win"], weights),
-            "recent_top3_rate_decay": weighted_mean(decay_history["is_top3"], weights),
-            "recent_last3f_rank_rate_last": horse_history["last3f_rank_rate"].iloc[-1],
-            "recent_last3f_rank_rate_mean_3": last_three["last3f_rank_rate"].mean(),
-            "recent_last3f_rank_rate_decay_mean": weighted_mean(
-                decay_history["last3f_rank_rate"], weights
+            "recent_win_rate_5": _nanmean(win[-5:]),
+            "recent_top3_rate_5": _nanmean(top3[-5:]),
+            "recent_win_rate_decay": _weighted_array_mean(win[decay_mask], weights),
+            "recent_top3_rate_decay": _weighted_array_mean(top3[decay_mask], weights),
+            "recent_last3f_rank_rate_last": last3f[-1],
+            "recent_last3f_rank_rate_mean_3": _nanmean(last3f[-3:]),
+            "recent_last3f_rank_rate_decay_mean": _weighted_array_mean(
+                last3f[decay_mask], weights
             ),
-            "recent_relative_finish_std_5": last_five["relative_finish"].std(ddof=0),
-            "recent_finish_available_count_5": float(last_five["finish_position"].count()),
-            "recent_effective_starts": effective_count(weights),
+            "recent_relative_finish_std_5": _nanstd(relative[-5:]),
+            "recent_finish_available_count_5": float(np.count_nonzero(~np.isnan(finish[-5:]))),
+            "recent_effective_starts": float(weights.sum()),
         })
         return result

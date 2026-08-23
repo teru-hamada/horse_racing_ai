@@ -24,14 +24,21 @@ from src.public_api import (
     race_record_summary,
     race_record_years,
     cancel_database_job,
+    cancel_feature_generation_job,
     cancel_html_collection_job as cancel_job,
     generate_demo_records,
+    feature_runs,
+    feature_store_summary,
+    clear_features,
     list_database_jobs,
+    list_feature_generation_jobs,
     list_html_collection_jobs as list_jobs,
     NetkeibaHtmlCollector,
     start_database_job,
+    start_feature_generation_job,
     start_html_collection_job as start_job,
     TrainConfig,
+    RecentFormRunConfig,
     train_model,
     save_collection_run,
     save_race_records,
@@ -628,13 +635,60 @@ def _render_active_database_creation_status(
         st.rerun()
 
 
+def _render_feature_generation_status() -> bool:
+    st.subheader("特徴量生成状況")
+    jobs = list_feature_generation_jobs()
+    if not jobs:
+        st.info("この画面から開始した特徴量生成はありません。")
+        return False
+
+    latest_job = jobs[0]
+    status_labels = {
+        "running": "生成中",
+        "cancelling": "中止処理中",
+        "cancelled": "中止",
+        "completed": "完了",
+        "failed": "失敗",
+    }
+    progress_value = float(latest_job["progress"])
+    st.progress(
+        progress_value,
+        text=(
+            f"{status_labels.get(latest_job['status'], latest_job['status'])} "
+            f"{progress_value:.0%}"
+        ),
+    )
+    st.write(f"実行ID: `{latest_job['job_id']}`")
+    if latest_job["result"]:
+        st.success(
+            f"{int(latest_job['result'].get('row_count', 0)):,}行の特徴量を保存しました。"
+        )
+    if latest_job["error"]:
+        st.error(latest_job["error"])
+    with st.expander(
+        "実行ログ",
+        expanded=latest_job["status"] in {"running", "cancelling"},
+    ):
+        st.code("\n".join(latest_job["logs"][-100:]), language="text")
+    if st.button("状態を更新", key="refresh_feature_generation"):
+        st.rerun()
+    return latest_job["status"] in {"running", "cancelling"}
+
+
+@st.fragment(run_every=3)
+def _render_active_feature_generation_status() -> None:
+    if not _render_feature_generation_status():
+        st.rerun()
+
+
 with st.sidebar:
     page = st.radio(
         "メニュー",
-        ["ダッシュボード", "HTML収集（学習用）", "HTML収集（予想用）", "データベース作成", "モデル学習", "週末予想", "ログ・保存結果", "メンテナンス"],
+        ["ダッシュボード", "HTML収集（学習用）", "HTML収集（予想用）", "データベース作成", "前準備（特徴量エンジニアリング）", "モデル学習", "週末予想", "ログ・保存結果", "メンテナンス"],
     )
     st.divider()
     st.caption(f"DB: {PATHS.database}")
+    st.caption(f"特徴量DB: {PATHS.feature_database}")
     st.caption("推奨Python: 3.11")
 
 log_placeholder = None
@@ -1193,6 +1247,134 @@ elif page == "データベース作成":
                     use_container_width=True,
                     hide_index=True,
                 )
+
+elif page == "前準備（特徴量エンジニアリング）":
+    st.header("前準備（特徴量エンジニアリング）")
+    st.info(
+        "学習用の過去レース特徴量を事前生成します。モデル学習時には自動生成されません。"
+        "元データを更新した場合や特徴量設定を変更した場合は再生成してください。"
+    )
+
+    feature_set_name = "baseline"
+    feature_set_version = "1.1.0"
+    summary = feature_store_summary(feature_set_name, feature_set_version)
+    metric1, metric2, metric3 = st.columns(3)
+    metric1.metric("特徴量セット", f"{feature_set_name}:{feature_set_version}")
+    metric2.metric("保存行数", f"{int(summary['row_count']):,}")
+    metric3.metric("対象レース数", f"{int(summary['race_count']):,}")
+    generated_at = pd.to_datetime(summary["generated_at"], errors="coerce")
+    st.markdown("#### 最終生成日時")
+    if pd.notna(generated_at):
+        generated_date_column, generated_time_column = st.columns(2)
+        generated_date_column.metric("日付", generated_at.strftime("%Y-%m-%d"))
+        generated_time_column.metric("時刻", generated_at.strftime("%H:%M:%S"))
+    else:
+        st.info("まだ特徴量は生成されていません。")
+    if summary["row_count"]:
+        fingerprint = str(summary.get("source_data_fingerprint") or "")
+        st.success(
+            f"生成済み期間: {summary['start_date']} ～ {summary['end_date']}　"
+            f"実行ID: {summary['latest_run_id']}"
+        )
+        if fingerprint:
+            st.caption(f"元データ指紋: {fingerprint}")
+
+    st.subheader("生成設定")
+    setting1, setting2 = st.columns(2)
+    half_life_days = setting1.number_input(
+        "時間減衰の半減期（日）",
+        min_value=1,
+        max_value=3650,
+        value=180,
+        step=30,
+        help=(
+            "過去成績の影響が半分になるまでの日数です。短くすると最近の成績をより強く"
+            "評価し、長くすると古い成績も残りやすくなります。初期値は180日です。"
+            "モデル比較など明確な目的がない限り、原則変更不要です。"
+        ),
+    )
+    max_lookback_days = setting2.number_input(
+        "最大参照期間（日）",
+        min_value=30,
+        max_value=7300,
+        value=1095,
+        step=30,
+        help=(
+            "時間減衰集計で参照する過去成績の最長期間です。初期値1095日は約3年間です。"
+            "これより古い成績は集計対象から除外します。データ期間を変更する明確な目的が"
+            "ない限り、原則変更不要です。"
+        ),
+    )
+    st.caption(
+        "全期間の履歴を対象に生成します。対象レース当日および未来の結果は使用しません。"
+    )
+
+    feature_jobs = list_feature_generation_jobs()
+    active_feature_job = next(
+        (
+            job for job in feature_jobs
+            if job["status"] in {"running", "cancelling"}
+        ),
+        None,
+    )
+    start_column, cancel_column = st.columns(2)
+    with start_column:
+        start_features = st.button(
+            "特徴量生成を開始",
+            type="primary",
+            disabled=active_feature_job is not None,
+            use_container_width=True,
+        )
+    with cancel_column:
+        cancel_features = st.button(
+            "生成を中止",
+            disabled=active_feature_job is None,
+            use_container_width=True,
+        )
+
+    if start_features:
+        try:
+            job_id = start_feature_generation_job(
+                RecentFormRunConfig(
+                    feature_set_name=feature_set_name,
+                    feature_set_version=feature_set_version,
+                    half_life_days=float(half_life_days),
+                    max_lookback_days=int(max_lookback_days),
+                )
+            )
+            st.success(f"バックグラウンド生成を開始しました。実行ID: {job_id}")
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+    if cancel_features and active_feature_job is not None:
+        if cancel_feature_generation_job(str(active_feature_job["job_id"])):
+            st.warning("中止を要求しました。完成済みの特徴量は維持されます。")
+            st.rerun()
+
+    if active_feature_job is not None:
+        _render_active_feature_generation_status()
+    else:
+        _render_feature_generation_status()
+
+    st.divider()
+    st.subheader("特徴量データのクリア")
+    confirm_clear = st.checkbox(
+        f"{feature_set_name}:{feature_set_version} の特徴量をクリアする",
+        disabled=active_feature_job is not None,
+    )
+    if st.button(
+        "特徴量をクリア",
+        disabled=not confirm_clear or active_feature_job is not None,
+    ):
+        deleted = clear_features(feature_set_name, feature_set_version)
+        st.success(f"{deleted:,}行の特徴量をクリアしました。元レースデータは変更していません。")
+        st.rerun()
+
+    runs = feature_runs()
+    if not runs.empty:
+        st.subheader("特徴量生成履歴")
+        st.dataframe(runs.head(20), use_container_width=True, hide_index=True)
 
 elif page == "モデル学習":
     st.header("ディープラーニングモデル学習")

@@ -31,6 +31,9 @@ _feature_engineering = import_module(
 _feature_storage = import_module(
     "src.30_ai_modeling.feature_engineering.storage"
 )
+_feature_jobs = import_module(
+    "src.30_ai_modeling.feature_engineering.jobs"
+)
 
 cancel_html_collection_job = _html_jobs.cancel_job
 list_html_collection_jobs = _html_jobs.list_jobs
@@ -87,6 +90,10 @@ FeaturePipeline = _feature_engineering.FeaturePipeline
 FeatureRegistry = _feature_engineering.FeatureRegistry
 FeatureSetDefinition = _feature_engineering.FeatureSetDefinition
 RecentFormGenerator = _feature_engineering.RecentFormGenerator
+RecentFormRunConfig = _feature_engineering.RecentFormRunConfig
+generate_recent_form_features = (
+    _feature_engineering.generate_recent_form_features
+)
 prepare_historical_performances = (
     _feature_engineering.prepare_historical_performances
 )
@@ -99,6 +106,11 @@ weighted_sum = _feature_engineering.weighted_sum
 connect_feature_store = _feature_storage.connect
 save_feature_run = _feature_storage.save_feature_run
 save_features = _feature_storage.save_features
+replace_features = _feature_storage.replace_features
 load_features = _feature_storage.load_features
 clear_features = _feature_storage.clear_features
 feature_runs = _feature_storage.feature_runs
+feature_store_summary = _feature_storage.feature_store_summary
+start_feature_generation_job = _feature_jobs.start_feature_generation_job
+cancel_feature_generation_job = _feature_jobs.cancel_feature_generation_job
+list_feature_generation_jobs = _feature_jobs.list_feature_generation_jobs
