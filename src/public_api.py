@@ -25,6 +25,12 @@ _features = import_module("src.30_ai_modeling.common.features")
 _top3_target = import_module("src.30_ai_modeling.tasks.top3.target")
 _modeling = import_module("src.30_ai_modeling.service")
 _model_registry = import_module("src.30_ai_modeling.registry")
+_feature_engineering = import_module(
+    "src.30_ai_modeling.feature_engineering"
+)
+_feature_storage = import_module(
+    "src.30_ai_modeling.feature_engineering.storage"
+)
 
 cancel_html_collection_job = _html_jobs.cancel_job
 list_html_collection_jobs = _html_jobs.list_jobs
@@ -74,3 +80,15 @@ predict_task = _modeling.predict_task
 predict_historical_task = _modeling.predict_historical_task
 MODEL_TASKS = _model_registry.MODEL_TASKS
 get_model_task = _model_registry.get_task
+
+FeatureContext = _feature_engineering.FeatureContext
+FeatureGenerator = _feature_engineering.FeatureGenerator
+FeaturePipeline = _feature_engineering.FeaturePipeline
+FeatureRegistry = _feature_engineering.FeatureRegistry
+FeatureSetDefinition = _feature_engineering.FeatureSetDefinition
+connect_feature_store = _feature_storage.connect
+save_feature_run = _feature_storage.save_feature_run
+save_features = _feature_storage.save_features
+load_features = _feature_storage.load_features
+clear_features = _feature_storage.clear_features
+feature_runs = _feature_storage.feature_runs

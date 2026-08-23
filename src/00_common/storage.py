@@ -129,45 +129,6 @@ def connect() -> duckdb.DuckDBPyConnection:
     PATHS.database.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(PATHS.database))
     con.execute(SCHEMA_SQL)
-    for column in [
-        "sire_id",
-        "sire_name",
-        "dam_id",
-        "dam_name",
-        "damsire_id",
-        "damsire_name",
-    ]:
-        con.execute(
-            f"ALTER TABLE race_records "
-            f"ADD COLUMN IF NOT EXISTS {column} VARCHAR"
-        )
-    for column in [
-        "last_3f_time",
-    ]:
-        con.execute(
-            f"ALTER TABLE race_records "
-            f"ADD COLUMN IF NOT EXISTS {column} DOUBLE"
-        )
-    for column in [
-        "passing_position_1",
-        "passing_position_2",
-        "passing_position_3",
-        "passing_position_4",
-    ]:
-        con.execute(
-            f"ALTER TABLE race_records "
-            f"ADD COLUMN IF NOT EXISTS {column} INTEGER"
-        )
-    for column in [
-        "task_name",
-        "estimator_name",
-        "model_version",
-        "feature_version",
-    ]:
-        con.execute(
-            f"ALTER TABLE model_runs "
-            f"ADD COLUMN IF NOT EXISTS {column} VARCHAR"
-        )
     return con
 
 

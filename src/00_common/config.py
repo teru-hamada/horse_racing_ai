@@ -15,6 +15,7 @@ class AppPaths:
     models: Path
     logs: Path
     database: Path
+    feature_database: Path
 
 
 def get_paths(root: Path | None = None) -> AppPaths:
@@ -31,6 +32,7 @@ def get_paths(root: Path | None = None) -> AppPaths:
         models=root_path / "models",
         logs=root_path / "logs",
         database=data / "racing.duckdb",
+        feature_database=data / "features.duckdb",
     )
     for directory in (
         paths.data,
