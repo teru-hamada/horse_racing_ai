@@ -86,8 +86,8 @@ def build_prediction_site(
             )
         race_number = int(first["race_number"]) if pd.notna(first["race_number"]) else "-"
         race_sections.append(
-            f'<details class="race"><summary>{_text(first["race_name"])}</summary><div class="race-content">'
-            f'<div class="race-head"><div class="course">{_text(first["course_name"])} {race_number}R</div></div>'
+            f'<details class="race"><summary>{_text(first["course_name"])} {race_number}R {_text(first["race_name"])}</summary>'
+            f'<div class="race-content">'
             '<table><thead><tr><th>予測</th><th>馬番</th><th>馬名</th><th>3着以内確率</th><th>オッズ</th><th>期待値指数</th><th>騎手</th></tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div></details>'
         )
