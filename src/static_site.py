@@ -10,7 +10,7 @@ import pandas as pd
 _STYLE = """
 :root{color-scheme:dark;--bg:#07130f;--panel:#10251d;--line:#25483a;--text:#f4f7f5;--muted:#a9bdb5;--accent:#38d996;--gold:#ffd166}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#163b2c 0,var(--bg) 42%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}
-main{width:min(1180px,calc(100% - 28px));margin:0 auto;padding:42px 0 80px}header{margin-bottom:30px}.eyebrow{color:var(--accent);font-size:.78rem;font-weight:800;letter-spacing:.16em;text-transform:uppercase}h1{font-size:clamp(2rem,6vw,4.5rem);line-height:1;margin:.25em 0}.lead,.meta{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:28px 0}.metric,.race{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 50px #0004}.metric{padding:18px}.metric strong{display:block;font-size:1.7rem;color:var(--gold)}.race{padding:22px;margin:18px 0}.race-head{display:flex;align-items:end;justify-content:space-between;gap:14px}.race h2{margin:0}.course{color:var(--accent);font-weight:800}table{width:100%;border-collapse:collapse;margin-top:18px;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:11px 8px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.78rem}.rank{font-size:1.1rem;font-weight:900}.prob{color:var(--gold);font-weight:800}.top3 td{background:#38d9960c}.back{display:inline-block;color:var(--accent);margin-bottom:18px;text-decoration:none}.empty{padding:50px 0;color:var(--muted)}footer{margin-top:36px;color:var(--muted);font-size:.8rem}@media(max-width:720px){.summary{grid-template-columns:1fr}.race{padding:15px;overflow-x:auto}th,td{white-space:nowrap}.race-head{align-items:start;flex-direction:column}}
+main{width:100%;margin:0;padding:42px 28px 80px}header{margin-bottom:30px}.eyebrow{color:var(--accent);font-size:.78rem;font-weight:800;letter-spacing:.16em;text-transform:uppercase}h1{font-size:clamp(2rem,6vw,4.5rem);line-height:1;margin:.25em 0}.lead,.meta{color:var(--muted)}.race{width:100%;background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 50px #0004;margin:16px 0;overflow:hidden}.race>summary{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:22px 24px;cursor:pointer;font-size:1.25rem;font-weight:800;list-style:none}.race>summary::-webkit-details-marker{display:none}.race>summary::after{content:"＋";color:var(--accent);font-size:1.5rem}.race[open]>summary::after{content:"−"}.race[open]>summary{border-bottom:1px solid var(--line)}.race-content{width:100%;padding:20px 24px 24px;overflow-x:auto}.race-head{display:flex;align-items:center;justify-content:space-between;gap:14px}.course{color:var(--accent);font-weight:800}table{width:100%;min-width:760px;border-collapse:collapse;margin-top:18px;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:13px 10px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.78rem}.rank{font-size:1.1rem;font-weight:900}.prob{color:var(--gold);font-weight:800}.top3 td{background:#38d9960c}.back{display:inline-block;color:var(--accent);margin-bottom:18px;text-decoration:none}.empty{padding:50px 0;color:var(--muted)}footer{margin-top:36px;color:var(--muted);font-size:.8rem}@media(max-width:720px){main{padding:28px 12px 60px}.race>summary{padding:18px 16px;font-size:1.05rem}.race-content{padding:14px 12px 18px}th,td{white-space:nowrap}.race-head{align-items:start;flex-direction:column}}
 """
 
 
@@ -72,7 +72,6 @@ def build_prediction_site(
     (site_dir / ".nojekyll").touch()
 
     race_sections = []
-    race_count = predictions["race_id"].nunique()
     for _, race in predictions.groupby("race_id", sort=False):
         first = race.iloc[0]
         rows = []
@@ -87,17 +86,14 @@ def build_prediction_site(
             )
         race_number = int(first["race_number"]) if pd.notna(first["race_number"]) else "-"
         race_sections.append(
-            f'<section class="race"><div class="race-head"><div><div class="course">{_text(first["course_name"])}</div>'
-            f'<h2>{race_number}R {_text(first["race_name"])}</h2></div><span class="meta">{_text(first["race_id"])}</span></div>'
+            f'<details class="race"><summary>{_text(first["race_name"])}</summary><div class="race-content">'
+            f'<div class="race-head"><div class="course">{_text(first["course_name"])} {race_number}R</div></div>'
             '<table><thead><tr><th>予測</th><th>馬番</th><th>馬名</th><th>3着以内確率</th><th>オッズ</th><th>期待値指数</th><th>騎手</th></tr></thead>'
-            f'<tbody>{"".join(rows)}</tbody></table></section>'
+            f'<tbody>{"".join(rows)}</tbody></table></div></details>'
         )
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     body = f"""<a class="back" href="../index.html">← 開催日一覧</a><header><div class="eyebrow">Daily Predictions</div>
 <h1>{date_text}</h1><p class="lead">開催日単位の全レース予想</p></header>
-<div class="summary"><div class="metric"><span>レース数</span><strong>{race_count}</strong></div>
-<div class="metric"><span>出走馬数</span><strong>{len(predictions)}</strong></div>
-<div class="metric"><span>モデル</span><strong>{escape(str(model_id))}</strong></div></div>
 {''.join(race_sections)}<p class="meta">生成日時: {escape(generated_at)}</p>"""
     page_path = prediction_dir / f"{date_text}.html"
     page_path.write_text(_page(f"{date_text} 競馬予想", body), encoding="utf-8")

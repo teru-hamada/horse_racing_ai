@@ -31,4 +31,9 @@ def test_static_prediction_site_escapes_content_and_updates_index(tmp_path):
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "75.0%" in html
+    assert '<details class="race">' in html
+    assert "<summary>&lt;script&gt;alert(1)&lt;/script&gt;</summary>" in html
+    assert "出走馬数" not in html
+    assert "model-test" not in html
+    assert "r1" not in html
     assert "predictions/2026-08-29.html" in index
