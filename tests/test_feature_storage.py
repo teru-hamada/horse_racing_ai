@@ -37,7 +37,11 @@ def test_feature_store_has_independent_schema(tmp_path):
             row[0]
             for row in connection.execute("SHOW TABLES").fetchall()
         }
-    assert tables == {"feature_runs", "race_features"}
+    assert tables == {
+        "feature_runs",
+        "performance_features",
+        "race_features",
+    }
     assert feature_db.exists()
 
 

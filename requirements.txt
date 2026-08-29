@@ -10,3 +10,4 @@ torch>=2.5
 scikit-learn>=1.5
 plotly>=5.24
 joblib>=1.4
+pytest>=8.3
