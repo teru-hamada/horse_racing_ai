@@ -19,8 +19,11 @@ from src.public_api import (
     load_records,
     model_runs,
     PATHS,
+    build_prediction_site,
+    compare_prediction_date,
     predict_historical_race,
     predict_race,
+    predict_race_date,
     race_record_summary,
     race_record_years,
     cancel_database_job,
@@ -126,45 +129,6 @@ _PREDICTION_COLUMN_LABELS = {
     "actual_top3": "実際の3着以内",
     "top3_hit": "的中",
 }
-
-
-def _compare_prediction_with_finish(
-    prediction: pd.DataFrame,
-    actual: pd.DataFrame,
-) -> pd.DataFrame:
-    """Join a saved prediction with finish positions parsed from result HTML."""
-
-    required_prediction = {"horse_id", "horse_number", "prediction_rank"}
-    missing = required_prediction.difference(prediction.columns)
-    if missing:
-        raise ValueError(f"予想結果に比較用の列がありません: {sorted(missing)}")
-    required_actual = {"horse_id", "horse_number", "finish_position"}
-    missing = required_actual.difference(actual.columns)
-    if missing:
-        raise ValueError(f"結果HTMLに着順列がありません: {sorted(missing)}")
-    finish = actual.loc[:, list(required_actual)].copy()
-    finish["finish_position"] = pd.to_numeric(
-        finish["finish_position"], errors="coerce"
-    )
-    finish = finish.dropna(subset=["finish_position"])
-    if finish.empty:
-        raise ValueError("結果HTMLから確定着順を取得できませんでした。")
-    use_horse_id = (
-        prediction["horse_id"].notna().any()
-        and finish["horse_id"].notna().any()
-    )
-    join_key = "horse_id" if use_horse_id else "horse_number"
-    finish = finish.drop_duplicates(join_key, keep="last")
-    compared = prediction.merge(
-        finish[[join_key, "finish_position"]],
-        on=join_key,
-        how="left",
-        validate="many_to_one",
-    )
-    compared["predicted_top3"] = compared["prediction_rank"].le(3)
-    compared["actual_top3"] = compared["finish_position"].le(3)
-    compared["top3_hit"] = compared["predicted_top3"] & compared["actual_top3"]
-    return compared.sort_values("prediction_rank", kind="stable").reset_index(drop=True)
 
 
 def _extract_urls(value: object) -> list[str]:
@@ -2565,97 +2529,49 @@ elif page == "レース予想":
                     "予想用の出馬表データを取得してください。"
                 )
             else:
-                race_options = (
-                    upcoming[
-                        [
-                            "race_id",
-                            "race_date",
-                            "course_name",
-                            "race_number",
-                            "race_name",
-                        ]
-                    ]
-                    .drop_duplicates("race_id")
-                    .sort_values(
-                        [
-                            "race_date",
-                            "course_name",
-                            "race_number",
-                        ]
-                    )
+                available_dates = sorted(
+                    pd.to_datetime(upcoming["race_date"], errors="coerce")
+                    .dropna().dt.date.unique(),
+                    reverse=True,
                 )
-                labels = {
-                    row.race_id: (
-                        f"{row.race_date} "
-                        f"{row.course_name}"
-                        f"{int(row.race_number) if pd.notna(row.race_number) else ''}R "
-                        f"{row.race_name} ({row.race_id})"
-                    )
-                    for row in race_options.itertuples()
-                }
-                race_id = st.selectbox(
-                    "予想対象レース",
-                    race_options["race_id"].tolist(),
-                    format_func=lambda x: labels[x],
+                selected_prediction_date = st.selectbox(
+                    "予想対象日",
+                    available_dates,
+                    format_func=lambda value: value.strftime("%Y年%m月%d日"),
                 )
+                races_on_date = upcoming[
+                    pd.to_datetime(upcoming["race_date"], errors="coerce")
+                    .dt.date.eq(selected_prediction_date)
+                ]["race_id"].nunique()
+                st.caption(f"対象レース: {races_on_date}レース")
 
                 if st.button(
-                    "予想を実行",
+                    "この日の全レースを予想",
                     type="primary",
                     key="upcoming_prediction_button",
                 ):
                     logger = new_logger()
                     try:
                         logger.info(
-                            f"予想開始: race_id={race_id}, "
+                            f"日付一括予想開始: date={selected_prediction_date}, "
                             f"model={model_id}"
                         )
                         with st.spinner(
                             "予想特徴量を生成し、モデルで推論しています。しばらくお待ちください。",
                             show_time=True,
                         ):
-                            result, output_path = predict_race(
+                            result, output_path = predict_race_date(
                                 historical,
                                 upcoming,
-                                race_id,
+                                selected_prediction_date,
                                 model_path,
                             )
-                        display = result.copy()
-                        display["top3_probability"] = (
-                            display["top3_probability"]
-                            .map(lambda x: f"{x:.1%}")
-                        )
-                        display["expected_value_index"] = (
-                            display["expected_value_index"]
-                            .map(
-                                lambda x: (
-                                    f"{x:.2f}"
-                                    if pd.notna(x)
-                                    else "-"
-                                )
-                            )
-                        )
-                        display = display.rename(
-                            columns=_PREDICTION_COLUMN_LABELS
-                        )
                         st.success(
-                            f"予想結果を保存しました: {output_path}"
+                            f"{races_on_date}レースの予想結果を保存しました: {output_path}"
                         )
-                        st.dataframe(
-                            display,
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                        selected_race_date = pd.to_datetime(
-                            upcoming.loc[
-                                upcoming["race_id"].astype(str) == str(race_id),
-                                "race_date",
-                            ].iloc[0]
-                        ).date()
                         st.session_state["latest_upcoming_prediction"] = {
-                            "race_id": str(race_id),
                             "model_id": str(model_id),
-                            "race_date": selected_race_date,
+                            "race_date": selected_prediction_date,
                             "result": result,
                             "output_path": str(output_path),
                         }
@@ -2672,38 +2588,96 @@ elif page == "レース予想":
                 )
                 if (
                     latest_prediction
-                    and latest_prediction.get("race_id") == str(race_id)
+                    and latest_prediction.get("race_date") == selected_prediction_date
                     and latest_prediction.get("model_id") == str(model_id)
                 ):
+                    result = latest_prediction["result"]
+                    top3_list = result[result["prediction_rank"] <= 3].copy()
+                    display = top3_list.copy()
+                    display["top3_probability"] = display["top3_probability"].map(
+                        lambda value: f"{value:.1%}"
+                    )
+                    display["expected_value_index"] = display[
+                        "expected_value_index"
+                    ].map(lambda value: f"{value:.2f}" if pd.notna(value) else "-")
+                    list_columns = [
+                        "course_name", "race_number", "race_name",
+                        "prediction_rank", "horse_number", "horse_name",
+                        "top3_probability", "odds", "expected_value_index",
+                        "jockey_name",
+                    ]
+                    st.subheader("レース別 予測上位3頭")
+                    st.dataframe(
+                        display[list_columns].rename(columns=_PREDICTION_COLUMN_LABELS),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    with st.expander("全出走馬の予想を見る"):
+                        full_display = result.copy()
+                        full_display["top3_probability"] = full_display[
+                            "top3_probability"
+                        ].map(lambda value: f"{value:.1%}")
+                        full_display["expected_value_index"] = full_display[
+                            "expected_value_index"
+                        ].map(lambda value: f"{value:.2f}" if pd.notna(value) else "-")
+                        st.dataframe(
+                            full_display[list_columns].rename(
+                                columns=_PREDICTION_COLUMN_LABELS
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
                     if st.button(
-                        "結果と比較",
+                        "GitHub Pages用HTMLを生成",
                         type="secondary",
-                        key=f"compare_prediction_{race_id}_{model_id}",
+                        key=f"static_site_{selected_prediction_date}_{model_id}",
+                    ):
+                        try:
+                            page_path = build_prediction_site(
+                                result,
+                                selected_prediction_date,
+                                str(model_id),
+                                PATHS.root / "docs",
+                            )
+                            st.success(
+                                f"静的ページを生成しました: {page_path}。"
+                                "docsの変更をGitHubへpushすると公開されます。"
+                            )
+                        except Exception as exc:
+                            st.exception(exc)
+
+                    if st.button(
+                        "この日の全レースを確定結果と比較",
+                        type="secondary",
+                        key=f"compare_prediction_date_{selected_prediction_date}_{model_id}",
                     ):
                         logger = new_logger()
                         try:
                             with st.spinner(
-                                "対象レースの結果HTMLを取得し、確定着順と比較しています。",
+                                "この日の全レース結果を取得して比較しています。",
                                 show_time=True,
                             ):
                                 result_scraper = NetkeibaDatabaseCreator(logger=logger)
-                                actual_result = (
-                                    result_scraper.fetch_result_for_comparison(
-                                        str(race_id),
-                                        latest_prediction["race_date"],
-                                        force=True,
-                                    )
-                                )
-                                comparison = _compare_prediction_with_finish(
-                                    latest_prediction["result"], actual_result
+                                comparison, comparison_summary = compare_prediction_date(
+                                    result,
+                                    selected_prediction_date,
+                                    lambda race_id, race_date: (
+                                        result_scraper.fetch_result_for_comparison(
+                                            race_id,
+                                            race_date,
+                                            force=True,
+                                        )
+                                    ),
                                 )
                             st.session_state["latest_prediction_comparison"] = {
-                                "race_id": str(race_id),
+                                "race_date": selected_prediction_date,
                                 "model_id": str(model_id),
                                 "result": comparison,
+                                "summary": comparison_summary,
                             }
                         except Exception as exc:
-                            logger.exception(f"予想結果比較失敗: {exc}")
+                            logger.exception(f"日付一括予想結果比較失敗: {exc}")
                             st.exception(exc)
 
                     comparison_state = st.session_state.get(
@@ -2711,44 +2685,73 @@ elif page == "レース予想":
                     )
                     if (
                         comparison_state
-                        and comparison_state.get("race_id") == str(race_id)
+                        and comparison_state.get("race_date")
+                        == selected_prediction_date
                         and comparison_state.get("model_id") == str(model_id)
                     ):
+                        comparison_summary = comparison_state["summary"]
+                        metric1, metric2, metric3, metric4 = st.columns(4)
+                        metric1.metric(
+                            "比較完了レース",
+                            f"{comparison_summary['compared_races']} / "
+                            f"{comparison_summary['requested_races']}",
+                        )
+                        metric2.metric(
+                            "予測上位3頭の的中",
+                            f"{comparison_summary['top3_hit_count']}頭",
+                        )
+                        metric3.metric(
+                            "上位3頭完全的中",
+                            f"{comparison_summary['perfect_top3_races']}レース",
+                        )
+                        metric4.metric(
+                            "未比較レース",
+                            f"{comparison_summary['failed_races']}レース",
+                        )
+                        failures = comparison_summary.get("failures", [])
+                        if failures:
+                            st.warning(
+                                "結果未確定または取得失敗: "
+                                + " / ".join(
+                                    f"{item['race_id']} ({item['message']})"
+                                    for item in failures
+                                )
+                            )
                         comparison_display = comparison_state["result"].copy()
-                        comparison_display["top3_probability"] = (
-                            comparison_display["top3_probability"]
-                            .map(lambda value: f"{value:.1%}")
-                        )
-                        comparison_display["expected_value_index"] = (
-                            comparison_display["expected_value_index"].map(
-                                lambda value: f"{value:.2f}" if pd.notna(value) else "-"
+                        if comparison_display.empty:
+                            st.info("比較できる確定結果がまだありません。")
+                        else:
+                            comparison_display["top3_probability"] = comparison_display[
+                                "top3_probability"
+                            ].map(lambda value: f"{value:.1%}")
+                            comparison_display["expected_value_index"] = comparison_display[
+                                "expected_value_index"
+                            ].map(lambda value: f"{value:.2f}" if pd.notna(value) else "-")
+                            for column in ("predicted_top3", "actual_top3"):
+                                comparison_display[column] = comparison_display[column].map(
+                                    {True: "○", False: ""}
+                                )
+                            comparison_display["top3_hit"] = comparison_display[
+                                "top3_hit"
+                            ].map({True: "的中", False: ""})
+                            comparison_columns = [
+                                "course_name", "race_number", "race_name",
+                                "prediction_rank", "horse_number", "horse_name",
+                                "top3_probability", "finish_position", "predicted_top3",
+                                "actual_top3", "top3_hit", "odds", "popularity",
+                                "expected_value_index", "jockey_name",
+                            ]
+                            st.subheader("開催日一括：予想結果と確定着順の比較")
+                            st.dataframe(
+                                comparison_display[
+                                    [
+                                        column for column in comparison_columns
+                                        if column in comparison_display
+                                    ]
+                                ].rename(columns=_PREDICTION_COLUMN_LABELS),
+                                use_container_width=True,
+                                hide_index=True,
                             )
-                        )
-                        for column in ("predicted_top3", "actual_top3"):
-                            comparison_display[column] = comparison_display[column].map(
-                                {True: "○", False: ""}
-                            )
-                        comparison_display["top3_hit"] = comparison_display[
-                            "top3_hit"
-                        ].map({True: "的中", False: ""})
-                        comparison_columns = [
-                            "prediction_rank", "horse_number", "horse_name",
-                            "top3_probability", "finish_position",
-                            "predicted_top3", "actual_top3", "top3_hit",
-                            "odds", "popularity", "expected_value_index",
-                            "jockey_name",
-                        ]
-                        st.subheader("予想結果と確定着順の比較")
-                        st.dataframe(
-                            comparison_display[
-                                [
-                                    column for column in comparison_columns
-                                    if column in comparison_display.columns
-                                ]
-                            ].rename(columns=_PREDICTION_COLUMN_LABELS),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
 
         else:
             st.info(

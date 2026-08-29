@@ -678,3 +678,81 @@ def predict_race(
         }
     )
     return result, output_path
+
+
+def predict_race_date(
+    historical_records: pd.DataFrame,
+    upcoming_records: pd.DataFrame,
+    race_date: object,
+    model_dir: Path,
+) -> tuple[pd.DataFrame, Path]:
+    """Predict every cached race on one date in a single inference run."""
+
+    requested_date = pd.to_datetime(race_date, errors="coerce")
+    if pd.isna(requested_date):
+        raise ValueError("予想対象の日付が正しくありません。")
+    requested_date = requested_date.normalize()
+
+    upcoming = upcoming_records.copy()
+    upcoming["race_date"] = pd.to_datetime(upcoming["race_date"], errors="coerce")
+    date_targets = upcoming[
+        upcoming["race_date"].dt.normalize().eq(requested_date)
+    ].copy()
+    if date_targets.empty:
+        raise ValueError("指定日の出走データがありません。")
+
+    model, preprocessor, metrics = load_model_bundle(model_dir)
+    featured = build_top3_prediction_features(historical_records, date_targets)
+    matrix = preprocessor.transform(
+        _prepare_saved_model_features(featured, metrics)
+    ).astype("float32")
+    with torch.no_grad():
+        probability = torch.sigmoid(model(torch.from_numpy(matrix))).numpy()
+
+    result_columns = [
+        "race_id", "race_date", "course_name", "race_number", "race_name",
+        "horse_number", "horse_id", "horse_name", "jockey_name", "odds",
+        "popularity",
+    ]
+    result = featured[result_columns].copy()
+    result["top3_probability"] = probability
+    result["expected_value_index"] = (
+        result["top3_probability"]
+        * pd.to_numeric(result["odds"], errors="coerce")
+    )
+    result["prediction_rank"] = (
+        result.groupby("race_id", sort=False)["top3_probability"]
+        .rank(method="first", ascending=False)
+        .astype(int)
+    )
+    result = result.sort_values(
+        ["course_name", "race_number", "race_id", "prediction_rank"],
+        kind="stable",
+        na_position="last",
+    ).reset_index(drop=True)
+    result.insert(0, "race_prediction_count", result.groupby("race_id")["race_id"].transform("size"))
+
+    prediction_run_id = (
+        f"date_pred_{requested_date:%Y%m%d}_{datetime.now():%H%M%S}_"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+    output_dir = PATHS.predictions / prediction_run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"predictions_{requested_date:%Y-%m-%d}.parquet"
+    result.to_parquet(output_path, index=False)
+    result.to_csv(
+        output_dir / f"predictions_{requested_date:%Y-%m-%d}.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    save_prediction_run(
+        {
+            "prediction_run_id": prediction_run_id,
+            "created_at": datetime.now(),
+            "model_run_id": metrics["model_run_id"],
+            "race_id": f"date:{requested_date:%Y-%m-%d}",
+            "row_count": len(result),
+            "output_path": str(output_path),
+        }
+    )
+    return result, output_path

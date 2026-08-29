@@ -11,6 +11,7 @@ from .tasks.top3.predict import (
     predict_historical_race as _predict_top3_historical,
     predict_race as _predict_top3,
 )
+from .tasks.top3.model import predict_race_date as _predict_top3_date
 from .tasks.top3.train import train_model as _train_top3
 
 
@@ -66,6 +67,21 @@ def predict_historical_task(
     raise AssertionError(f"タスク実装がありません: {task_name}")
 
 
+def predict_date_task(
+    task_name: str,
+    historical_records: pd.DataFrame,
+    upcoming_records: pd.DataFrame,
+    race_date: object,
+    model_dir: Path,
+):
+    get_task(task_name)
+    if task_name == "top3":
+        return _predict_top3_date(
+            historical_records, upcoming_records, race_date, model_dir
+        )
+    raise AssertionError(f"タスク実装がありません: {task_name}")
+
+
 def train_model(
     historical_records: pd.DataFrame,
     config: TrainConfig,
@@ -86,13 +102,20 @@ def predict_historical_race(*args, **kwargs):
     return predict_historical_task("top3", *args, **kwargs)
 
 
+def predict_race_date(*args, **kwargs):
+    """現行画面向けのTop3開催日一括予想窓口。"""
+    return predict_date_task("top3", *args, **kwargs)
+
+
 __all__ = [
     "MODEL_TASKS",
     "TrainConfig",
     "train_task",
     "predict_task",
     "predict_historical_task",
+    "predict_date_task",
     "train_model",
     "predict_race",
     "predict_historical_race",
+    "predict_race_date",
 ]

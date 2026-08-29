@@ -44,6 +44,8 @@ _race_entry_jobs = import_module(
     "src.30_ai_modeling.feature_engineering.race_entry_jobs"
 )
 _training_dataset = import_module("src.30_ai_modeling.training_dataset")
+_static_site = import_module("src.static_site")
+_prediction_comparison = import_module("src.prediction_comparison")
 
 cancel_html_collection_job = _html_jobs.cancel_job
 list_html_collection_jobs = _html_jobs.list_jobs
@@ -88,9 +90,11 @@ TrainConfig = _modeling.TrainConfig
 train_model = _modeling.train_model
 predict_race = _modeling.predict_race
 predict_historical_race = _modeling.predict_historical_race
+predict_race_date = _modeling.predict_race_date
 train_task = _modeling.train_task
 predict_task = _modeling.predict_task
 predict_historical_task = _modeling.predict_historical_task
+predict_date_task = _modeling.predict_date_task
 MODEL_TASKS = _model_registry.MODEL_TASKS
 get_model_task = _model_registry.get_task
 
@@ -159,3 +163,9 @@ TrainingDatasetConfig = _training_dataset.TrainingDatasetConfig
 FeatureSetBuildReport = _training_dataset.FeatureSetBuildReport
 TrainingDataset = _training_dataset.TrainingDataset
 TrainingDatasetBuilder = _training_dataset.TrainingDatasetBuilder
+build_prediction_site = _static_site.build_prediction_site
+initialize_prediction_site = _static_site.initialize_prediction_site
+compare_prediction_with_finish = (
+    _prediction_comparison.compare_prediction_with_finish
+)
+compare_prediction_date = _prediction_comparison.compare_prediction_date
