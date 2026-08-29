@@ -43,7 +43,7 @@ class TrainingDatasetConfig:
     feature_sets: tuple[str, ...] = (
         "baseline:1.1.0",
         "recent_speed:1.0.0",
-        "race_entry:1.0.0",
+        "race_entry:1.1.0",
     )
     target_column: str = "target_top3"
     base_feature_columns: tuple[str, ...] = ()

@@ -19,7 +19,7 @@ _source_storage = import_module("src.00_common.storage")
 @dataclass(frozen=True)
 class RaceEntryRunConfig:
     feature_set_name: str = "race_entry"
-    feature_set_version: str = "1.0.0"
+    feature_set_version: str = "1.1.0"
 
 
 class RaceEntryGenerationCancelled(Exception):

@@ -1090,11 +1090,11 @@ def _render_race_entry_management() -> None:
     st.subheader("生成設定")
     st.text_input(
         "対象情報",
-        value="競馬場・レース番号・芝ダート・距離・馬齢・性別・斤量・枠馬番・相対値・前走距離差",
+        value="競馬場・レース番号・芝ダート・距離・馬場状態・馬齢・性別・斤量・枠馬番・相対値・前走距離差",
         disabled=True,
         help=(
-            "出馬表時点で確定する情報だけを生成します。天気・馬場状態・オッズ・人気・"
-            "馬体重は含みません。設定は固定で、原則変更不要です。"
+            "出馬表情報と馬場状態を生成します。天気・オッズ・人気・馬体重は"
+            "含みません。予想時の馬場状態は競馬場ごとに画面で指定します。"
         ),
     )
     jobs = list_race_entry_jobs()
@@ -1759,13 +1759,13 @@ elif page == "前準備（特徴量エンジニアリング）":
         "特徴量セット",
         [
             "baseline:1.1.0", "speed_index:1.0.0", "recent_speed:1.0.0",
-            "race_entry:1.0.0",
+            "race_entry:1.1.0",
         ],
         format_func=lambda value: {
             "baseline:1.1.0": "基礎近走成績（baseline:1.1.0）",
             "speed_index:1.0.0": "1走単位スピード指数（speed_index:1.0.0）",
             "recent_speed:1.0.0": "近走スピード成績（recent_speed:1.0.0）",
-            "race_entry:1.0.0": "出馬表基本条件（race_entry:1.0.0）",
+            "race_entry:1.1.0": "出馬表基本条件・馬場状態（race_entry:1.1.0）",
         }[value],
         help="表示・生成・中止・クリアする特徴量セットを選択します。",
     )
@@ -1775,7 +1775,7 @@ elif page == "前準備（特徴量エンジニアリング）":
     if selected_feature_set == "recent_speed:1.0.0":
         _render_recent_speed_management()
         st.stop()
-    if selected_feature_set == "race_entry:1.0.0":
+    if selected_feature_set == "race_entry:1.1.0":
         _render_race_entry_management()
         st.stop()
 
@@ -1914,20 +1914,6 @@ elif page == "前準備（特徴量エンジニアリング）":
     else:
         _render_feature_generation_status()
 
-    st.divider()
-    st.subheader("特徴量データのクリア")
-    confirm_clear = st.checkbox(
-        f"{feature_set_name}:{feature_set_version} の特徴量をクリアする",
-        disabled=active_feature_job is not None,
-    )
-    if st.button(
-        "特徴量をクリア",
-        disabled=not confirm_clear or active_feature_job is not None,
-    ):
-        deleted = clear_features(feature_set_name, feature_set_version)
-        st.success(f"{deleted:,}行の特徴量をクリアしました。元レースデータは変更していません。")
-        st.rerun()
-
     runs = feature_runs()
     recent_runs = runs[runs["feature_set_name"].eq(feature_set_name)] if not runs.empty else runs
     if not recent_runs.empty:
@@ -2051,19 +2037,6 @@ elif page == "前準備（特徴量エンジニアリング）":
     else:
         _render_speed_index_status()
 
-    st.subheader("スピード指数データのクリア")
-    confirm_speed_clear = st.checkbox(
-        f"1走単位スピード指数（{speed_name}:{speed_version}）をクリアする",
-        disabled=active_speed_job is not None,
-    )
-    if st.button(
-        "スピード指数をクリア",
-        disabled=not confirm_speed_clear or active_speed_job is not None,
-    ):
-        deleted = clear_performance_features(speed_name, speed_version)
-        st.success(f"{deleted:,}走のスピード指数をクリアしました。元レースデータは変更していません。")
-        st.rerun()
-
     speed_runs = runs[runs["feature_set_name"].eq(speed_name)] if not runs.empty else runs
     if not speed_runs.empty:
         st.subheader("1走単位スピード指数の生成履歴")
@@ -2102,7 +2075,7 @@ elif page == "モデル学習":
     training_feature_states = [
         ("基礎近走成績", "baseline:1.1.0", feature_freshness("baseline", "1.1.0")),
         ("近走スピード成績", "recent_speed:1.0.0", recent_speed_freshness()),
-        ("出馬表基本条件", "race_entry:1.0.0", feature_freshness("race_entry", "1.0.0")),
+        ("出馬表基本条件・馬場状態", "race_entry:1.1.0", feature_freshness("race_entry", "1.1.0")),
     ]
     st.subheader("学習に使用する特徴量")
     st.dataframe(
@@ -2544,6 +2517,28 @@ elif page == "レース予想":
                     .dt.date.eq(selected_prediction_date)
                 ]["race_id"].nunique()
                 st.caption(f"対象レース: {races_on_date}レース")
+                prediction_date_mask = (
+                    pd.to_datetime(upcoming["race_date"], errors="coerce")
+                    .dt.date.eq(selected_prediction_date)
+                )
+                courses_on_date = sorted(
+                    upcoming.loc[prediction_date_mask, "course_name"]
+                    .dropna().astype(str).unique().tolist()
+                )
+                st.markdown("#### 競馬場別の馬場状態")
+                st.caption("当日の状態を選択してください。初期値は「良」です。")
+                condition_columns = st.columns(min(len(courses_on_date), 3))
+                track_conditions = {
+                    course: condition_columns[index % len(condition_columns)].selectbox(
+                        f"{course}の馬場状態",
+                        ["良", "稍重", "重", "不良"],
+                        index=0,
+                        key=(
+                            f"track_condition_{selected_prediction_date}_{course}"
+                        ),
+                    )
+                    for index, course in enumerate(courses_on_date)
+                }
 
                 if st.button(
                     "この日の全レースを予想",
@@ -2560,9 +2555,18 @@ elif page == "レース予想":
                             "予想特徴量を生成し、モデルで推論しています。しばらくお待ちください。",
                             show_time=True,
                         ):
+                            prediction_input = upcoming.copy()
+                            for course, condition in track_conditions.items():
+                                course_mask = (
+                                    prediction_date_mask
+                                    & prediction_input["course_name"].astype(str).eq(course)
+                                )
+                                prediction_input.loc[
+                                    course_mask, "track_condition"
+                                ] = condition
                             result, output_path = predict_race_date(
                                 historical,
-                                upcoming,
+                                prediction_input,
                                 selected_prediction_date,
                                 model_path,
                             )
@@ -2574,6 +2578,7 @@ elif page == "レース予想":
                             "race_date": selected_prediction_date,
                             "result": result,
                             "output_path": str(output_path),
+                            "track_conditions": track_conditions,
                         }
                         st.session_state.pop("latest_prediction_comparison", None)
                         logger.info("予想完了")
@@ -2989,6 +2994,7 @@ elif page == "メンテナンス":
         [
             "収集データ",
             "ダミーデータ",
+            "特徴量データ",
             "学習結果",
             "取得HTML",
             "ログファイル",
@@ -3014,6 +3020,12 @@ elif page == "メンテナンス":
         st.info(
             "取得HTMLの削除では、保存済みHTMLのみ削除します。"
             "DB上の収集データは削除しません。"
+        )
+    elif maintenance_tab == "特徴量データ":
+        st.info(
+            "特徴量データのみ削除します。元レースデータ、取得HTML、"
+            "学習済みモデルは変更しません。削除後に学習する場合は、"
+            "前準備から特徴量を再生成してください。"
         )
 
     delete_mode = st.radio(
@@ -3194,6 +3206,147 @@ elif page == "メンテナンス":
 
                         with st.expander("削除結果", expanded=True):
                             st.json(results)
+
+    elif maintenance_tab == "特徴量データ":
+        feature_targets = {
+            ("baseline", "1.1.0"),
+            ("recent_speed", "1.0.0"),
+            ("race_entry", "1.1.0"),
+            ("speed_index", "1.0.0"),
+        }
+        stored_feature_runs = feature_runs()
+        if not stored_feature_runs.empty:
+            feature_targets.update(
+                (
+                    str(row.feature_set_name),
+                    str(row.feature_set_version),
+                )
+                for row in stored_feature_runs[
+                    ["feature_set_name", "feature_set_version"]
+                ].dropna().drop_duplicates().itertuples(index=False)
+            )
+
+        feature_labels = {
+            "baseline": "基礎近走成績",
+            "recent_speed": "近走スピード成績",
+            "race_entry": "出馬表基本条件・馬場状態",
+            "speed_index": "1走単位スピード指数",
+        }
+        target_rows = []
+        for name, version in sorted(feature_targets):
+            if name == "speed_index":
+                summary = performance_feature_summary(name, version)
+                row_count = int(summary["row_count"])
+                storage_type = "performance"
+            else:
+                summary = feature_store_summary(name, version)
+                row_count = int(summary["row_count"])
+                storage_type = "race"
+            target_rows.append({
+                "表示名": feature_labels.get(name, name),
+                "識別子": f"{name}:{version}",
+                "保存行数": row_count,
+                "name": name,
+                "version": version,
+                "storage_type": storage_type,
+            })
+        feature_target_frame = pd.DataFrame(target_rows)
+        st.dataframe(
+            feature_target_frame[["表示名", "識別子", "保存行数"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        feature_jobs_active = any(
+            job.get("status") in {"running", "cancelling"}
+            for jobs in (
+                list_feature_generation_jobs(),
+                list_speed_index_jobs(),
+                list_recent_speed_jobs(),
+                list_race_entry_jobs(),
+            )
+            for job in jobs
+        )
+        if feature_jobs_active:
+            st.warning(
+                "特徴量生成が実行中のため、完了または中止するまで削除できません。"
+            )
+
+        if delete_mode == "個別に削除":
+            identifiers = feature_target_frame["識別子"].tolist()
+            selected_identifier = st.selectbox(
+                "削除する特徴量",
+                identifiers,
+                format_func=lambda identifier: (
+                    lambda row: (
+                        f"{row['表示名']}（{identifier}） / "
+                        f"{int(row['保存行数']):,}行"
+                    )
+                )(
+                    feature_target_frame[
+                        feature_target_frame["識別子"].eq(identifier)
+                    ].iloc[0]
+                ),
+            )
+            selected_feature = feature_target_frame[
+                feature_target_frame["識別子"].eq(selected_identifier)
+            ].iloc[0]
+            confirm = st.checkbox(
+                "選択した特徴量データを削除する",
+                key="confirm_feature_single",
+            )
+            if st.button(
+                "特徴量データを削除",
+                type="primary",
+                disabled=not confirm or feature_jobs_active,
+            ):
+                if selected_feature["storage_type"] == "performance":
+                    deleted = clear_performance_features(
+                        selected_feature["name"], selected_feature["version"]
+                    )
+                else:
+                    deleted = clear_features(
+                        selected_feature["name"], selected_feature["version"]
+                    )
+                st.success(
+                    f"{selected_identifier} の特徴量を{deleted:,}行削除しました。"
+                )
+                st.rerun()
+        else:
+            stored_rows = int(feature_target_frame["保存行数"].sum())
+            st.error(
+                "すべての特徴量データを削除します。"
+                f"対象: {len(feature_target_frame):,}セット / {stored_rows:,}行"
+            )
+            confirm = st.checkbox(
+                "特徴量データをすべて削除する",
+                key="confirm_feature_bulk",
+            )
+            confirmation_word = st.text_input(
+                "確認のため「全削除」と入力",
+                key="typed_feature_bulk",
+            )
+            if st.button(
+                "特徴量データをまとめて削除",
+                type="primary",
+                disabled=(
+                    not confirm
+                    or confirmation_word.strip() != "全削除"
+                    or feature_jobs_active
+                ),
+            ):
+                deleted_total = 0
+                for row in feature_target_frame.itertuples(index=False):
+                    if row.storage_type == "performance":
+                        deleted_total += clear_performance_features(
+                            row.name, row.version
+                        )
+                    else:
+                        deleted_total += clear_features(row.name, row.version)
+                st.success(
+                    f"特徴量データを合計{deleted_total:,}行削除しました。"
+                )
+                st.rerun()
 
     elif maintenance_tab == "学習結果":
         runs = model_runs()

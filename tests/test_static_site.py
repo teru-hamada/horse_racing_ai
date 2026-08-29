@@ -40,3 +40,27 @@ def test_static_prediction_site_escapes_content_and_updates_index(tmp_path):
     assert "model-test" not in html
     assert "r1" not in html
     assert "predictions/2026-08-29.html" in index
+
+
+def test_graded_race_title_gets_gold_style_class(tmp_path):
+    predictions = pd.DataFrame([{
+        "race_id": "graded",
+        "race_number": 11,
+        "race_name": "レパードステークス(G3)",
+        "course_name": "新潟",
+        "horse_number": 1,
+        "horse_name": "テストホース",
+        "jockey_name": "テスト騎手",
+        "prediction_rank": 1,
+        "top3_probability": 0.6,
+        "odds": 3.0,
+        "expected_value_index": 1.8,
+    }])
+
+    page = build_prediction_site(
+        predictions, "2026-08-30", "model-test", tmp_path / "docs"
+    )
+    html = page.read_text(encoding="utf-8")
+
+    assert '<details class="race graded">' in html
+    assert ".race.graded>summary{color:var(--gold)}" in html

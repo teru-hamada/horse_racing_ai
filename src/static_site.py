@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from html import escape
 from pathlib import Path
+import re
 
 import pandas as pd
 
@@ -10,8 +11,14 @@ import pandas as pd
 _STYLE = """
 :root{color-scheme:dark;--bg:#07130f;--panel:#10251d;--line:#25483a;--text:#f4f7f5;--muted:#a9bdb5;--accent:#38d996;--gold:#ffd166}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#163b2c 0,var(--bg) 42%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}
-main{width:100%;margin:0;padding:42px 28px 80px}header{margin-bottom:30px}.eyebrow{color:var(--accent);font-size:.78rem;font-weight:800;letter-spacing:.16em;text-transform:uppercase}h1{font-size:clamp(2rem,6vw,4.5rem);line-height:1;margin:.25em 0}.lead,.meta{color:var(--muted)}.race{width:100%;background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 50px #0004;margin:16px 0;overflow:hidden}.race>summary{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:22px 24px;cursor:pointer;font-size:1.25rem;font-weight:800;list-style:none}.race>summary::-webkit-details-marker{display:none}.race>summary::after{content:"＋";color:var(--accent);font-size:1.5rem}.race[open]>summary::after{content:"−"}.race[open]>summary{border-bottom:1px solid var(--line)}.race-content{width:100%;padding:20px 24px 24px;overflow-x:auto}.race-head{display:flex;align-items:center;justify-content:space-between;gap:14px}.course{color:var(--accent);font-weight:800}table{width:100%;min-width:760px;border-collapse:collapse;margin-top:18px;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:13px 10px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.78rem}.rank{font-size:1.1rem;font-weight:900}.prob{color:var(--gold);font-weight:800}.top3 td{background:#38d9960c}.back{display:inline-block;color:var(--accent);margin-bottom:18px;text-decoration:none}.empty{padding:50px 0;color:var(--muted)}footer{margin-top:36px;color:var(--muted);font-size:.8rem}@media(max-width:720px){main{padding:28px 12px 60px}.race>summary{padding:18px 16px;font-size:1.05rem}.race-content{padding:14px 12px 18px}th,td{white-space:nowrap}.race-head{align-items:start;flex-direction:column}}
+main{width:100%;margin:0;padding:42px 28px 80px}header{margin-bottom:30px}.eyebrow{color:var(--accent);font-size:.78rem;font-weight:800;letter-spacing:.16em;text-transform:uppercase}h1{font-size:clamp(2rem,6vw,4.5rem);line-height:1;margin:.25em 0}.lead,.meta{color:var(--muted)}.race{width:100%;background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 50px #0004;margin:16px 0;overflow:hidden}.race>summary{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:22px 24px;cursor:pointer;font-size:1.25rem;font-weight:800;list-style:none}.race.graded>summary{color:var(--gold)}.race>summary::-webkit-details-marker{display:none}.race>summary::after{content:"＋";color:var(--accent);font-size:1.5rem}.race[open]>summary::after{content:"−"}.race[open]>summary{border-bottom:1px solid var(--line)}.race-content{width:100%;padding:20px 24px 24px;overflow-x:auto}.race-head{display:flex;align-items:center;justify-content:space-between;gap:14px}.course{color:var(--accent);font-weight:800}table{width:100%;min-width:760px;border-collapse:collapse;margin-top:18px;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:13px 10px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.78rem}.rank{font-size:1.1rem;font-weight:900}.prob{color:var(--gold);font-weight:800}.top3 td{background:#38d9960c}.back{display:inline-block;color:var(--accent);margin-bottom:18px;text-decoration:none}.empty{padding:50px 0;color:var(--muted)}footer{margin-top:36px;color:var(--muted);font-size:.8rem}@media(max-width:720px){main{padding:28px 12px 60px}.race>summary{padding:18px 16px;font-size:1.05rem}.race-content{padding:14px 12px 18px}th,td{white-space:nowrap}.race-head{align-items:start;flex-direction:column}}
 """
+
+
+_GRADED_RACE_PATTERN = re.compile(
+    r"(?:Jpn\s*[123ⅠⅡⅢ]|G\s*[123ⅠⅡⅢ])",
+    re.IGNORECASE,
+)
 
 
 def _text(value: object, fallback: str = "-") -> str:
@@ -85,8 +92,10 @@ def build_prediction_site(
                 f'<td>{_text(runner.jockey_name)}</td></tr>'
             )
         race_number = int(first["race_number"]) if pd.notna(first["race_number"]) else "-"
+        race_name = str(first["race_name"]) if pd.notna(first["race_name"]) else ""
+        race_class = "race graded" if _GRADED_RACE_PATTERN.search(race_name) else "race"
         race_sections.append(
-            f'<details class="race"><summary>{_text(first["course_name"])} {race_number}R {_text(first["race_name"])}</summary>'
+            f'<details class="{race_class}"><summary>{_text(first["course_name"])} {race_number}R {_text(first["race_name"])}</summary>'
             f'<div class="race-content">'
             '<table><thead><tr><th>予測</th><th>馬番</th><th>馬名</th><th>3着以内確率</th><th>オッズ</th><th>期待値指数</th><th>騎手</th></tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div></details>'

@@ -53,7 +53,7 @@ def build_top3_prediction_features(
     race_entry = RaceEntryGenerator().transform(
         keys,
         entry_history,
-        FeatureContext("race_entry", "1.0.0", {}),
+        FeatureContext("race_entry", "1.1.0", {}),
     )
 
     result = targets.copy()

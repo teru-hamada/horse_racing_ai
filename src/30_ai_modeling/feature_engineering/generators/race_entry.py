@@ -11,8 +11,8 @@ from ..context import FeatureContext
 
 ENTRY_COLUMNS = (
     "race_id", "horse_id", "race_date", "course_name", "race_number",
-    "surface", "distance", "horse_number", "frame_number", "sex", "age",
-    "carried_weight",
+    "surface", "distance", "track_condition", "horse_number", "frame_number",
+    "sex", "age", "carried_weight",
 )
 
 
@@ -45,14 +45,15 @@ def prepare_race_entries(records: pd.DataFrame) -> pd.DataFrame:
 
 
 class RaceEntryGenerator(FeatureGenerator):
-    """Create entry-table features without odds or race-day observations."""
+    """Create entry-table features plus the supplied track condition."""
 
     name = "race_entry"
-    version = "1.0.0"
+    version = "1.1.0"
     output_columns = (
         "race_entry_course",
         "race_entry_race_number",
         "race_entry_surface",
+        "race_entry_track_condition",
         "race_entry_distance",
         "race_entry_age",
         "race_entry_sex",
@@ -120,6 +121,7 @@ class RaceEntryGenerator(FeatureGenerator):
             "race_entry_course": current["course_name"].astype("string"),
             "race_entry_race_number": current["race_number"],
             "race_entry_surface": current["surface"].astype("string"),
+            "race_entry_track_condition": current["track_condition"].astype("string"),
             "race_entry_distance": current["distance"],
             "race_entry_age": current["age"],
             "race_entry_sex": current["sex"].astype("string"),
