@@ -36,6 +36,7 @@ from src.public_api import (
     feature_runs,
     feature_freshness,
     feature_store_summary,
+    fetch_jravan_weather,
     performance_feature_freshness,
     performance_feature_summary,
     recent_speed_freshness,
@@ -129,6 +130,16 @@ _PREDICTION_COLUMN_LABELS = {
     "actual_top3": "実際の3着以内",
     "top3_hit": "的中",
 }
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_jravan_weather(
+    course_name: str,
+    target_date: date,
+) -> dict[str, object]:
+    """Avoid repeated JRA-VAN requests during Streamlit reruns."""
+
+    return fetch_jravan_weather(course_name, target_date)
 
 
 def _extract_urls(value: object) -> list[str]:
@@ -2526,19 +2537,57 @@ elif page == "レース予想":
                     .dropna().astype(str).unique().tolist()
                 )
                 st.markdown("#### 競馬場別の馬場状態")
-                st.caption("当日の状態を選択してください。初期値は「良」です。")
+                st.info(
+                    "馬場状態の初期値は、JRA-VAN「競馬場別 天気予報」の"
+                    "開催当日予報を参考に設定しています。"
+                    "予報や実際の馬場発表に応じて手動で変更できます。"
+                )
+                forecast_by_course: dict[str, dict[str, object]] = {}
+                forecast_errors: dict[str, str] = {}
+                for course in courses_on_date:
+                    try:
+                        forecast_by_course[course] = _cached_jravan_weather(
+                            course,
+                            selected_prediction_date,
+                        )
+                    except Exception as exc:
+                        forecast_errors[course] = str(exc)
+
+                track_condition_options = ["良", "稍重", "重", "不良"]
                 condition_columns = st.columns(min(len(courses_on_date), 3))
-                track_conditions = {
-                    course: condition_columns[index % len(condition_columns)].selectbox(
+                track_conditions: dict[str, str] = {}
+                for index, course in enumerate(courses_on_date):
+                    forecast = forecast_by_course.get(course)
+                    default_condition = (
+                        str(forecast["track_condition"])
+                        if forecast is not None
+                        else "良"
+                    )
+                    column = condition_columns[index % len(condition_columns)]
+                    track_conditions[course] = column.selectbox(
                         f"{course}の馬場状態",
-                        ["良", "稍重", "重", "不良"],
-                        index=0,
+                        track_condition_options,
+                        index=track_condition_options.index(default_condition),
                         key=(
                             f"track_condition_{selected_prediction_date}_{course}"
                         ),
+                        help=(
+                            "JRA-VANの開催当日天気予報を「晴・曇→良、"
+                            "小雨・小雪→稍重、雨→重、雪→不良」で変換した"
+                            "初期値です。必要に応じて変更してください。"
+                        ),
                     )
-                    for index, course in enumerate(courses_on_date)
-                }
+                    if forecast is not None:
+                        column.caption(
+                            f"JRA-VAN予報: {forecast['weather']} → "
+                            f"初期値: {forecast['track_condition']}"
+                        )
+                if forecast_errors:
+                    st.warning(
+                        "天気予報を取得できなかった競馬場は「良」を"
+                        "初期表示しています: "
+                        + "、".join(forecast_errors)
+                    )
 
                 if st.button(
                     "この日の全レースを予想",

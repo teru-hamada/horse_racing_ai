@@ -46,6 +46,7 @@ _race_entry_jobs = import_module(
 _training_dataset = import_module("src.30_ai_modeling.training_dataset")
 _static_site = import_module("src.static_site")
 _prediction_comparison = import_module("src.prediction_comparison")
+_weather_forecast = import_module("src.weather_forecast")
 
 cancel_html_collection_job = _html_jobs.cancel_job
 list_html_collection_jobs = _html_jobs.list_jobs
@@ -169,3 +170,6 @@ compare_prediction_with_finish = (
     _prediction_comparison.compare_prediction_with_finish
 )
 compare_prediction_date = _prediction_comparison.compare_prediction_date
+fetch_jravan_weather = _weather_forecast.fetch_jravan_weather
+parse_jravan_forecast = _weather_forecast.parse_jravan_forecast
+weather_to_track_condition = _weather_forecast.weather_to_track_condition
