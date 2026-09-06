@@ -2522,7 +2522,7 @@ elif page == "レース予想":
                 )
                 prediction_date_labels: dict[date, str] = {}
                 for available_date in available_dates:
-                    prediction_created, comparison_completed = (
+                    prediction_created, comparison_status = (
                         prediction_date_status(
                             available_date,
                             PATHS.predictions,
@@ -2532,8 +2532,10 @@ elif page == "レース予想":
                     statuses: list[str] = []
                     if prediction_created:
                         statuses.append("※予想作成済み")
-                    if comparison_completed:
+                    if comparison_status == "completed":
                         statuses.append("※結果照合済み")
+                    elif comparison_status == "partial":
+                        statuses.append("※一部結果照合済み")
                     suffix = " " + " ".join(statuses) if statuses else ""
                     prediction_date_labels[available_date] = (
                         f"{available_date:%Y年%m月%d日}{suffix}"
@@ -2543,6 +2545,12 @@ elif page == "レース予想":
                     available_dates,
                     format_func=lambda value: prediction_date_labels[value],
                 )
+                comparison_notice = st.session_state.pop(
+                    "prediction_comparison_notice",
+                    None,
+                )
+                if comparison_notice:
+                    st.success(comparison_notice)
                 races_on_date = upcoming[
                     pd.to_datetime(upcoming["race_date"], errors="coerce")
                     .dt.date.eq(selected_prediction_date)
@@ -2798,11 +2806,12 @@ elif page == "レース予想":
                                 "summary": comparison_summary,
                             }
                             if comparison_page_path is not None:
-                                st.success(
+                                st.session_state["prediction_comparison_notice"] = (
                                     "確定結果との比較が完了し、比較内容を"
                                     "GitHub Pages用HTMLへ反映しました: "
                                     f"{comparison_page_path}"
                                 )
+                                st.rerun()
                         except Exception as exc:
                             logger.exception(f"日付一括予想結果比較失敗: {exc}")
                             st.exception(exc)

@@ -45,26 +45,33 @@ def prediction_date_status(
     race_date: object,
     predictions_dir: Path,
     site_dir: Path,
-) -> tuple[bool, bool]:
-    """Return whether a date has a saved prediction and a completed comparison."""
+) -> tuple[bool, str | None]:
+    """Return prediction presence and comparison status for a date."""
 
     target_date = pd.to_datetime(race_date, errors="coerce")
     if pd.isna(target_date):
-        return False, False
+        return False, None
     date_text = target_date.strftime("%Y-%m-%d")
     prediction_page = site_dir / "predictions" / f"{date_text}.html"
     prediction_files = predictions_dir.glob(
         f"*/predictions_{date_text}.parquet"
     )
     prediction_created = prediction_page.is_file() or any(prediction_files)
-    comparison_completed = False
+    comparison_status = None
     if prediction_page.is_file():
         page_html = prediction_page.read_text(encoding="utf-8", errors="replace")
-        comparison_completed = (
-            'data-comparison-status="completed"' in page_html
-            or 'class="comparison-summary"' in page_html
+        status_match = re.search(
+            r'data-comparison-status="(completed|partial|none)"',
+            page_html,
         )
-    return prediction_created, comparison_completed
+        if status_match:
+            stored_status = status_match.group(1)
+            comparison_status = (
+                stored_status if stored_status != "none" else None
+            )
+        elif 'class="comparison-summary"' in page_html:
+            comparison_status = "completed"
+    return prediction_created, comparison_status
 
 
 def latest_prediction_file(
@@ -189,6 +196,14 @@ def build_prediction_site(
     comparison_block = ""
     if has_comparison:
         summary = comparison_summary or {}
+        requested_races = int(summary.get("requested_races", 0) or 0)
+        compared_races = int(summary.get("compared_races", 0) or 0)
+        if requested_races > 0 and compared_races >= requested_races:
+            comparison_status = "completed"
+        elif compared_races > 0:
+            comparison_status = "partial"
+        else:
+            comparison_status = "none"
         failures = summary.get("failures", []) or []
         failure_text = ""
         if failures:
@@ -198,7 +213,8 @@ def build_prediction_site(
             )
             failure_text = f'<span class="failures">未比較: {_text(failure_items)}</span>'
         comparison_block = (
-            '<section class="comparison-summary" data-comparison-status="completed">'
+            '<section class="comparison-summary" '
+            f'data-comparison-status="{comparison_status}">'
             '<strong>確定結果との比較</strong>'
             f'<span>比較完了: {_text(summary.get("compared_races", 0))} / '
             f'{_text(summary.get("requested_races", 0))} レース</span>'

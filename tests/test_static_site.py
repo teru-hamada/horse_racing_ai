@@ -113,6 +113,7 @@ def test_static_prediction_site_includes_result_comparison(tmp_path):
     html = page.read_text(encoding="utf-8")
 
     assert "確定結果との比較" in html
+    assert 'data-comparison-status="partial"' in html
     assert "比較完了: 1 / 2 レース" in html
     assert "予測上位3頭の的中: 1 頭" in html
     assert "実着順" in html
@@ -126,7 +127,7 @@ def test_prediction_date_status_survives_application_restart(tmp_path):
 
     assert prediction_date_status(
         "2026-09-06", predictions_dir, site_dir
-    ) == (False, False)
+    ) == (False, None)
 
     run_dir = predictions_dir / "date_pred_test"
     run_dir.mkdir(parents=True)
@@ -136,7 +137,7 @@ def test_prediction_date_status_survives_application_restart(tmp_path):
     )
     assert prediction_date_status(
         "2026-09-06", predictions_dir, site_dir
-    ) == (True, False)
+    ) == (True, None)
 
     comparison_dir = site_dir / "predictions"
     comparison_dir.mkdir(parents=True)
@@ -146,5 +147,19 @@ def test_prediction_date_status_survives_application_restart(tmp_path):
     )
     assert prediction_date_status(
         "2026-09-06", predictions_dir, site_dir
-    ) == (True, True)
+    ) == (True, "completed")
+    (comparison_dir / "2026-09-06.html").write_text(
+        '<section data-comparison-status="partial"></section>',
+        encoding="utf-8",
+    )
+    assert prediction_date_status(
+        "2026-09-06", predictions_dir, site_dir
+    ) == (True, "partial")
+    (comparison_dir / "2026-09-06.html").write_text(
+        '<section data-comparison-status="none"></section>',
+        encoding="utf-8",
+    )
+    assert prediction_date_status(
+        "2026-09-06", predictions_dir, site_dir
+    ) == (True, None)
     assert latest_prediction_file("invalid", predictions_dir) is None
