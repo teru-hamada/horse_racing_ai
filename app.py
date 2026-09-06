@@ -20,6 +20,8 @@ from src.public_api import (
     model_runs,
     PATHS,
     build_prediction_site,
+    latest_prediction_file,
+    prediction_date_status,
     compare_prediction_date,
     predict_historical_race,
     predict_race,
@@ -2518,10 +2520,28 @@ elif page == "レース予想":
                     .dropna().dt.date.unique(),
                     reverse=True,
                 )
+                prediction_date_labels: dict[date, str] = {}
+                for available_date in available_dates:
+                    prediction_created, comparison_completed = (
+                        prediction_date_status(
+                            available_date,
+                            PATHS.predictions,
+                            PATHS.root / "docs",
+                        )
+                    )
+                    statuses: list[str] = []
+                    if prediction_created:
+                        statuses.append("※予想作成済み")
+                    if comparison_completed:
+                        statuses.append("※結果照合済み")
+                    suffix = " " + " ".join(statuses) if statuses else ""
+                    prediction_date_labels[available_date] = (
+                        f"{available_date:%Y年%m月%d日}{suffix}"
+                    )
                 selected_prediction_date = st.selectbox(
                     "予想対象日",
                     available_dates,
-                    format_func=lambda value: value.strftime("%Y年%m月%d日"),
+                    format_func=lambda value: prediction_date_labels[value],
                 )
                 races_on_date = upcoming[
                     pd.to_datetime(upcoming["race_date"], errors="coerce")
@@ -2619,9 +2639,26 @@ elif page == "レース予想":
                                 selected_prediction_date,
                                 model_path,
                             )
-                        st.success(
-                            f"{races_on_date}レースの予想結果を保存しました: {output_path}"
-                        )
+                        page_path = None
+                        try:
+                            page_path = build_prediction_site(
+                                result,
+                                selected_prediction_date,
+                                str(model_id),
+                                PATHS.root / "docs",
+                            )
+                        except Exception as site_exc:
+                            logger.exception(f"GitHub Pages用HTML生成失敗: {site_exc}")
+                            st.warning(
+                                "予想結果は保存しましたが、GitHub Pages用HTMLを"
+                                f"生成できませんでした: {site_exc}"
+                            )
+                        if page_path is not None:
+                            st.success(
+                                f"{races_on_date}レースの予想結果を保存しました: "
+                                f"{output_path}。GitHub Pages用HTMLも生成しました: "
+                                f"{page_path}"
+                            )
                         st.session_state["latest_upcoming_prediction"] = {
                             "model_id": str(model_id),
                             "race_date": selected_prediction_date,
@@ -2640,6 +2677,36 @@ elif page == "レース予想":
                 latest_prediction = st.session_state.get(
                     "latest_upcoming_prediction"
                 )
+                if not (
+                    latest_prediction
+                    and latest_prediction.get("race_date")
+                    == selected_prediction_date
+                    and latest_prediction.get("model_id") == str(model_id)
+                ):
+                    saved_prediction_path = latest_prediction_file(
+                        selected_prediction_date,
+                        PATHS.predictions,
+                    )
+                    if saved_prediction_path is not None:
+                        try:
+                            saved_prediction = pd.read_parquet(
+                                saved_prediction_path
+                            )
+                            latest_prediction = {
+                                "model_id": str(model_id),
+                                "race_date": selected_prediction_date,
+                                "result": saved_prediction,
+                                "output_path": str(saved_prediction_path),
+                                "restored": True,
+                            }
+                            st.session_state[
+                                "latest_upcoming_prediction"
+                            ] = latest_prediction
+                        except Exception as exc:
+                            st.warning(
+                                "保存済みの予想結果を読み込めませんでした: "
+                                f"{exc}"
+                            )
                 if (
                     latest_prediction
                     and latest_prediction.get("race_date") == selected_prediction_date
@@ -2683,25 +2750,6 @@ elif page == "レース予想":
                         )
 
                     if st.button(
-                        "GitHub Pages用HTMLを生成",
-                        type="secondary",
-                        key=f"static_site_{selected_prediction_date}_{model_id}",
-                    ):
-                        try:
-                            page_path = build_prediction_site(
-                                result,
-                                selected_prediction_date,
-                                str(model_id),
-                                PATHS.root / "docs",
-                            )
-                            st.success(
-                                f"静的ページを生成しました: {page_path}。"
-                                "docsの変更をGitHubへpushすると公開されます。"
-                            )
-                        except Exception as exc:
-                            st.exception(exc)
-
-                    if st.button(
                         "この日の全レースを確定結果と比較",
                         type="secondary",
                         key=f"compare_prediction_date_{selected_prediction_date}_{model_id}",
@@ -2724,12 +2772,37 @@ elif page == "レース予想":
                                         )
                                     ),
                                 )
+                            comparison_page_path = None
+                            try:
+                                comparison_page_path = build_prediction_site(
+                                    result,
+                                    selected_prediction_date,
+                                    str(model_id),
+                                    PATHS.root / "docs",
+                                    comparison=comparison,
+                                    comparison_summary=comparison_summary,
+                                )
+                            except Exception as site_exc:
+                                logger.exception(
+                                    f"比較内容のGitHub Pages用HTML反映失敗: {site_exc}"
+                                )
+                                st.warning(
+                                    "確定結果との比較は完了しましたが、比較内容を"
+                                    "GitHub Pages用HTMLへ反映できませんでした: "
+                                    f"{site_exc}"
+                                )
                             st.session_state["latest_prediction_comparison"] = {
                                 "race_date": selected_prediction_date,
                                 "model_id": str(model_id),
                                 "result": comparison,
                                 "summary": comparison_summary,
                             }
+                            if comparison_page_path is not None:
+                                st.success(
+                                    "確定結果との比較が完了し、比較内容を"
+                                    "GitHub Pages用HTMLへ反映しました: "
+                                    f"{comparison_page_path}"
+                                )
                         except Exception as exc:
                             logger.exception(f"日付一括予想結果比較失敗: {exc}")
                             st.exception(exc)

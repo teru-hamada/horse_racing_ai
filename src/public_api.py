@@ -166,6 +166,8 @@ TrainingDataset = _training_dataset.TrainingDataset
 TrainingDatasetBuilder = _training_dataset.TrainingDatasetBuilder
 build_prediction_site = _static_site.build_prediction_site
 initialize_prediction_site = _static_site.initialize_prediction_site
+prediction_date_status = _static_site.prediction_date_status
+latest_prediction_file = _static_site.latest_prediction_file
 compare_prediction_with_finish = (
     _prediction_comparison.compare_prediction_with_finish
 )
