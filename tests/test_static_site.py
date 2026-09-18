@@ -70,6 +70,37 @@ def test_graded_race_title_gets_gold_style_class(tmp_path):
     assert ".race.graded>summary{color:var(--gold)}" in html
 
 
+def test_static_prediction_site_includes_top_three_bets(tmp_path):
+    predictions = pd.DataFrame([{
+        "race_id": "r1", "race_number": 1, "race_name": "未勝利",
+        "course_name": "中山", "horse_number": 1, "horse_name": "馬1",
+        "jockey_name": "騎手", "prediction_rank": 1,
+        "top3_probability": 0.7, "odds": 2.0, "expected_value_index": 1.4,
+    }])
+    bets = pd.DataFrame([
+        {
+            "race_id": "r1", "bet_type_label": "複勝", "selection": str(rank),
+            "estimated_probability": 0.7 - rank / 10,
+            "odds_used": 2.0 + rank, "recovery_rate_percent": 200 - rank * 10,
+            "bet_type_reliability": 1.0,
+            "recommendation_score": 200 - rank * 10,
+            "expected_profit_per_100": 100 - rank * 10,
+        }
+        for rank in range(1, 5)
+    ])
+
+    page = build_prediction_site(
+        predictions, "2026-09-19", "model", tmp_path / "docs",
+        bet_recommendations=bets,
+    )
+    html = page.read_text(encoding="utf-8")
+
+    assert "AIおすすめ買い目 上位3つ" in html
+    assert "推定的中確率" in html
+    assert html.count("100円当たり期待損益") == 1
+    assert "<td>4</td>" not in html
+
+
 def test_static_prediction_site_includes_result_comparison(tmp_path):
     predictions = pd.DataFrame([
         {

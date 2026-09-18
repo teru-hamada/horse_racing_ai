@@ -797,6 +797,7 @@ class NetkeibaCommon:
         ]
         list_count = 0
         race_count = 0
+        odds_html_count = 0
         collected_horse_ids: set[str] = set()
         total_dates = len(dates)
         for date_index, target_date in enumerate(dates, start=1):
@@ -875,17 +876,69 @@ class NetkeibaCommon:
                         f"{target_date} {race_id}: HTML取得失敗: {exc}"
                     )
                 if progress_callback:
+                    race_phase_weight = (
+                        0.75 if dataset_type == "upcoming" else 1.0
+                    )
                     fraction = (
                         (date_index - 1)
-                        + race_index / max(len(race_ids), 1)
+                        + race_phase_weight
+                        * race_index
+                        / max(len(race_ids), 1)
                     ) / total_dates
                     progress_callback(min(float(fraction), 1.0))
+            if dataset_type == "upcoming" and race_ids:
+                # オッズは補助データである。未発売、JRA側の画面変更、通信失敗
+                # などがあっても、従来の出馬表HTML収集は成功扱いにする。
+                try:
+                    from importlib import import_module
+
+                    odds_module = import_module(
+                        "src.10_scrapers_html_collection.jra_odds_html"
+                    )
+                    odds_collector = odds_module.JraOddsHtmlCollector(
+                        logger=self.logger,
+                        interval_seconds=self.interval_seconds,
+                        timeout=self.timeout,
+                    )
+                    odds_html_count += odds_collector.collect_date(
+                        target_date=target_date,
+                        race_ids=race_ids,
+                        output_directory=(
+                            self._html_root(dataset_type)
+                            / storage_key
+                            / "odds"
+                        ),
+                        force=force,
+                        progress_callback=(
+                            (
+                                lambda odds_progress: progress_callback(
+                                    min(
+                                        float(
+                                            (date_index - 1)
+                                            + 0.75
+                                            + 0.25 * odds_progress
+                                        )
+                                        / total_dates,
+                                        1.0,
+                                    )
+                                )
+                            )
+                            if progress_callback
+                            else None
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning(
+                        f"{target_date}: JRAオッズHTMLを取得できませんでした。"
+                        f"従来のレース情報のみ保持します: {exc}"
+                    )
             if progress_callback:
                 progress_callback(date_index / total_dates)
         return {
             "date_count": list_count,
             "race_count": race_count,
             "horse_count": len(collected_horse_ids),
+            "odds_html_count": odds_html_count,
         }
 
     def _parse_cached_date_range(

@@ -16,6 +16,7 @@ main{width:100%;margin:0;padding:42px 28px 80px}header{margin-bottom:30px}.eyebr
 
 _STYLE += """
 .comparison-summary{display:flex;flex-wrap:wrap;gap:10px 22px;padding:18px 22px;margin:0 0 24px;background:#10251dcc;border:1px solid var(--line);border-radius:14px}.comparison-summary strong{width:100%;color:var(--gold)}.comparison-summary span{color:var(--muted)}.comparison-summary .failures{width:100%;color:#ffb4a8}.hit{color:var(--accent);font-weight:800}.miss{color:#ffb4a8}
+.bets{margin:0 0 24px;padding:16px 18px;border:1px solid #ffd16666;border-radius:12px;background:#ffd1660a}.bets h3{margin:0 0 8px;color:var(--gold)}.bets table{margin-top:8px;min-width:680px}.bets-note{color:var(--muted);font-size:.8rem}
 """
 
 
@@ -116,6 +117,7 @@ def build_prediction_site(
     site_dir: Path,
     comparison: pd.DataFrame | None = None,
     comparison_summary: dict[str, object] | None = None,
+    bet_recommendations: pd.DataFrame | None = None,
 ) -> Path:
     """Write a dependency-free GitHub Pages site for one prediction date."""
 
@@ -156,7 +158,7 @@ def build_prediction_site(
             page_predictions[column] = pd.NA
 
     race_sections = []
-    for _, race in page_predictions.groupby("race_id", sort=False):
+    for race_id, race in page_predictions.groupby("race_id", sort=False):
         first = race.iloc[0]
         rows = []
         for runner in race.sort_values("prediction_rank").itertuples():
@@ -185,9 +187,47 @@ def build_prediction_site(
         race_number = int(first["race_number"]) if pd.notna(first["race_number"]) else "-"
         race_name = str(first["race_name"]) if pd.notna(first["race_name"]) else ""
         race_class = "race graded" if _GRADED_RACE_PATTERN.search(race_name) else "race"
+        bet_block = ""
+        if bet_recommendations is not None:
+            race_bets = bet_recommendations[
+                bet_recommendations["race_id"].astype(str).eq(str(race_id))
+            ].sort_values(
+                ["recommendation_score", "recovery_rate_percent"],
+                ascending=False,
+            ).head(3)
+            if race_bets.empty:
+                bet_block = (
+                    '<section class="bets"><h3>AIおすすめ買い目 上位3つ</h3>'
+                    '<p class="bets-note">対応するJRAオッズがないため算出できません。</p></section>'
+                )
+            else:
+                bet_rows = "".join(
+                    "<tr>"
+                    f"<td>{_text(bet.bet_type_label)}</td>"
+                    f"<td>{_text(bet.selection)}</td>"
+                    f"<td>{float(bet.estimated_probability):.1%}</td>"
+                    f"<td>{_number(bet.odds_used, 1)}</td>"
+                    f"<td>{float(bet.recovery_rate_percent):.1f}%</td>"
+                    f"<td>{float(bet.bet_type_reliability):.0%}</td>"
+                    f"<td>{float(bet.recommendation_score):.1f}</td>"
+                    f"<td>{float(bet.expected_profit_per_100):+.0f}円</td>"
+                    "</tr>"
+                    for bet in race_bets.itertuples()
+                )
+                bet_block = (
+                    '<section class="bets"><h3>AIおすすめ買い目 上位3つ</h3>'
+                    '<table><thead><tr><th>券種</th><th>買い目</th>'
+                    '<th>推定的中確率</th><th>使用オッズ</th>'
+                    '<th>推定回収率</th><th>券種適合度</th><th>おすすめスコア</th>'
+                    '<th>100円当たり期待損益</th>'
+                    f'</tr></thead><tbody>{bet_rows}</tbody></table>'
+                    '<p class="bets-note">おすすめスコア＝推定回収率×券種適合度。'
+                    '複勝以外はPlackett-Luce法による近似値。'
+                    '範囲オッズは下限値を使用しています。</p></section>'
+                )
         race_sections.append(
             f'<details class="{race_class}"><summary>{_text(first["course_name"])} {race_number}R {_text(first["race_name"])}</summary>'
-            f'<div class="race-content">'
+            f'<div class="race-content">{bet_block}'
             '<table><thead><tr><th>予測</th><th>馬番</th><th>馬名</th><th>3着以内確率</th>'
             + ('<th>実着順</th><th>判定</th>' if has_comparison else '')
             + '<th>オッズ</th><th>期待値指数</th><th>騎手</th></tr></thead>'

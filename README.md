@@ -93,6 +93,8 @@ HTML収集とデータベース作成を次のフォルダに分離していま�
 - 過去レースHTMLは `data/raw_html/historical/<年>/` に年単位でキャッシュ
 - 競走馬の血統HTMLは `data/raw_html/historical/horse/` に `<horse_id>_<競走馬名>.html` 形式で保存し、父・母・母父をデータベースへ登録
 - 予想用HTMLは `data/raw_html/upcoming/<年>/` に年単位でキャッシュ
+- 予想用HTML収集では、取得可能なJRA券種別オッズHTMLも `data/raw_html/upcoming/<年>/odds/` に保存（取得できない場合は従来のレース情報のみ保存）
+- 予想用のデータベース作成時にJRAオッズを独立した `race_odds` テーブルへ登録し、モデル推論後の買い目別期待値計算にだけ使用
 - 予想対象馬の血統HTMLは `data/raw_html/upcoming/horse/` に保存し、学習用に同じ競走馬HTMLがあれば再利用
 - データベース作成時はネットワークへアクセスせず、取得済みHTMLだけを解析
 - 取得済みHTMLからのデータベース作成はバックグラウンドで実行され、画面移動後も継続

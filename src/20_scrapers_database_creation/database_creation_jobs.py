@@ -7,6 +7,8 @@ from datetime import date, datetime
 from importlib import import_module
 from typing import Any
 
+import pandas as pd
+
 from .scrapers_database_creation_netkeiba import (
     NetkeibaDatabaseCreator,
 )
@@ -19,6 +21,7 @@ PATHS = import_module("src.00_common.config").PATHS
 _storage = import_module("src.00_common.storage")
 save_collection_run = _storage.save_collection_run
 save_race_records = _storage.save_race_records
+save_race_odds = _storage.save_race_odds
 
 
 @dataclass
@@ -213,11 +216,66 @@ def _run_job(job_id: str) -> None:
             job.job_id,
             job.dataset_type,
         )
+        odds_count = 0
+        if job.dataset_type == "upcoming":
+            try:
+                logger.info(
+                    "JRAオッズDB登録開始: "
+                    f"対象期間={job.start_date}～{job.end_date}"
+                )
+                odds_parser = import_module(
+                    "src.20_scrapers_database_creation.jra_odds_parser"
+                )
+                odds_frames = []
+                dated_frame = frame.assign(
+                    race_date=pd.to_datetime(frame["race_date"], errors="coerce")
+                )
+                for race_date_value, date_rows in dated_frame.groupby(
+                    dated_frame["race_date"].dt.date
+                ):
+                    if pd.isna(race_date_value):
+                        continue
+                    parsed_odds = odds_parser.parse_odds_directory(
+                        PATHS.upcoming_html
+                        / str(race_date_value.year)
+                        / "odds",
+                        race_date_value,
+                        date_rows["race_id"].astype(str).unique().tolist(),
+                    )
+                    if not parsed_odds.empty:
+                        odds_frames.append(parsed_odds)
+                if odds_frames:
+                    odds = pd.concat(odds_frames, ignore_index=True)
+                    save_race_odds(odds, job.job_id)
+                    odds_count = len(odds)
+                    by_type = ", ".join(
+                        f"{bet_type}={count:,}"
+                        for bet_type, count in odds["bet_type"]
+                        .value_counts()
+                        .sort_index()
+                        .items()
+                    )
+                    logger.info(
+                        "JRAオッズDB登録完了: "
+                        f"レース数={odds['race_id'].nunique():,}, "
+                        f"オッズ行数={odds_count:,}, 券種別=[{by_type}]"
+                    )
+                else:
+                    logger.warning(
+                        "JRAオッズDB登録なし: 対象レースに対応する"
+                        "保存済みオッズHTMLがありません。"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "JRAオッズをDB登録できませんでした。"
+                    f"レース情報の登録は完了しています: {exc}"
+                )
         race_count = int(frame["race_id"].nunique())
         row_count = len(frame)
         result = {
             "race_count": race_count,
             "row_count": row_count,
+            "odds_count": odds_count,
         }
         _save_run(
             job,

@@ -500,6 +500,7 @@ def predict_historical_race(
         "race_number",
         "race_name",
         "horse_number",
+        "frame_number",
         "horse_id",
         "horse_name",
         "jockey_name",
@@ -654,7 +655,7 @@ def predict_race(
     with torch.no_grad():
         probability = torch.sigmoid(model(torch.from_numpy(matrix))).numpy()
     result = target[
-        ["race_id", "race_date", "course_name", "race_number", "race_name", "horse_number", "horse_id", "horse_name", "jockey_name", "odds", "popularity"]
+        ["race_id", "race_date", "course_name", "race_number", "race_name", "horse_number", "frame_number", "horse_id", "horse_name", "jockey_name", "odds", "popularity"]
     ].copy()
     result["top3_probability"] = probability
     result["expected_value_index"] = result["top3_probability"] * pd.to_numeric(result["odds"], errors="coerce")
@@ -711,7 +712,7 @@ def predict_race_date(
 
     result_columns = [
         "race_id", "race_date", "course_name", "race_number", "race_name",
-        "horse_number", "horse_id", "horse_name", "jockey_name", "odds",
+        "horse_number", "frame_number", "horse_id", "horse_name", "jockey_name", "odds",
         "popularity",
     ]
     result = featured[result_columns].copy()

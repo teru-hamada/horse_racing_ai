@@ -17,6 +17,7 @@ from src.public_api import (
     collection_runs,
     dashboard_summary,
     load_records,
+    load_race_odds,
     model_runs,
     PATHS,
     build_prediction_site,
@@ -66,6 +67,7 @@ from src.public_api import (
     train_model,
     save_collection_run,
     save_race_records,
+    calculate_bet_recommendations,
 )
 
 
@@ -673,7 +675,9 @@ def _render_database_creation_status(
             f"登録レース: "
             f"{latest_job['result'].get('race_count', 0):,} / "
             f"登録頭数: "
-            f"{latest_job['result'].get('row_count', 0):,}"
+            f"{latest_job['result'].get('row_count', 0):,} / "
+            f"登録オッズ: "
+            f"{latest_job['result'].get('odds_count', 0):,}"
         )
     if latest_job["error"]:
         st.error(latest_job["error"])
@@ -1300,6 +1304,11 @@ elif page in {"HTML収集（学習用）", "HTML収集（予想用）"}:
             "システム日付当日は午前9:00より前まで"
             "選択できます。"
         )
+        st.info(
+            "JRAにオッズ情報が掲載されている場合は、対象レースの"
+            "券種別オッズHTMLも取得します。オッズが未掲載、または"
+            "取得できない場合も、従来のレース情報の収集は継続します。"
+        )
 
     force = st.checkbox("保存済みHTMLを再取得する", value=False)
     html_storage_path = (
@@ -1486,9 +1495,17 @@ elif page == "データベース作成":
                         f"・DB作成済み {registered['race_count']:,}レース"
                         if registered["race_count"] > 0 else ""
                     )
+                    registered_odds_count = len(
+                        load_race_odds(race_date=available_date)
+                    )
+                    registered_odds_text = (
+                        f"・オッズDB登録済み {registered_odds_count:,}件"
+                        if registered_odds_count > 0
+                        else "・オッズ未登録"
+                    )
                     date_statuses[available_date] = (
                         f"{available_date:%Y-%m-%d}（HTML {race_count:,}レース"
-                        f"{registered_text}）"
+                        f"{registered_text}{registered_odds_text}）"
                     )
                 target_date = st.selectbox(
                     "対象日",
@@ -1510,6 +1527,12 @@ elif page == "データベース作成":
                 )
 
         if dataset_type == "upcoming":
+            st.info(
+                "予想用のデータベース作成では、出馬表のレース情報に加えて、"
+                "保存済みのJRAオッズHTMLがある場合は券種・買い目・オッズを"
+                "独立したオッズテーブルへ登録します。オッズHTMLがない場合も、"
+                "レース情報の登録は継続します。"
+            )
             html_race_count = _cached_race_html_count(
                 dataset_type,
                 start_date,
@@ -2647,6 +2670,14 @@ elif page == "レース予想":
                                 selected_prediction_date,
                                 model_path,
                             )
+                        site_odds = load_race_odds(
+                            race_ids=result["race_id"].astype(str).unique().tolist()
+                        )
+                        site_bet_recommendations = calculate_bet_recommendations(
+                            result,
+                            site_odds,
+                            best_only=False,
+                        )
                         page_path = None
                         try:
                             page_path = build_prediction_site(
@@ -2654,6 +2685,7 @@ elif page == "レース予想":
                                 selected_prediction_date,
                                 str(model_id),
                                 PATHS.root / "docs",
+                                bet_recommendations=site_bet_recommendations,
                             )
                         except Exception as site_exc:
                             logger.exception(f"GitHub Pages用HTML生成失敗: {site_exc}")
@@ -2757,6 +2789,93 @@ elif page == "レース予想":
                             hide_index=True,
                         )
 
+                    registered_odds = load_race_odds(
+                        race_ids=result["race_id"].astype(str).unique().tolist()
+                    )
+                    recommendations = calculate_bet_recommendations(
+                        result,
+                        registered_odds,
+                        best_only=False,
+                    )
+                    recommendations = (
+                        recommendations.groupby("race_id", sort=False)
+                        .head(3)
+                        .reset_index(drop=True)
+                    )
+                    st.subheader("レース別 AIおすすめ買い目 上位3つ（参考）")
+                    if recommendations.empty:
+                        st.info(
+                            "この予想日に対応するJRAオッズがDBに登録されていないため、"
+                            "期待値を算出できません。"
+                        )
+                    else:
+                        recommendation_display = recommendations.copy()
+                        recommendation_display["estimated_probability"] = (
+                            recommendation_display["estimated_probability"].map(
+                                lambda value: f"{value:.1%}"
+                            )
+                        )
+                        recommendation_display["odds_used"] = (
+                            recommendation_display["odds_used"].map(
+                                lambda value: f"{value:.1f}"
+                            )
+                        )
+                        recommendation_display["recovery_rate_percent"] = (
+                            recommendation_display["recovery_rate_percent"].map(
+                                lambda value: f"{value:.1f}%"
+                            )
+                        )
+                        recommendation_display["expected_profit_per_100"] = (
+                            recommendation_display["expected_profit_per_100"].map(
+                                lambda value: f"{value:+.0f}円"
+                            )
+                        )
+                        recommendation_display["bet_type_reliability"] = (
+                            recommendation_display["bet_type_reliability"].map(
+                                lambda value: f"{value:.0%}"
+                            )
+                        )
+                        recommendation_display["recommendation_score"] = (
+                            recommendation_display["recommendation_score"].map(
+                                lambda value: f"{value:.1f}"
+                            )
+                        )
+                        st.dataframe(
+                            recommendation_display[
+                                [
+                                    "course_name", "race_number", "race_name",
+                                    "bet_type_label", "selection",
+                                    "estimated_probability", "odds_used",
+                                    "recovery_rate_percent", "expected_profit_per_100",
+                                    "bet_type_reliability", "recommendation_score",
+                                    "probability_method",
+                                ]
+                            ].rename(
+                                columns={
+                                    "course_name": "競馬場",
+                                    "race_number": "R",
+                                    "race_name": "レース名",
+                                    "bet_type_label": "券種",
+                                    "selection": "買い目",
+                                    "estimated_probability": "推定的中確率",
+                                    "odds_used": "使用オッズ",
+                                    "recovery_rate_percent": "推定回収率",
+                                    "expected_profit_per_100": "100円当たり期待損益",
+                                    "bet_type_reliability": "券種適合度",
+                                    "recommendation_score": "おすすめスコア",
+                                    "probability_method": "確率算出方法",
+                                }
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                        st.caption(
+                            "おすすめスコアは推定回収率×券種適合度です。複勝はモデルの"
+                            "3着以内確率を直接使用します。その他の券種は"
+                            "3着以内確率からPlackett-Luce法で着順確率を近似した参考値です。"
+                            "範囲オッズは下限値を使用し、オッズはモデルの特徴量には追加していません。"
+                        )
+
                     if st.button(
                         "この日の全レースを確定結果と比較",
                         type="secondary",
@@ -2782,6 +2901,14 @@ elif page == "レース予想":
                                 )
                             comparison_page_path = None
                             try:
+                                comparison_odds = load_race_odds(
+                                    race_ids=result["race_id"].astype(str).unique().tolist()
+                                )
+                                comparison_bets = calculate_bet_recommendations(
+                                    result,
+                                    comparison_odds,
+                                    best_only=False,
+                                )
                                 comparison_page_path = build_prediction_site(
                                     result,
                                     selected_prediction_date,
@@ -2789,6 +2916,7 @@ elif page == "レース予想":
                                     PATHS.root / "docs",
                                     comparison=comparison,
                                     comparison_summary=comparison_summary,
+                                    bet_recommendations=comparison_bets,
                                 )
                             except Exception as site_exc:
                                 logger.exception(

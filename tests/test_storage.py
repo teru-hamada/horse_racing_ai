@@ -36,6 +36,11 @@ def test_new_database_schema_has_all_current_columns(tmp_path, monkeypatch):
             row[1]
             for row in connection.execute("PRAGMA table_info('model_runs')").fetchall()
         }
+        odds_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info('race_odds')").fetchall()
+        }
 
     assert race_columns == set(storage.RACE_RECORD_COLUMNS)
     assert model_columns == set(storage.MODEL_RUN_COLUMNS)
+    assert odds_columns == set(storage.ODDS_COLUMNS)

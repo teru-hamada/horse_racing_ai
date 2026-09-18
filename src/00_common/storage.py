@@ -34,6 +34,12 @@ MODEL_RUN_COLUMNS = [
     "feature_version",
 ]
 
+ODDS_COLUMNS = [
+    "race_id", "race_date", "bet_type", "selection_1", "selection_2",
+    "selection_3", "odds_min", "odds_max", "source_html",
+    "collection_run_id", "registered_at",
+]
+
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS collection_runs (
@@ -122,6 +128,20 @@ CREATE TABLE IF NOT EXISTS prediction_runs (
     row_count BIGINT,
     output_path VARCHAR
 );
+
+CREATE TABLE IF NOT EXISTS race_odds (
+    race_id VARCHAR,
+    race_date DATE,
+    bet_type VARCHAR,
+    selection_1 INTEGER,
+    selection_2 INTEGER,
+    selection_3 INTEGER,
+    odds_min DOUBLE,
+    odds_max DOUBLE,
+    source_html VARCHAR,
+    collection_run_id VARCHAR,
+    registered_at TIMESTAMP
+);
 """
 
 
@@ -209,6 +229,60 @@ def load_records(dataset_type: str | None = None) -> pd.DataFrame:
                 [dataset_type],
             ).df()
         return con.execute("SELECT * FROM race_records ORDER BY race_date, race_id, horse_number").df()
+
+
+def save_race_odds(df: pd.DataFrame, run_id: str) -> None:
+    if df.empty:
+        return
+    normalized = df.copy()
+    for column in ODDS_COLUMNS:
+        if column not in normalized.columns:
+            normalized[column] = pd.NA
+    normalized["race_date"] = pd.to_datetime(
+        normalized["race_date"], errors="coerce"
+    ).dt.date
+    for column in ("selection_1", "selection_2", "selection_3", "odds_min", "odds_max"):
+        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+    normalized["collection_run_id"] = run_id
+    normalized["registered_at"] = datetime.now()
+    normalized = normalized[ODDS_COLUMNS]
+    with connect() as con:
+        con.register("incoming_odds", normalized)
+        con.execute(
+            """
+            DELETE FROM race_odds
+            USING incoming_odds
+            WHERE race_odds.race_id = incoming_odds.race_id
+            """
+        )
+        columns = ", ".join(ODDS_COLUMNS)
+        con.execute(
+            f"INSERT INTO race_odds ({columns}) SELECT {columns} FROM incoming_odds"
+        )
+        con.unregister("incoming_odds")
+
+
+def load_race_odds(
+    race_ids: list[str] | None = None,
+    race_date: Any | None = None,
+) -> pd.DataFrame:
+    with connect() as con:
+        if race_ids:
+            placeholders = ", ".join("?" for _ in race_ids)
+            return con.execute(
+                f"SELECT * FROM race_odds WHERE race_id IN ({placeholders}) "
+                "ORDER BY race_id, bet_type, selection_1, selection_2, selection_3",
+                [str(value) for value in race_ids],
+            ).df()
+        if race_date is not None:
+            return con.execute(
+                "SELECT * FROM race_odds WHERE race_date = ? "
+                "ORDER BY race_id, bet_type, selection_1, selection_2, selection_3",
+                [race_date],
+            ).df()
+        return con.execute(
+            "SELECT * FROM race_odds ORDER BY race_date, race_id, bet_type"
+        ).df()
 
 
 def race_record_summary(
