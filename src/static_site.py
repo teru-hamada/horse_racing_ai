@@ -223,7 +223,8 @@ def build_prediction_site(
                     f'</tr></thead><tbody>{bet_rows}</tbody></table>'
                     '<p class="bets-note">おすすめスコア＝推定回収率×券種適合度。'
                     '複勝以外はPlackett-Luce法による近似値。'
-                    '範囲オッズは下限値を使用しています。</p></section>'
+                    '推定回収率110%以上かつ券種別最低的中確率を満たす候補から、'
+                    '複勝・ワイドを優先。範囲オッズは下限値を使用しています。</p></section>'
                 )
         race_sections.append(
             f'<details class="{race_class}"><summary>{_text(first["course_name"])} {race_number}R {_text(first["race_name"])}</summary>'

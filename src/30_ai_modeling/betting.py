@@ -25,6 +25,19 @@ BET_TYPE_RELIABILITY = {
     "trifecta": 0.40,
 }
 
+MIN_HIT_PROBABILITY = {
+    "place": 0.25,
+    "win": 0.10,
+    "wide": 0.08,
+    "quinella": 0.05,
+    "bracket_quinella": 0.05,
+    "exacta": 0.03,
+    "trio": 0.02,
+    "trifecta": 0.01,
+}
+MIN_RECOVERY_RATE_PERCENT = 110.0
+PRIMARY_BET_TYPES = {"place", "wide"}
+
 
 def _ordered_probability(order: tuple[int, ...], weights: dict[int, float]) -> float:
     remaining = 1.0
@@ -85,7 +98,7 @@ def calculate_bet_recommendations(
         "race_id", "course_name", "race_number", "race_name", "bet_type",
         "bet_type_label", "selection", "estimated_probability", "odds_used",
         "recovery_rate_percent", "bet_type_reliability", "recommendation_score",
-        "expected_profit_per_100", "probability_method",
+        "expected_profit_per_100", "probability_method", "is_primary_bet_type",
     ]
     if predictions.empty or odds.empty:
         return pd.DataFrame(columns=columns)
@@ -163,14 +176,30 @@ def calculate_bet_recommendations(
                     "recommendation_score": recovery_rate_percent * reliability,
                     "expected_profit_per_100": recovery_rate_percent - 100.0,
                     "probability_method": method,
+                    "is_primary_bet_type": str(odd.bet_type) in PRIMARY_BET_TYPES,
                 }
             )
     result = pd.DataFrame(rows, columns=columns)
     if result.empty:
         return result
+    result = result[
+        result.apply(
+            lambda row: (
+                row["estimated_probability"]
+                >= MIN_HIT_PROBABILITY.get(str(row["bet_type"]), 1.0)
+                and row["recovery_rate_percent"] >= MIN_RECOVERY_RATE_PERCENT
+            ),
+            axis=1,
+        )
+    ].copy()
+    if result.empty:
+        return result.reset_index(drop=True)
     result = result.sort_values(
-        ["race_id", "recommendation_score", "recovery_rate_percent"],
-        ascending=[True, False, False],
+        [
+            "race_id", "is_primary_bet_type", "recommendation_score",
+            "recovery_rate_percent",
+        ],
+        ascending=[True, False, False, False],
         kind="stable",
     )
     if best_only:

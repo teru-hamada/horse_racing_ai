@@ -108,3 +108,29 @@ def test_bet_recommendation_uses_odds_after_prediction():
     assert result.iloc[0].selection == "1"
     assert result.iloc[0].recovery_rate_percent == pytest.approx(160.0)
     assert result.iloc[0].probability_method == "3着内確率（モデル出力）"
+
+
+def test_bet_recommendation_filters_low_probability_and_prioritizes_place_wide():
+    predictions = pd.DataFrame([
+        {"race_id": "r1", "course_name": "中山", "race_number": 1,
+         "race_name": "テスト", "horse_number": 1, "top3_probability": 0.6},
+        {"race_id": "r1", "course_name": "中山", "race_number": 1,
+         "race_name": "テスト", "horse_number": 2, "top3_probability": 0.399},
+        {"race_id": "r1", "course_name": "中山", "race_number": 1,
+         "race_name": "テスト", "horse_number": 3, "top3_probability": 0.001},
+    ])
+    odds = pd.DataFrame([
+        {"race_id": "r1", "bet_type": "place", "selection_1": 1,
+         "selection_2": None, "selection_3": None, "odds_min": 2.0},
+        {"race_id": "r1", "bet_type": "win", "selection_1": 2,
+         "selection_2": None, "selection_3": None, "odds_min": 10.0},
+        {"race_id": "r1", "bet_type": "trifecta", "selection_1": 3,
+         "selection_2": 2, "selection_3": 1, "odds_min": 10000.0},
+    ])
+
+    result = betting.calculate_bet_recommendations(
+        predictions, odds, best_only=False
+    )
+
+    assert result.iloc[0].bet_type == "place"
+    assert "trifecta" not in set(result["bet_type"])
