@@ -2961,8 +2961,9 @@ elif page == "レース予想":
                         else:
                             st.dataframe(
                                 compared_bets[[
+                                    "bet_result",
                                     "course_name", "race_number", "race_name",
-                                    "bet_type_label", "selection", "bet_result",
+                                    "bet_type_label", "selection",
                                     "payout_per_100",
                                 ]].rename(columns={
                                     "course_name": "競馬場", "race_number": "R",

@@ -249,7 +249,8 @@ def build_prediction_site(
                 )
                 bet_rows = "".join(
                     "<tr>"
-                    f"<td>{_text(bet.bet_type_label)}</td>"
+                    + (f'<td>{_text(bet.bet_result)}</td>' if has_comparison else "")
+                    + f"<td>{_text(bet.bet_type_label)}</td>"
                     f"<td>{_text(bet.selection)}</td>"
                     f"<td>{float(bet.estimated_probability):.1%}</td>"
                     f"<td>{_number(bet.odds_used, 1)}</td>"
@@ -258,7 +259,6 @@ def build_prediction_site(
                     f"<td>{float(bet.recommendation_score):.1f}</td>"
                     f"<td>{float(bet.expected_profit_per_100):+.0f}円</td>"
                     + (
-                        f'<td>{_text(bet.bet_result)}</td>'
                         f'<td>{_number(bet.payout_per_100, 0)}円</td>'
                         if has_comparison else ""
                     )
@@ -267,11 +267,13 @@ def build_prediction_site(
                 )
                 bet_block = (
                     '<section class="bets"><h3>AIおすすめ買い目 上位3つ</h3>'
-                    '<table><thead><tr><th>券種</th><th>買い目</th>'
+                    '<table><thead><tr>'
+                    + ('<th>的中結果</th>' if has_comparison else '')
+                    + '<th>券種</th><th>買い目</th>'
                     '<th>推定的中確率</th><th>使用オッズ</th>'
                     '<th>推定回収率</th><th>券種適合度</th><th>おすすめスコア</th>'
                     '<th>100円当たり期待損益</th>'
-                    + ('<th>的中結果</th><th>100円当たり払戻金</th>' if has_comparison else '')
+                    + ('<th>100円当たり払戻金</th>' if has_comparison else '')
                     +
                     f'</tr></thead><tbody>{bet_rows}</tbody></table>'
                     '<p class="bets-note">おすすめスコア＝推定回収率×券種適合度。'
