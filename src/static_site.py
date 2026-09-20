@@ -34,6 +34,59 @@ def _number(value: object, digits: int = 2) -> str:
     return "-" if pd.isna(value) else f"{float(value):.{digits}f}"
 
 
+def _displayed_bets(bets: pd.DataFrame) -> pd.DataFrame:
+    if bets.empty:
+        return bets.copy()
+    return (
+        bets.sort_values(
+            ["recommendation_score", "recovery_rate_percent"],
+            ascending=False,
+            kind="stable",
+        )
+        .groupby("race_id", sort=False)
+        .head(3)
+        .copy()
+    )
+
+
+def _bet_return_summary(
+    bets: pd.DataFrame,
+    official_payouts: dict[str, dict[str, int]],
+) -> dict[str, object]:
+    """Settle displayed 100-yen bets with JRA's official payout amounts."""
+    displayed = _displayed_bets(bets)
+    total_bets = len(displayed)
+    settled_bets = 0
+    hit_bets = 0
+    payout = 0.0
+
+    for bet in displayed.itertuples():
+        race_payouts = official_payouts.get(str(bet.race_id))
+        if not race_payouts:
+            continue
+        settled_bets += 1
+        selections = [
+            int(value) for value in str(bet.selection).split("-") if value
+        ]
+        bet_type = str(getattr(bet, "bet_type", ""))
+        if bet_type in {"bracket_quinella", "quinella", "wide", "trio"}:
+            selections.sort()
+        key = f'{bet_type}:{"-".join(map(str, selections))}'
+        official_payout = race_payouts.get(key)
+        if official_payout is not None:
+            hit_bets += 1
+            payout += float(official_payout)
+
+    return {
+        "total_bets": total_bets,
+        "settled_bets": settled_bets,
+        "hit_bets": hit_bets,
+        "purchase": total_bets * 100,
+        "payout": payout,
+        "recovery_rate": payout / (total_bets * 100) * 100 if total_bets else 0.0,
+    }
+
+
 def _page(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -189,12 +242,9 @@ def build_prediction_site(
         race_class = "race graded" if _GRADED_RACE_PATTERN.search(race_name) else "race"
         bet_block = ""
         if bet_recommendations is not None:
-            race_bets = bet_recommendations[
+            race_bets = _displayed_bets(bet_recommendations[
                 bet_recommendations["race_id"].astype(str).eq(str(race_id))
-            ].sort_values(
-                ["recommendation_score", "recovery_rate_percent"],
-                ascending=False,
-            ).head(3)
+            ])
             if race_bets.empty:
                 bet_block = (
                     '<section class="bets"><h3>AIおすすめ買い目 上位3つ</h3>'
@@ -253,6 +303,26 @@ def build_prediction_site(
                 for item in failures
             )
             failure_text = f'<span class="failures">未比較: {_text(failure_items)}</span>'
+        bet_return_text = ""
+        if bet_recommendations is not None:
+            returns = _bet_return_summary(
+                bet_recommendations,
+                summary.get("official_payouts", {}) or {},
+            )
+            if returns["total_bets"] == 0:
+                bet_return_text = '<span>おすすめ買い目の回収率: 対象なし</span>'
+            elif returns["settled_bets"] < returns["total_bets"]:
+                bet_return_text = (
+                    '<span>おすすめ買い目の回収率: 集計中 '
+                    f'（{returns["settled_bets"]} / {returns["total_bets"]} 点確定）</span>'
+                )
+            else:
+                bet_return_text = (
+                    f'<span>おすすめ買い目を各100円購入: '
+                    f'{returns["total_bets"]} 点・購入 {returns["purchase"]:,}円・'
+                    f'的中 {returns["hit_bets"]} 点・払戻 {returns["payout"]:,.0f}円・'
+                    f'回収率 {returns["recovery_rate"]:.1f}%（JRA公式払戻金）</span>'
+                )
         comparison_block = (
             '<section class="comparison-summary" '
             f'data-comparison-status="{comparison_status}">'
@@ -261,6 +331,7 @@ def build_prediction_site(
             f'{_text(summary.get("requested_races", 0))} レース</span>'
             f'<span>予測上位3頭の的中: {_text(summary.get("top3_hit_count", 0))} 頭</span>'
             f'<span>上位3頭完全的中: {_text(summary.get("perfect_top3_races", 0))} レース</span>'
+            f'{bet_return_text}'
             f'{failure_text}</section>'
         )
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")

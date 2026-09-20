@@ -52,7 +52,7 @@ from src.public_api import (
     list_race_entry_jobs,
     list_html_collection_jobs as list_jobs,
     NetkeibaHtmlCollector,
-    NetkeibaDatabaseCreator,
+    JraResultFetcher,
     start_database_job,
     start_feature_generation_job,
     start_speed_index_job,
@@ -2889,7 +2889,7 @@ elif page == "レース予想":
                                 "この日の全レース結果を取得して比較しています。",
                                 show_time=True,
                             ):
-                                result_scraper = NetkeibaDatabaseCreator(logger=logger)
+                                result_scraper = JraResultFetcher(logger=logger)
                                 comparison, comparison_summary = compare_prediction_date(
                                     result,
                                     selected_prediction_date,

@@ -48,6 +48,7 @@ _static_site = import_module("src.static_site")
 _prediction_comparison = import_module("src.prediction_comparison")
 _weather_forecast = import_module("src.weather_forecast")
 _betting = import_module("src.30_ai_modeling.betting")
+_jra_results = import_module("src.jra_results")
 
 cancel_html_collection_job = _html_jobs.cancel_job
 list_html_collection_jobs = _html_jobs.list_jobs
@@ -59,6 +60,7 @@ start_database_job = _database_jobs.start_database_job
 
 NetkeibaHtmlCollector = _html_scraper.NetkeibaHtmlCollector
 NetkeibaDatabaseCreator = _database_scraper.NetkeibaDatabaseCreator
+JraResultFetcher = _jra_results.JraResultFetcher
 generate_demo_records = _demo_data.generate_demo_records
 AppLogger = _logging.AppLogger
 PATHS = _config.PATHS

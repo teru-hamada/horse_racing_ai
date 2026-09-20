@@ -66,9 +66,13 @@ def compare_prediction_date(
 
     comparisons: list[pd.DataFrame] = []
     failures: list[dict[str, str]] = []
+    official_payouts: dict[str, dict[str, int]] = {}
     for race_id, race_prediction in predictions.groupby("race_id", sort=False):
         try:
             actual = fetch_result(str(race_id), race_date)
+            payouts = actual.attrs.get("official_payouts", {})
+            if payouts:
+                official_payouts[str(race_id)] = dict(payouts)
             comparisons.append(
                 compare_prediction_with_finish(race_prediction.copy(), actual)
             )
@@ -99,5 +103,6 @@ def compare_prediction_date(
         "top3_hit_count": hit_count,
         "perfect_top3_races": perfect_races,
         "failures": failures,
+        "official_payouts": official_payouts,
     }
     return comparison, summary

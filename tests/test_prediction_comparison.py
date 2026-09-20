@@ -51,4 +51,5 @@ def test_date_comparison_keeps_success_when_one_race_is_unavailable():
         "top3_hit_count": 3,
         "perfect_top3_races": 1,
         "failures": [{"race_id": "r2", "message": "結果未確定"}],
+        "official_payouts": {},
     }

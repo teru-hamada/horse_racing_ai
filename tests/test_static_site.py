@@ -153,6 +153,65 @@ def test_static_prediction_site_includes_result_comparison(tmp_path):
     assert "race-2 (結果未確定)" in html
 
 
+def test_result_comparison_includes_return_for_displayed_100_yen_bets(tmp_path):
+    predictions = pd.DataFrame([
+        {
+            "race_id": "race-1", "race_number": 1, "race_name": "未勝利",
+            "course_name": "中京", "horse_number": horse_number,
+            "horse_name": f"馬{horse_number}", "jockey_name": "騎手",
+            "prediction_rank": rank, "top3_probability": 0.8 - rank / 10,
+            "odds": 2.0, "expected_value_index": 1.4,
+        }
+        for rank, horse_number in enumerate([5, 4, 6], start=1)
+    ])
+    finish = {5: 1, 4: 2, 6: 3}
+    comparison = predictions.assign(
+        finish_position=predictions["horse_number"].map(finish),
+        predicted_top3=True,
+        actual_top3=True,
+        top3_hit=True,
+    )
+    bets = pd.DataFrame([
+        {
+            "race_id": "race-1", "bet_type": bet_type,
+            "bet_type_label": label, "selection": selection,
+            "estimated_probability": 0.5, "odds_used": odds,
+            "recovery_rate_percent": score,
+            "bet_type_reliability": 1.0, "recommendation_score": score,
+            "expected_profit_per_100": score - 100,
+        }
+        for bet_type, label, selection, odds, score in [
+            ("exacta", "馬単", "5-4", 6.0, 160),
+            ("place", "複勝", "4", 2.5, 150),
+            ("win", "単勝", "4", 4.0, 140),
+            ("trifecta", "3連単", "5-4-6", 20.0, 130),
+        ]
+    ])
+
+    page = build_prediction_site(
+        predictions, "2026-09-06", "model-test", tmp_path / "docs",
+        comparison=comparison,
+        comparison_summary={
+            "requested_races": 1,
+            "compared_races": 1,
+            "official_payouts": {
+                "race-1": {
+                    "exacta:5-4": 600,
+                    "place:4": 250,
+                }
+            },
+        },
+        bet_recommendations=bets,
+    )
+    html = page.read_text(encoding="utf-8")
+
+    assert "おすすめ買い目を各100円購入" in html
+    assert "3 点・購入 300円" in html
+    assert "的中 2 点・払戻 850円" in html
+    assert "回収率 283.3%（JRA公式払戻金）" in html
+    assert "5-4-6" not in html
+
+
 def test_prediction_date_status_survives_application_restart(tmp_path):
     predictions_dir = tmp_path / "data" / "predictions"
     site_dir = tmp_path / "docs"
