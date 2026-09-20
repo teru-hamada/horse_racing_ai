@@ -4,7 +4,32 @@ from datetime import date
 
 import pandas as pd
 
-from src.public_api import compare_prediction_date
+from src.public_api import compare_prediction_date, compare_recommended_bets
+
+
+def test_recommended_bets_use_official_payouts_and_preserve_order():
+    bets = pd.DataFrame([
+        {"race_id": "r1", "bet_type": kind, "selection": selection}
+        for kind, selection in [
+            ("place", "1"), ("place", "4"), ("wide", "3-1"),
+            ("exacta", "2-1"), ("trifecta", "1-2-3"),
+        ]
+    ] + [{"race_id": "r2", "bet_type": "place", "selection": "1"}])
+    result = compare_recommended_bets(bets, {"r1": {
+        "place:1": 150, "wide:1-3": 420, "exacta:1-2": 800,
+    }})
+    assert result["bet_result"].tolist() == [
+        "的中", "不的中", "的中", "不的中", "未確認", "未確認",
+    ]
+    assert result["payout_per_100"].iloc[:4].tolist() == [150, 0, 420, 0]
+    assert result["payout_per_100"].iloc[4:].isna().all()
+    assert "bet_result" not in bets
+
+
+def test_empty_recommended_bets():
+    result = compare_recommended_bets(pd.DataFrame(), {})
+    assert result.empty
+    assert {"bet_result", "payout_per_100"}.issubset(result.columns)
 
 
 def _predictions() -> pd.DataFrame:

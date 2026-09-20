@@ -177,6 +177,7 @@ compare_prediction_with_finish = (
     _prediction_comparison.compare_prediction_with_finish
 )
 compare_prediction_date = _prediction_comparison.compare_prediction_date
+compare_recommended_bets = _prediction_comparison.compare_recommended_bets
 fetch_jravan_weather = _weather_forecast.fetch_jravan_weather
 parse_jravan_forecast = _weather_forecast.parse_jravan_forecast
 weather_to_track_condition = _weather_forecast.weather_to_track_condition

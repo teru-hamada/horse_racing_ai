@@ -9,6 +9,32 @@ import pandas as pd
 ResultFetcher = Callable[[str, date], pd.DataFrame]
 
 
+def compare_recommended_bets(
+    bets: pd.DataFrame,
+    official_payouts: dict[str, dict[str, int]],
+) -> pd.DataFrame:
+    """Judge recommended tickets using official payouts per 100 yen."""
+    result = bets.copy()
+    judgments = []
+    payouts = []
+    for bet in result.itertuples():
+        race_payouts = official_payouts.get(str(bet.race_id), {})
+        bet_type = str(getattr(bet, "bet_type", ""))
+        if not bet_type or not any(key.startswith(f"{bet_type}:") for key in race_payouts):
+            judgments.append("未確認")
+            payouts.append(pd.NA)
+            continue
+        selections = [int(value) for value in str(bet.selection).split("-")]
+        if bet_type in {"bracket_quinella", "quinella", "wide", "trio"}:
+            selections.sort()
+        key = f'{bet_type}:{"-".join(map(str, selections))}'
+        judgments.append("的中" if key in race_payouts else "不的中")
+        payouts.append(race_payouts.get(key, 0))
+    result["bet_result"] = judgments
+    result["payout_per_100"] = pd.array(payouts, dtype="Int64")
+    return result
+
+
 def compare_prediction_with_finish(
     prediction: pd.DataFrame,
     actual: pd.DataFrame,

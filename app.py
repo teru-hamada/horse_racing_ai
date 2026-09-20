@@ -24,6 +24,7 @@ from src.public_api import (
     latest_prediction_file,
     prediction_date_status,
     compare_prediction_date,
+    compare_recommended_bets,
     predict_historical_race,
     predict_race,
     predict_race_date,
@@ -2903,14 +2904,7 @@ elif page == "レース予想":
                                 )
                             comparison_page_path = None
                             try:
-                                comparison_odds = load_race_odds(
-                                    race_ids=result["race_id"].astype(str).unique().tolist()
-                                )
-                                comparison_bets = calculate_bet_recommendations(
-                                    result,
-                                    comparison_odds,
-                                    best_only=False,
-                                )
+                                comparison_bets = recommendations.copy()
                                 comparison_page_path = build_prediction_site(
                                     result,
                                     selected_prediction_date,
@@ -2934,6 +2928,10 @@ elif page == "レース予想":
                                 "model_id": str(model_id),
                                 "result": comparison,
                                 "summary": comparison_summary,
+                                "bets": compare_recommended_bets(
+                                    recommendations,
+                                    comparison_summary.get("official_payouts", {}),
+                                ),
                             }
                             if comparison_page_path is not None:
                                 st.session_state["prediction_comparison_notice"] = (
@@ -2956,6 +2954,26 @@ elif page == "レース予想":
                         and comparison_state.get("model_id") == str(model_id)
                     ):
                         comparison_summary = comparison_state["summary"]
+                        compared_bets = comparison_state.get("bets", pd.DataFrame())
+                        st.subheader("おすすめ買い目の的中結果")
+                        if compared_bets.empty:
+                            st.info("照合対象のおすすめ買い目がありません。")
+                        else:
+                            st.dataframe(
+                                compared_bets[[
+                                    "course_name", "race_number", "race_name",
+                                    "bet_type_label", "selection", "bet_result",
+                                    "payout_per_100",
+                                ]].rename(columns={
+                                    "course_name": "競馬場", "race_number": "R",
+                                    "race_name": "レース名", "bet_type_label": "券種",
+                                    "selection": "買い目", "bet_result": "的中結果",
+                                    "payout_per_100": "100円当たり払戻金（円）",
+                                }),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                            st.caption("公式払戻金で判定しています。払戻情報を取得できない券種は未確認です。")
                         metric1, metric2, metric3, metric4 = st.columns(4)
                         metric1.metric(
                             "比較完了レース",

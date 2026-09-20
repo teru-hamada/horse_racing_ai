@@ -197,7 +197,8 @@ def test_result_comparison_includes_return_for_displayed_100_yen_bets(tmp_path):
             "official_payouts": {
                 "race-1": {
                     "exacta:5-4": 600,
-                    "place:4": 250,
+                        "place:4": 250,
+                        "win:5": 200,
                 }
             },
         },
@@ -209,6 +210,9 @@ def test_result_comparison_includes_return_for_displayed_100_yen_bets(tmp_path):
     assert "3 点・購入 300円" in html
     assert "的中 2 点・払戻 850円" in html
     assert "回収率 283.3%（JRA公式払戻金）" in html
+    assert "<th>的中結果</th><th>100円当たり払戻金</th>" in html
+    assert "<td>的中</td><td>600円</td>" in html
+    assert "<td>不的中</td><td>0円</td>" in html
     assert "5-4-6" not in html
 
 

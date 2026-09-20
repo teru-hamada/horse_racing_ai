@@ -7,6 +7,8 @@ import re
 
 import pandas as pd
 
+from src.prediction_comparison import compare_recommended_bets
+
 
 _STYLE = """
 :root{color-scheme:dark;--bg:#07130f;--panel:#10251d;--line:#25483a;--text:#f4f7f5;--muted:#a9bdb5;--accent:#38d996;--gold:#ffd166}
@@ -60,22 +62,13 @@ def _bet_return_summary(
     hit_bets = 0
     payout = 0.0
 
-    for bet in displayed.itertuples():
-        race_payouts = official_payouts.get(str(bet.race_id))
-        if not race_payouts:
+    for bet in compare_recommended_bets(displayed, official_payouts).itertuples():
+        if bet.bet_result == "未確認":
             continue
         settled_bets += 1
-        selections = [
-            int(value) for value in str(bet.selection).split("-") if value
-        ]
-        bet_type = str(getattr(bet, "bet_type", ""))
-        if bet_type in {"bracket_quinella", "quinella", "wide", "trio"}:
-            selections.sort()
-        key = f'{bet_type}:{"-".join(map(str, selections))}'
-        official_payout = race_payouts.get(key)
-        if official_payout is not None:
+        if bet.bet_result == "的中":
             hit_bets += 1
-            payout += float(official_payout)
+            payout += float(bet.payout_per_100)
 
     return {
         "total_bets": total_bets,
@@ -251,6 +244,9 @@ def build_prediction_site(
                     '<p class="bets-note">対応するJRAオッズがないため算出できません。</p></section>'
                 )
             else:
+                race_bets = compare_recommended_bets(
+                    race_bets, (comparison_summary or {}).get("official_payouts", {})
+                )
                 bet_rows = "".join(
                     "<tr>"
                     f"<td>{_text(bet.bet_type_label)}</td>"
@@ -261,7 +257,12 @@ def build_prediction_site(
                     f"<td>{float(bet.bet_type_reliability):.0%}</td>"
                     f"<td>{float(bet.recommendation_score):.1f}</td>"
                     f"<td>{float(bet.expected_profit_per_100):+.0f}円</td>"
-                    "</tr>"
+                    + (
+                        f'<td>{_text(bet.bet_result)}</td>'
+                        f'<td>{_number(bet.payout_per_100, 0)}円</td>'
+                        if has_comparison else ""
+                    )
+                    + "</tr>"
                     for bet in race_bets.itertuples()
                 )
                 bet_block = (
@@ -270,6 +271,8 @@ def build_prediction_site(
                     '<th>推定的中確率</th><th>使用オッズ</th>'
                     '<th>推定回収率</th><th>券種適合度</th><th>おすすめスコア</th>'
                     '<th>100円当たり期待損益</th>'
+                    + ('<th>的中結果</th><th>100円当たり払戻金</th>' if has_comparison else '')
+                    +
                     f'</tr></thead><tbody>{bet_rows}</tbody></table>'
                     '<p class="bets-note">おすすめスコア＝推定回収率×券種適合度。'
                     '複勝以外はPlackett-Luce法による近似値。'
