@@ -26,7 +26,7 @@
     "racing.duckdb": "2c3e6eea44ec0d2547ca5aed379e8b89c880acd56e7122e9f36dae21f024de9f"
   },
   "archive_sha256": "62fe0b2a616672c230131f331c242ffe0e289fa7823f04001dd3e6476922ad97",
-  "requirements_sha256": "4a5f7468fa4b85afe976a0d999e391c39217b2bec85a3fa93946c1fd6028c4e6",
+  "requirements_sha256": "da4b9fa9df8771e9e2a5fc2975a217253ef15b56d0c4faf06adf4df7eaf1674e",
   "archive_bytes": 15192687,
   "python_version": "3.12"
 }

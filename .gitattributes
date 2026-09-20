@@ -1,0 +1,5 @@
+# Keep hashed runtime metadata identical on Windows and Linux.
+prediction_bundle/requirements.txt text eol=lf
+prediction_bundle/.python-version text eol=lf
+prediction_bundle/manifest.json text eol=lf
+prediction_bundle/runtime.zip binary

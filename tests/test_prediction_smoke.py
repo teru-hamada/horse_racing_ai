@@ -42,6 +42,9 @@ def test_export_latest_and_read_only_source(tmp_path, source):
     expected_python = f"{sys.version_info.major}.{sys.version_info.minor}"
     assert manifest["python_version"] == expected_python
     assert (tmp_path / "bundle/.python-version").read_text().strip() == expected_python
+    requirements = (tmp_path / "bundle/requirements.txt").read_bytes()
+    assert b"\r" not in requirements
+    assert bundle.sha256(tmp_path / "bundle/requirements.txt") == manifest["requirements_sha256"]
     assert manifest["model_id"] == "model_new"
     unpacked = bundle.unpack_bundle(tmp_path / "bundle", tmp_path / "work")
     assert unpacked == manifest
@@ -63,6 +66,14 @@ def test_tampering_rejected_before_deserialization(tmp_path, source):
     with (tmp_path / "bundle/runtime.zip").open("ab") as stream:
         stream.write(b"changed")
     with pytest.raises(ValueError, match="hash mismatch"):
+        bundle.unpack_bundle(tmp_path / "bundle", tmp_path / "work")
+
+
+def test_requirements_content_change_is_rejected(tmp_path, source):
+    bundle.export_bundle(tmp_path / "bundle")
+    with (tmp_path / "bundle/requirements.txt").open("ab") as stream:
+        stream.write(b"unexpected-package==1.0\n")
+    with pytest.raises(ValueError, match="hash mismatch: requirements.txt"):
         bundle.unpack_bundle(tmp_path / "bundle", tmp_path / "work")
 
 

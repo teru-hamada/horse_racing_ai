@@ -88,10 +88,10 @@ def export_bundle(output: Path) -> dict:
                     destination.unregister("payload")
         versions = {name: metadata.version(name) for name in PACKAGES}
         python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-        (stage / ".python-version").write_text(python_version + "\n", encoding="utf-8")
+        (stage / ".python-version").write_text(python_version + "\n", encoding="utf-8", newline="\n")
         # CPU wheels use a local suffix that need not be portable across hosts.
         requirements = "".join(f"{name}=={version.split('+')[0]}\n" for name, version in versions.items())
-        (stage / "requirements.txt").write_text(requirements, encoding="utf-8")
+        (stage / "requirements.txt").write_text(requirements, encoding="utf-8", newline="\n")
         with zipfile.ZipFile(stage / "runtime.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             for name in sorted(MEMBERS):
                 archive.write(stage / name, name)
@@ -105,7 +105,7 @@ def export_bundle(output: Path) -> dict:
             "requirements_sha256": sha256(stage / "requirements.txt"),
             "archive_bytes": (stage / "runtime.zip").stat().st_size,
         }
-        (stage / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        (stage / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
         for name in ("runtime.zip", "requirements.txt", "manifest.json", ".python-version"):
             (stage / name).replace(output / name)
     return manifest
