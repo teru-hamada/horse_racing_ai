@@ -76,6 +76,62 @@ python -m pip install -r requirements-database-smoke.txt
 python -m src.html_fetch_smoke --race-date 2026-09-21 --race-id 202609040701 --output data/database_smoke_trial1 --verify-db
 ```
 
+## GitHub Actionsで1レースの予想を確認する（第3段階）
+
+`prediction_bundle/` に最新モデル本体・前処理器・設定・過去データの
+実行用パッケージを用意しています。更新手順は
+[パッケージの説明](prediction_bundle/README.md)を参照してください。
+過去レースに加え、予想特徴量に必要な速度指数も含めています。
+
+1. コード・`.github/workflows/prediction-smoke.yml`・`prediction_bundle/`一式を
+   デフォルトブランチへ反映します。
+2. **Actions → Test one race prediction → Run workflow** を開きます。
+3. 実行時点で出馬表とJRAオッズが公開されている開催日・レースIDを指定します。
+4. Summaryの最後にある「1レース予想テスト」の `status: ok` を確認します。
+   途中に表示されるHTML・DB検証の成功だけでは、予想テスト全体の成功ではありません。
+
+実行開始時の登録DBにある学習成功済み最新モデルをパッケージと照合します。
+入力不足・モデル欠落時に古いモデルへ切り替えることはありません。
+モデルファイルのハッシュ・ID・実行ライブラリのバージョンも検証します。
+GitHubからローカルPCの未反映モデルを参照することはできません。
+
+予想は既存アプリと共通の推論処理を使用します。DBは展開した作業用コピーを使い、
+対象日より前の過去レースから特徴量を作ります。頭数・対象馬・予測確率・単勝オッズとの
+照合・買い目の数値を検査します。推奨条件を満たす買い目がない場合は、異常ではなく
+「推奨条件を満たす買い目なし」と記録します。
+
+Artifactsの `prediction-smoke-…` を3日間保存します。
+
+- `prediction_report.json`: 使用モデルID、入力のハッシュ、環境、所要時間、検証結果
+- `predictions.csv`: 全頭の予想とモデルID
+- `prediction_odds.csv`: 予想と単勝オッズの照合結果
+- `bets.csv`: 推奨条件を満たした買い目
+- `preview/index.html`、`preview/predictions/<開催日>.html`: 確認用ページ
+- `prediction.log`、`fetch/`: 取得ログ・保存HTML・解析結果・テスト用DB
+
+失敗時にも保存できた診断ファイルは残します。大きな作業用モデル・過去DBはArtifactsに
+含めず、同じコミットのパッケージから復元します。予想結果のGit push・Pages公開・
+スケジュール起動はまだ行いません。
+
+### 同一入力でローカル比較する
+
+Actionsと同じコミットのコードとパッケージを使い、Artifactを
+`data/actions_prediction`へ展開します（`prediction_report.json`が直下にある状態）。
+モデルのライブラリ互換性を保つため、専用仮想環境を推奨します。
+
+```powershell
+python -m venv .venv-prediction
+.venv-prediction/Scripts/python.exe -m pip install -r prediction_bundle/requirements.txt
+.venv-prediction/Scripts/python.exe -m src.prediction_smoke --bundle prediction_bundle --replay data/actions_prediction --output data/prediction_replay1
+```
+
+再現時は通信せず、Artifact内の入力DBを読み、同じモデルで再計算します。
+入力DBとパッケージのハッシュ一致を確認し、予想と買い目をCSV比較します。
+`prediction_report.json` の `comparison.status: ok` が一致です。
+浮動小数点の差は絶対許容誤差 `1e-6`、相対許容誤差 `1e-5` 以内を許容し、
+対象馬・買い目・モデルIDなどの相違は不合格になります。
+出力先には毎回新しいフォルダを指定してください。
+
 ## 最初の起動方法（Windows）
 
 1. Python 3.11をインストールします。インストール時に「Add Python to PATH」を有効にします。

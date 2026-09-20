@@ -638,14 +638,17 @@ def predict_historical_race(
     )
     return result, output_path, summary
 
-def predict_race(
+def infer_race(
     historical_records: pd.DataFrame,
     upcoming_records: pd.DataFrame,
     race_id: str,
     model_dir: Path,
-) -> tuple[pd.DataFrame, Path]:
+    *, feature_database: Path | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    """Run the shared inference path without persisting predictions or DB records."""
     model, preprocessor, metrics = load_model_bundle(model_dir)
-    featured = build_top3_prediction_features(historical_records, upcoming_records)
+    featured = (build_top3_prediction_features(historical_records, upcoming_records, feature_database=feature_database)
+                if feature_database is not None else build_top3_prediction_features(historical_records, upcoming_records))
     target = featured[featured["race_id"].astype(str) == str(race_id)].copy()
     if target.empty:
         raise ValueError("指定したレースの出走データがありません。")
@@ -661,6 +664,17 @@ def predict_race(
     result["expected_value_index"] = result["top3_probability"] * pd.to_numeric(result["odds"], errors="coerce")
     result = result.sort_values("top3_probability", ascending=False).reset_index(drop=True)
     result.insert(0, "prediction_rank", np.arange(1, len(result) + 1))
+
+    return result, metrics
+
+
+def predict_race(
+    historical_records: pd.DataFrame,
+    upcoming_records: pd.DataFrame,
+    race_id: str,
+    model_dir: Path,
+) -> tuple[pd.DataFrame, Path]:
+    result, metrics = infer_race(historical_records, upcoming_records, race_id, model_dir)
 
     prediction_run_id = f"pred_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
     output_dir = PATHS.predictions / prediction_run_id

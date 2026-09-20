@@ -1,0 +1,66 @@
+name: Test one race prediction
+
+on:
+  workflow_dispatch:
+    inputs:
+      race_date:
+        description: "開催日 (YYYY-MM-DD): オッズが公開されている日"
+        required: true
+        type: string
+      race_id:
+        description: "netkeibaの12桁レースID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prediction-smoke
+  cancel-in-progress: false
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install pinned CPU prediction environment
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+          manifest = json.loads(Path('prediction_bundle/manifest.json').read_text())
+          version = manifest['versions']['torch'].split('+')[0]
+          subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch==' + version,
+                          '--index-url', 'https://download.pytorch.org/whl/cpu'], check=True)
+          PY
+          python -m pip install -r prediction_bundle/requirements.txt
+      - name: Fetch, register, predict and calculate bets
+        env:
+          RACE_DATE: ${{ inputs.race_date }}
+          RACE_ID: ${{ inputs.race_id }}
+        run: >-
+          python -m src.prediction_smoke
+          --race-date "$RACE_DATE" --race-id "$RACE_ID"
+          --bundle prediction_bundle --output data/prediction_smoke
+      - name: Save predictions, preview and replay inputs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: prediction-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            data/prediction_smoke/
+            !data/prediction_smoke/work/
+          retention-days: 3
+          if-no-files-found: warn

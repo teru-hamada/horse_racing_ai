@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+from pathlib import Path
 
 from ...feature_engineering.context import FeatureContext
 from ...feature_engineering.generators import (
@@ -14,6 +15,7 @@ from ...feature_engineering.storage import load_performance_features
 def build_top3_prediction_features(
     historical_records: pd.DataFrame,
     target_records: pd.DataFrame,
+    *, feature_database: Path | None = None,
 ) -> pd.DataFrame:
     """Generate the same point-in-time feature families used by Top3 training."""
 
@@ -35,7 +37,8 @@ def build_top3_prediction_features(
             "recent_form": {"half_life_days": 180.0, "max_lookback_days": 1095}
         }),
     )
-    speed_history = load_performance_features("speed_index", "1.0.0")
+    speed_history = (load_performance_features("speed_index", "1.0.0", feature_database)
+                     if feature_database is not None else load_performance_features("speed_index", "1.0.0"))
     speed_history = speed_history[speed_history["horse_id"].isin(target_horses)]
     recent_speed = RecentSpeedGenerator().transform(
         keys,
