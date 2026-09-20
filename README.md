@@ -2,6 +2,45 @@
 
 指定日のレース情報収集、個別保存、ニューラルネットワーク学習、過学習グラフ、週末レース予想、処理ログ表示をStreamlitのGUIから実行するサンプルです。
 
+## GitHub Actionsで1レースのHTML取得を確認する
+
+定期運用の第1段階として、手動実行専用の `Test one race HTML fetch`
+（`.github/workflows/html-fetch-smoke.yml`）を用意しています。
+DB登録・モデル推論・Gitへのpush・Pages公開は行いません。
+
+1. この変更をGitHubのデフォルトブランチへ反映します。
+2. リポジトリの **Actions → Test one race HTML fetch → Run workflow** を開きます。
+3. `race_date` に開催日（例: `2026-09-21`）、`race_id` にnetkeiba出馬表URLの
+   `race_id=`に続く12桁（例: `202609040701`）を入力します。
+   例の日付に固定せず、実行時点で出馬表とJRAオッズが公開されているレースを選んでください。
+4. 実行後、SummaryのJSONと **Artifacts → html-fetch-smoke-…** を確認します。
+   HTML・解析CSV・ログ・`report.json`・`summary.md`は3日間保存します。
+   失敗した場合も、取得できたファイルは保存します。
+
+出馬表はキャッシュを使わず取得し、既存処理で単勝オッズ補完と解析を行います。
+JRA側は開催一覧を経由し、指定した1レースの取得可能な券種を収集します。
+血統HTMLや他レースの出馬表は取得しません。通信間隔は既存の2秒です。
+
+- `ok`（終了コード0）: 全頭の馬番・枠番が有効で馬番の重複がなく、JRAオッズを1件以上解析できた。
+- `incomplete`（終了コード2）: 馬番・枠番が不足、または有効なJRAオッズを解析できなかった。
+  未発売・公開期間外・日付の指定違い・HTML構造変更などを保存HTMLで確認してください。
+- `error`（終了コード1）: 取得または解析で例外が発生。ログでHTTPエラー等を確認してください。
+
+`card_odds`は出馬表側の単勝オッズ件数、`jra_odds.rows`はJRA独立オッズの件数です。
+今回の合格条件は接続・基本項目の確認までで、全券種・全頭分のオッズ充足や、
+入力日と出馬表の実開催日の一致は保証しません。出走取消馬などで項目が空の場合も
+要確認として扱います。赤い実行結果だけでアクセス拒否と判断しないでください。
+
+Ubuntu / Python 3.11で、HTML用依存関係のみをインストールします。
+ワークフローの権限は `contents: read`、最大実行時間は15分です。
+ローカルで同じ確認を行う場合は、リポジトリ直下で以下を実行します。
+出力先には新しいフォルダを指定してください。
+
+```powershell
+python -m pip install -r requirements-html-smoke.txt
+python -m src.html_fetch_smoke --race-date 2026-09-21 --race-id 202609040701 --output data/html_fetch_smoke_trial1
+```
+
 ## 最初の起動方法（Windows）
 
 1. Python 3.11をインストールします。インストール時に「Add Python to PATH」を有効にします。
