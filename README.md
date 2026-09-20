@@ -41,6 +41,41 @@ python -m pip install -r requirements-html-smoke.txt
 python -m src.html_fetch_smoke --race-date 2026-09-21 --race-id 202609040701 --output data/html_fetch_smoke_trial1
 ```
 
+## GitHub ActionsでDB登録・照合を確認する（第2段階）
+
+HTML取得テストが成功したら、**Actions → Test one race database registration → Run workflow**
+から開催日とレースIDを指定してください。ワークフローを表示するには今回の変更を
+デフォルトブランチへ反映します。第1段階のHTML取得テストも引き続き利用できます。
+
+取得・解析した1レースを `data/database_smoke/smoke.duckdb` に登録し、読み戻した後に
+同じデータを別の実行IDで再登録します。アプリと同じ保存・読込関数へ専用DBパスを明示して
+使用するため、既存の `data/racing.duckdb` は更新しません。
+
+Summaryの `database.checks` がすべて `true`、全体の `status` が `ok` なら合格です。
+
+- 出馬表の登録頭数、券種別オッズ件数が解析結果と一致する。
+- 馬番・枠番が有効で、馬番とオッズの買い目が重複しない。
+- レースID・日付が指定値と一致し、レースIDによるオッズ読込ができる。
+- レースID・馬番で全頭に有効な単勝オッズを照合できる。
+- 2回目の登録後も件数・内容が変わらず、登録実行IDが更新される。
+
+不合格時は `database.failed_checks` と `db_win_join.csv` を確認します。
+`left_only` は単勝オッズが見つからない出走馬、`right_only` は出馬表に対応しないオッズです。
+出走取消などで単勝オッズがない馬も要確認（`incomplete`、終了コード2）として扱います。
+取得・DB登録時の例外は `error`（終了コード1）です。
+入力日と実際の開催日の一致、全券種の網羅性は今回の検証対象外です。
+
+Artifactsの `database-smoke-…` にHTML・ログ・診断JSON・専用DB・
+`db_card.csv`・`db_odds.csv`・`db_win_join.csv`を3日間保存します。
+モデル学習・予想作成・Gitへのpush・Pages公開は行いません。
+
+ローカル実行例（出力先は毎回新しいフォルダを指定）:
+
+```powershell
+python -m pip install -r requirements-database-smoke.txt
+python -m src.html_fetch_smoke --race-date 2026-09-21 --race-id 202609040701 --output data/database_smoke_trial1 --verify-db
+```
+
 ## 最初の起動方法（Windows）
 
 1. Python 3.11をインストールします。インストール時に「Add Python to PATH」を有効にします。

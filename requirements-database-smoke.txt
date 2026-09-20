@@ -1,0 +1,2 @@
+-r requirements-html-smoke.txt
+duckdb>=1.2,<2

@@ -1,0 +1,54 @@
+name: Test one race database registration
+
+on:
+  workflow_dispatch:
+    inputs:
+      race_date:
+        description: "開催日 (YYYY-MM-DD): 現在出馬表・オッズが公開されている日"
+        required: true
+        type: string
+      race_id:
+        description: "netkeibaの12桁レースID (例: 202609040701)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-smoke
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install HTML and database dependencies
+        run: python -m pip install -r requirements-database-smoke.txt
+      - name: Fetch, register twice, and verify one race
+        env:
+          RACE_DATE: ${{ inputs.race_date }}
+          RACE_ID: ${{ inputs.race_id }}
+        run: >-
+          python -m src.html_fetch_smoke
+          --race-date "$RACE_DATE"
+          --race-id "$RACE_ID"
+          --output data/database_smoke --verify-db
+      - name: Save HTML, test database and diagnostics (also on failure)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: database-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data/database_smoke/
+          retention-days: 3
+          if-no-files-found: warn

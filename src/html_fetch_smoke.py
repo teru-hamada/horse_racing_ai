@@ -1,4 +1,4 @@
-"""One-race network smoke test; never registers data or runs predictions."""
+"""One-race HTML probe with optional isolated database verification."""
 from __future__ import annotations
 
 import argparse
@@ -58,7 +58,7 @@ class DiagnosticOddsCollector(JraOddsHtmlCollector):
         return html
 
 
-def run_probe(race_date: date, race_id: str, output: Path) -> dict:
+def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = False) -> dict:
     # Require a fresh directory: a failed request must not reuse old HTML.
     output.mkdir(parents=True, exist_ok=False)
     logger = logging.getLogger(f"html_fetch_smoke.{output}")
@@ -70,6 +70,8 @@ def run_probe(race_date: date, race_id: str, output: Path) -> dict:
         logger.addHandler(handler)
     started = time.monotonic()
     report = {"race_date": race_date.isoformat(), "race_id": race_id}
+    frame = None
+    odds = None
     try:
         collector = NetkeibaHtmlCollector(logger)
         try:
@@ -108,14 +110,25 @@ def run_probe(race_date: date, race_id: str, output: Path) -> dict:
         finally:
             odds_collector.session.close()
 
-        statuses = [report[key]["status"] for key in ("card", "jra_odds")]
+        if verify_db:
+            if frame is None or odds is None:
+                report["database"] = {"status": "incomplete", "reason": "取得・解析失敗のためDB検証をスキップ"}
+            else:
+                try:
+                    from .database_smoke import verify_database
+                    report["database"] = verify_database(frame, odds, race_date, race_id, output)
+                except Exception as exc:
+                    logger.exception("テスト用DBの登録または検証に失敗")
+                    report["database"] = {"status": "error", "error": str(exc)}
+        sections = ["card", "jra_odds"] + (["database"] if verify_db else [])
+        statuses = [report[key]["status"] for key in sections]
         report["status"] = "error" if "error" in statuses else (
             "ok" if all(value == "ok" for value in statuses) else "incomplete"
         )
         report["elapsed_seconds"] = round(time.monotonic() - started, 2)
         (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         summary = (
-            f"## 1レースHTML取得テスト: {report['status']}\n\n"
+            f"## 1レースHTML取得{'・DB登録' if verify_db else ''}テスト: {report['status']}\n\n"
             f"対象日: {race_date} / race_id: {race_id}\n\n"
             f"所要時間: {report['elapsed_seconds']} 秒\n\n"
             "```json\n" + json.dumps(report, ensure_ascii=False, indent=2) + "\n```\n\n"
@@ -123,6 +136,12 @@ def run_probe(race_date: date, race_id: str, output: Path) -> dict:
             "incomplete: 必要項目不足。未発売・公開期間外・日付違い・HTML構造変更などを保存HTMLで確認してください。\n\n"
             "全券種・全頭分のオッズ充足や、指定日と出馬表の実開催日の一致までは保証しません。\n"
         )
+        if verify_db:
+            summary += (
+                "\nDB検証: 専用smoke.duckdbに2回登録し、件数・番号・日付・重複・"
+                "単勝オッズとの全頭照合を確認します。database.checksはtrueが合格です。\n"
+                "取消等で単勝オッズがない馬も要確認としてincompleteになります。\n"
+            )
         (output / "summary.md").write_text(summary, encoding="utf-8")
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
@@ -140,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--race-date", required=True, type=date.fromisoformat)
     parser.add_argument("--race-id", required=True)
     parser.add_argument("--output", type=Path, default=Path("data/html_fetch_smoke"))
+    parser.add_argument("--verify-db", action="store_true", help="register twice in an isolated smoke.duckdb and validate")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9]{12}", args.race_id):
         parser.error("race-id must be 12 ASCII digits")
@@ -151,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("race-id must match the date year and a valid JRA race")
     if args.output.exists():
         parser.error("output already exists; choose a new directory")
-    report = run_probe(args.race_date, args.race_id, args.output)
+    report = run_probe(args.race_date, args.race_id, args.output, verify_db=args.verify_db)
     return {"ok": 0, "incomplete": 2, "error": 1}[report["status"]]
 
 

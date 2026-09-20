@@ -145,9 +145,10 @@ CREATE TABLE IF NOT EXISTS race_odds (
 """
 
 
-def connect() -> duckdb.DuckDBPyConnection:
-    PATHS.database.parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(PATHS.database))
+def connect(database: Path | None = None) -> duckdb.DuckDBPyConnection:
+    database = database if database is not None else PATHS.database
+    database.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(database))
     con.execute(SCHEMA_SQL)
     return con
 
@@ -193,6 +194,7 @@ def save_race_records(
     df: pd.DataFrame,
     run_id: str,
     dataset_type: str,
+    *, database: Path | None = None,
 ) -> None:
     if df.empty:
         raise ValueError("保存対象のレースデータが0件です。")
@@ -202,7 +204,7 @@ def save_race_records(
     normalized["collection_run_id"] = run_id
     normalized["collected_at"] = datetime.now()
 
-    with connect() as con:
+    with connect(database) as con:
         con.register("incoming", normalized)
         con.execute(
             """
@@ -221,8 +223,8 @@ def save_race_records(
         con.unregister("incoming")
 
 
-def load_records(dataset_type: str | None = None) -> pd.DataFrame:
-    with connect() as con:
+def load_records(dataset_type: str | None = None, *, database: Path | None = None) -> pd.DataFrame:
+    with connect(database) as con:
         if dataset_type:
             return con.execute(
                 "SELECT * FROM race_records WHERE dataset_type = ? ORDER BY race_date, race_id, horse_number",
@@ -231,7 +233,7 @@ def load_records(dataset_type: str | None = None) -> pd.DataFrame:
         return con.execute("SELECT * FROM race_records ORDER BY race_date, race_id, horse_number").df()
 
 
-def save_race_odds(df: pd.DataFrame, run_id: str) -> None:
+def save_race_odds(df: pd.DataFrame, run_id: str, *, database: Path | None = None) -> None:
     if df.empty:
         return
     normalized = df.copy()
@@ -246,7 +248,7 @@ def save_race_odds(df: pd.DataFrame, run_id: str) -> None:
     normalized["collection_run_id"] = run_id
     normalized["registered_at"] = datetime.now()
     normalized = normalized[ODDS_COLUMNS]
-    with connect() as con:
+    with connect(database) as con:
         con.register("incoming_odds", normalized)
         con.execute(
             """
@@ -265,8 +267,9 @@ def save_race_odds(df: pd.DataFrame, run_id: str) -> None:
 def load_race_odds(
     race_ids: list[str] | None = None,
     race_date: Any | None = None,
+    *, database: Path | None = None,
 ) -> pd.DataFrame:
-    with connect() as con:
+    with connect(database) as con:
         if race_ids:
             placeholders = ", ".join("?" for _ in race_ids)
             return con.execute(
