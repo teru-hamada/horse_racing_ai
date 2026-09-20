@@ -95,6 +95,7 @@ def test_static_prediction_site_includes_top_three_bets(tmp_path):
     )
     html = page.read_text(encoding="utf-8")
 
+    assert ".bets{width:max-content;min-width:100%" in html
     assert "AIおすすめ買い目 上位3つ" in html
     assert "推定的中確率" in html
     assert html.count("100円当たり期待損益") == 1

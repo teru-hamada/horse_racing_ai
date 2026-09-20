@@ -16,7 +16,7 @@ main{width:100%;margin:0;padding:42px 28px 80px}header{margin-bottom:30px}.eyebr
 
 _STYLE += """
 .comparison-summary{display:flex;flex-wrap:wrap;gap:10px 22px;padding:18px 22px;margin:0 0 24px;background:#10251dcc;border:1px solid var(--line);border-radius:14px}.comparison-summary strong{width:100%;color:var(--gold)}.comparison-summary span{color:var(--muted)}.comparison-summary .failures{width:100%;color:#ffb4a8}.hit{color:var(--accent);font-weight:800}.miss{color:#ffb4a8}
-.bets{margin:0 0 24px;padding:16px 18px;border:1px solid #ffd16666;border-radius:12px;background:#ffd1660a}.bets h3{margin:0 0 8px;color:var(--gold)}.bets table{margin-top:8px;min-width:680px}.bets-note{color:var(--muted);font-size:.8rem}
+.bets{width:max-content;min-width:100%;margin:0 0 24px;padding:16px 18px;border:1px solid #ffd16666;border-radius:12px;background:#ffd1660a}.bets h3{margin:0 0 8px;color:var(--gold)}.bets table{margin-top:8px;min-width:680px}.bets-note{color:var(--muted);font-size:.8rem}
 """
 
 
