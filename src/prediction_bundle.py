@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 import shutil
 import tempfile
 import zipfile
@@ -86,6 +87,8 @@ def export_bundle(output: Path) -> dict:
                     destination.execute(f"CREATE TABLE {table} AS SELECT * FROM payload")
                     destination.unregister("payload")
         versions = {name: metadata.version(name) for name in PACKAGES}
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        (stage / ".python-version").write_text(python_version + "\n", encoding="utf-8")
         # CPU wheels use a local suffix that need not be portable across hosts.
         requirements = "".join(f"{name}=={version.split('+')[0]}\n" for name, version in versions.items())
         (stage / "requirements.txt").write_text(requirements, encoding="utf-8")
@@ -94,6 +97,7 @@ def export_bundle(output: Path) -> dict:
                 archive.write(stage / name, name)
         manifest = {
             "format": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
+            "python_version": python_version,
             "model_id": selected["model_id"], "model_created_at": selected["created_at"],
             "history_rows": history_rows, "speed_rows": speed_rows, "versions": versions,
             "files": {name: sha256(stage / name) for name in sorted(MEMBERS)},
@@ -102,7 +106,7 @@ def export_bundle(output: Path) -> dict:
             "archive_bytes": (stage / "runtime.zip").stat().st_size,
         }
         (stage / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        for name in ("runtime.zip", "requirements.txt", "manifest.json"):
+        for name in ("runtime.zip", "requirements.txt", "manifest.json", ".python-version"):
             (stage / name).replace(output / name)
     return manifest
 

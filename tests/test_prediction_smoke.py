@@ -1,4 +1,5 @@
 import json
+import sys
 from dataclasses import replace
 from datetime import datetime
 
@@ -38,6 +39,9 @@ def test_export_latest_and_read_only_source(tmp_path, source):
     paths, _ = source
     before = [bundle.sha256(p) for p in (paths.database, paths.feature_database)]
     manifest = bundle.export_bundle(tmp_path / "bundle")
+    expected_python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    assert manifest["python_version"] == expected_python
+    assert (tmp_path / "bundle/.python-version").read_text().strip() == expected_python
     assert manifest["model_id"] == "model_new"
     unpacked = bundle.unpack_bundle(tmp_path / "bundle", tmp_path / "work")
     assert unpacked == manifest

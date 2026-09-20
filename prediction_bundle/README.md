@@ -5,7 +5,9 @@
 `manifest.json` にモデルID・出力日時・各ファイルのSHA-256・実行環境を記録し、
 `requirements.txt` にローカルで確認したライブラリのバージョンを固定します。
 
-このフォルダの3ファイルをコード変更と一緒にGitへコミットしてください。
+`.python-version`に生成時のPythonのメジャー・マイナーバージョンを記録し、
+Actionsはこの指定を使用します（現在は3.12）。NumPy 2.5.1はPython 3.11ではインストールできません。
+このフォルダの4ファイルをコード変更と一緒にGitへコミットしてください。
 元の `models/` 全体は引き続きGit管理対象外です。DBの全テーブルは含めず、
 過去レース・モデル登録・速度指数だけを収録しています。
 
@@ -20,7 +22,7 @@
 学習成功（`completed`）の `top3` モデルを登録日時順に選びます。
 必須ファイルが欠けていたらエラーにし、古いモデルへは切り替えません。
 元DBは読取専用で開き、既存のモデルやDBを書き換えません。
-生成した `runtime.zip`・`manifest.json`・`requirements.txt` と
+生成した `runtime.zip`・`manifest.json`・`requirements.txt`・`.python-version` と
 更新された `data/racing.duckdb` の登録情報を同じコミットで反映してください。
 GitHub上の登録DBとパッケージの最新モデルIDが違うとテストは停止します。
 

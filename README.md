@@ -120,7 +120,7 @@ Actionsと同じコミットのコードとパッケージを使い、Artifact�
 モデルのライブラリ互換性を保つため、専用仮想環境を推奨します。
 
 ```powershell
-python -m venv .venv-prediction
+py -3.12 -m venv .venv-prediction
 .venv-prediction/Scripts/python.exe -m pip install -r prediction_bundle/requirements.txt
 .venv-prediction/Scripts/python.exe -m src.prediction_smoke --bundle prediction_bundle --replay data/actions_prediction --output data/prediction_replay1
 ```

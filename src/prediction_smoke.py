@@ -8,6 +8,7 @@ import os
 import platform
 import re
 import shutil
+import sys
 import time
 from datetime import date
 from importlib import import_module, metadata
@@ -68,7 +69,11 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
     logger.addHandler(logging.StreamHandler())
     try:
         manifest = unpack_bundle(bundle, output / "work")
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        if manifest.get("python_version", python_version) != python_version:
+            raise ValueError(f"Python {manifest['python_version']} が必要です（現在: {python_version}）。")
         report.update(model_id=manifest["model_id"], bundle_sha256=manifest["archive_sha256"],
+                      python_version=python_version,
                       bundle_exported_at=manifest["exported_at"], platform=platform.platform(),
                       github_sha=os.environ.get("GITHUB_SHA"),
                       versions={name: metadata.version(name) for name in PACKAGES})

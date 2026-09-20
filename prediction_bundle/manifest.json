@@ -27,5 +27,6 @@
   },
   "archive_sha256": "62fe0b2a616672c230131f331c242ffe0e289fa7823f04001dd3e6476922ad97",
   "requirements_sha256": "4a5f7468fa4b85afe976a0d999e391c39217b2bec85a3fa93946c1fd6028c4e6",
-  "archive_bytes": 15192687
+  "archive_bytes": 15192687,
+  "python_version": "3.12"
 }
