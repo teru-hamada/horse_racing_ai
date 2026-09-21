@@ -1,23 +1,138 @@
-# 競馬予想AIシステム（私的利用向けMVP）
+# 競馬予想AIシステム
 
-指定日のレース情報収集、個別保存、ニューラルネットワーク学習、過学習グラフ、週末レース予想、処理ログ表示をStreamlitのGUIから実行するサンプルです。
+レース情報の収集・DB登録・特徴量生成・ニューラルネットワーク学習・予想・確定結果との比較を、StreamlitのGUIから実行するプログラムです。学習曲線と過学習の確認、開催日単位の予想、買い目の確認、処理ログの表示も行えます。
 
+GitHub Actionsでは毎日日本時間3:00に当日分の全レース予想・公開と、前日が開催日だった場合の結果照合を実行します。公開サイトから予想・照合結果とジョブ実行状況を確認できます。
 
+## フォルダ構成
 
+主なプログラムと保存先です。データ用フォルダ・ファイルは該当処理の実行時に作成されます。
+
+```text
+horse_racing_ai/
+├─ app.py                          Streamlit GUI
+├─ setup_windows.bat               Windowsの初期セットアップ
+├─ run_app.bat                     GUI起動
+├─ requirements.txt               ローカルGUI用の依存ライブラリ
+├─ .github/workflows/
+│  ├─ publish-predictions.yml      定期・手動の予想、前日照合、公開ファイルの登録
+│  └─ pages.yml                    Pages配信とジョブ実行状況の生成
+├─ src/
+│  ├─ 00_common/                  設定、DB操作、ログ、HTML共通処理
+│  ├─ 10_scrapers_html_collection/ HTML・JRAオッズ収集とジョブ管理
+│  ├─ 20_scrapers_database_creation/ 保存HTMLの解析、DB登録、ジョブ管理
+│  ├─ 30_ai_modeling/
+│  │  ├─ common/                  前処理、評価、モデル保存
+│  │  ├─ estimators/              ニューラルネットワーク（MLP）
+│  │  ├─ feature_engineering/     特徴量生成・保存・鮮度管理
+│  │  ├─ tasks/top3/              3着以内確率の学習・予想
+│  │  ├─ betting.py               買い目と期待値計算
+│  │  └─ registry.py・service.py  予測タスクの登録と呼び出し
+│  ├─ public_api.py               GUIから各処理を呼ぶ窓口
+│  ├─ daily_racing.py             当日予想・前日照合・公開準備の統括
+│  ├─ race_calendar.py            開催日・非開催日の判定
+│  ├─ date_prediction_smoke.py    全レース処理と工程別検証
+│  ├─ prediction_smoke.py         1レースの予想・照合・再現検証
+│  ├─ html_fetch_smoke.py         HTML取得と検証
+│  ├─ database_smoke.py           隔離DBへの登録・再登録検証
+│  ├─ prediction_bundle.py        Actions用モデル・データのパッケージ作成
+│  ├─ publish_predictions.py      全レース検証と公開用ファイル更新
+│  ├─ prediction_comparison.py    予想・買い目と確定結果の比較
+│  ├─ jra_results.py              JRA確定結果・公式払戻金の取得
+│  ├─ weather_forecast.py         GUIの馬場状態設定に使う天気予報
+│  ├─ static_site.py              予想・比較HTMLの生成
+│  └─ job_status.py               ジョブ実行状況HTMLの生成
+├─ data/
+│  ├─ racing.duckdb               レース、オッズ、モデル登録情報など
+│  ├─ features.duckdb             特徴量DB
+│  ├─ raw_html/
+│  │  ├─ historical/             学習用HTML（年別）、血統（horse/）
+│  │  ├─ upcoming/               予想用HTML（年別）、オッズ（年/odds/）、血統（horse/）
+│  │  └─ jra/historical/         JRA結果HTML（年/result/）
+│  ├─ predictions/               ローカルの実行単位の予想・比較結果
+│  └─ daily_racing/              日次ジョブの予想・照合・診断
+├─ models/<task_name>/<model_run_id>/ モデル、前処理器、学習履歴、評価指標
+├─ prediction_bundle/             Actions用スナップショット・固定実行環境
+│  ├─ runtime.zip                モデル、前処理器、登録DB、過去レース、速度指数
+│  ├─ manifest.json              モデルID、ファイルハッシュ、実行環境
+│  ├─ requirements.txt           固定ライブラリ版
+│  └─ .python-version            Python版
+├─ docs/
+│  ├─ index.html                 開催日一覧
+│  ├─ predictions/               開催日別HTML・公開用CSV
+│  └─ job-status.html            Pages配信時に生成する実行状況（Git登録対象外）
+├─ logs/                          ローカルの日次ログ
+└─ tests/                         自動テスト
+```
+
+`data/racing.duckdb`・`data/features.duckdb`・`prediction_bundle/`・公開用の`docs/`はGit管理対象です。元の`models/`、収集HTML、ローカルの予想結果、ログはGit管理対象外です。各モデルの`manifest.json`にはタスク名・アルゴリズム・特徴量バージョン・学習期間などを記録します。
+
+## ローカルでのプログラム実行方法（Windows）
+
+1. Python **3.12**をインストールします。
+2. リポジトリを取得し、`setup_windows.bat`を実行します。仮想環境`.venv`と必要なライブラリを準備します。
+3. `run_app.bat`を実行し、ブラウザで`http://localhost:8501`を開きます。次回以降はこのバッチから起動できます。
+
+PowerShellから操作する場合は、リポジトリ直下で実行します。
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+GUIのメニューは「ダッシュボード」「HTML収集（学習用）」「HTML収集（予想用）」「データベース作成」「前準備（特徴量エンジニアリング）」「モデル学習」「レース予想」「ログ・保存結果」「メンテナンス」です。
+
+## 操作フロー
+
+### 学習用データの準備とモデル学習
+
+1. **HTML収集（学習用）**で過去レースの対象期間を指定し、結果・血統HTMLを取得します。
+2. **データベース作成 → 取得済みHTMLから作成**で学習用HTMLを解析・登録します。「登録内容確認」で対象日・レース・出走馬を確認します。
+3. **前準備（特徴量エンジニアリング）**で基礎近走成績、1走単位スピード指数、近走スピード成績、出馬表基本条件・馬場状態を生成します。近走スピード成績は1走単位スピード指数の生成後に作成します。
+4. **モデル学習**で特徴量が最新であることを確認し、条件を設定して学習します。元データ更新後は先に特徴量を再生成してください。学習時には自動生成されません。
+5. 同じ画面の**学習結果・過学習チェック**でLoss・AUCの推移、評価指標、過学習判定を確認し、必要に応じて再学習します。
+
+### 開催日の予想と結果確認
+
+1. **HTML収集（予想用）**で対象日の出馬表・血統・取得可能なJRAオッズを収集します。
+2. **データベース作成 → 取得済みHTMLから作成**で予想用データを登録します。券種別オッズは`race_odds`テーブルへ保存します。
+3. **レース予想 → 今後レースを予想**で使用モデルと開催日を選び、競馬場ごとの馬場状態を確認・設定します。
+4. **この日の全レースを予想**を実行し、上位3頭・全頭の予想・おすすめ買い目を確認します。予想CSVと公開用HTMLが生成されます。
+5. 結果確定後に**この日の全レースを確定結果と比較**を実行します。JRAの着順・公式払戻金で予想と買い目を比較し、HTMLにも反映します。
+
+**過去レースで予想を検証**では保存済みの過去レースを対象に予想を確認できます。履歴とログは**ログ・保存結果**、データ削除は**メンテナンス**で扱います。HTML収集・DB作成・特徴量生成はバックグラウンドで実行され、GUIの画面移動後も継続します。
+
+## 開催日一括予想とGitHub Pages
+
+GUIの一括予想は、選択日にDBへ登録されている出馬表を対象にします。予想時に`docs/index.html`と`docs/predictions/<開催日>.html`が自動生成され、確定結果との比較後は同じHTMLが更新されます。
+
+ローカルで生成したHTMLを公開する場合は、`docs/`の変更をコミットして`main`へpushします。`Deploy prediction pages`が配信します。日次ジョブでは全レース検証後に公開用CSVも生成します。GUIでHTMLを生成するだけでは、日次ジョブの前日照合に必要な公開用CSVは揃いません。
+
+配信元は**Settings → Pages → Source → GitHub Actions**に設定します。日次ジョブには、Actionsからデフォルトブランチへの書き込み権限も必要です。公開先は通常`https://<GitHubユーザー名>.github.io/horse_racing_ai/`です。
+
+配信時に開催日一覧・予想ページへ**ジョブ実行状況**リンクを追加します。実行状況ページは配信時に生成するため、ローカルで予想HTMLを生成しただけでは作成されません。
 
 ## 開催日全レースの予想・公開と前日結果照合
 
-公開サイトの「ジョブ実行状況」リンクから、日本時間の実行日時・定期／手動・試行回数・成功／失敗などを確認できます。エラー詳細は掲載しません。最新100件までの記録をページ公開時点で表示します（自動更新画面ではありません）。記録がない日は一覧上で実行を確認できない日であり、未実行とは断定しません。成功には非開催日の正常終了も含みます。
+`Publish predictions for a date`が、開催確認、全レースのHTML取得、隔離DBへの登録、学習済みモデルによる予想、オッズ照合、買い目計算を行います。前日が開催日なら公開済みの予想・買い目を確定結果と照合します。ジョブ内でモデル学習は行いません。
 
-予想ワークフローの終了時には、失敗・中止・非開催日でも **Deploy prediction pages** が実行状況を更新します。予想は既にGitへ公開済みのファイルを使い、失敗した今回の予想は公開しません。Actions APIの取得失敗時には、空の履歴を公開せず更新を失敗させます。この仕組みはワークフローをデフォルトブランチへ反映した後に有効になります。
+当日予想と前日照合の必要な処理がすべて成功した場合だけ、公開ファイルを更新・commit・pushし、Pagesへ配信します。不足・失敗時は診断を残して今回の予想・照合結果の公開を止めます。実行状況は別途、公開済みの予想とともに配信します。
 
-Actionsは **Publish predictions for a date** に統合しました。
-旧HTML取得・DB登録・1レース予想の3ワークフローは削除しています。
-以前の日付単位テストは、この公開ワークフローへ置き換えました。
-HTML・DB・モデルの検証関数は本番処理でも使用するため残しています。
-不要になった検証専用requirementsファイル2本は削除しました。
+## GitHubでの手動実行
 
-## 毎日3:00 JSTの自動実行
+毎日日本時間3:00のスケジュールが登録されているため、通常は手動実行不要です。指定日の再実行や動作確認時に使用します。
+
+1. **Actions → Publish predictions for a date → Run workflow**を開きます。
+2. デフォルトブランチを選択します。
+3. `race_date`へ対象開催日（`YYYY-MM-DD`）を入力します。レースIDは不要です。
+4. 前日照合も行う場合は`compare_previous`をオンにします（手動実行の既定はオフ）。
+5. **Run workflow**を押します。完了後、実行画面のSummaryとArtifacts、公開サイトを確認します。
+
+## ジョブスケジュールの詳細
+
+### 実行時刻と開催日の判定
 
 `0 18 * * *`（UTC）で毎日、日本時間3:00に起動します。処理開始時の日本時間で当日・前日を決め、
 当日予想と、前日が開催日だった場合の結果照合を行います。月曜開催・年/月をまたぐ日付にも対応します。
@@ -27,7 +142,7 @@ GitHub Actionsのスケジュールには遅延があり、厳密な3:00開始�
 月間カレンダーの年・月・全日付・開催場の整合性を検証して、明示的に開催のない日だけを
 `no_races`と判定します。HTTPエラー・カレンダー欠落・対象月不一致は非開催扱いにしません。
 開催日と判定したのにレース一覧が0件の場合も不合格です。
-両日とも非開催なら正常終了し、commit・push・Pages公開はスキップします。
+両日とも非開催なら正常終了し、予想ファイルのcommit・pushは行いません。終了後の実行状況ページは更新対象です。
 
 前日照合では公開済み予想・買い目CSVを使用し、モデルによる予想の作り直しは行いません。
 前日の全レースと予想対象の一致、JRA確定着順・公式払戻金を確認し、前日ページへ照合結果を追加します。
@@ -38,21 +153,9 @@ GitHub Actionsのスケジュールには遅延があり、厳密な3:00開始�
 当日予想と前日照合のどちらかに不足・失敗がある場合、もう一方の診断も行ったうえで、
 両方の公開を止めます。3:00時点で必要なオッズが未取得の場合も、この条件を緩めません。
 
-## GitHubでの操作
+開催一覧から検出した中央競馬の全レースを順番に処理します。1レースが失敗しても残りを処理し、診断を残します。取得間隔は2秒、予想ジョブの時間制限は120分です。検出レース数・会場も確認してください。
 
-1. 今回の変更（旧ワークフローの削除を含む）をデフォルトブランチへ反映します。
-2. **Actions → Publish predictions for a date → Run workflow** を開き、デフォルトブランチを選択します。
-3. `race_date` に開催日（YYYY-MM-DD）を指定します。レースIDの入力は不要です。
-   前日照合も行う場合は `compare_previous` をオンにします（既定はオフ）。
-4. Summaryのレース別一覧で、出馬表・オッズ・DB・予想・照合・買い目計算を確認します。
-5. Artifactsの `daily-racing-…` をダウンロード・展開し、`daily_report.json` と `prediction/index.html` を確認します。
-
-開催一覧から検出した中央競馬の全レースを順番に処理します。1レースが失敗しても
-残りを処理します。取得間隔は既存の2秒、Actionsの時間制限は120分です。
-検出対象は取得元の開催一覧に依存するため、検出レース数・会場も確認してください。
-開催カレンダーで開催日と確認した後の一覧0件は、取得不良として扱います。
-
-## 結果の読み方
+### 結果の読み方と実行状況
 
 - `ok`: 検証成功。全体がokなら検出した全レースが成功（終了コード0）。
 - `no_races`: 完全な開催カレンダーで非開催と確認。正常終了の対象です。
@@ -63,10 +166,16 @@ GitHub Actionsのスケジュールには遅延があり、厳密な3:00開始�
 
 Artifactsの予想CSV・予想ページは**成功したレースのみ**を掲載します。不足・失敗のある日に
 完成済みの全レース予想と誤認しないよう、最初に `prediction/index.html` または
-`race_status.csv` を確認してください。発売前・終了済みレースはオッズ不足になる場合があります。
+`prediction/race_status.csv` を確認してください。発売前・終了済みレースはオッズ不足になる場合があります。
 買い目が推奨条件を満たさず0件でも、計算が正常に完了すれば成功です。
 
-## Artifactsの内容（3日間保存）
+公開サイトの**ジョブ実行状況**には、最新100件までの実行日時（日本時間）・定期／手動・試行回数・成功／失敗／中止等を表示し、エラー詳細は掲載しません。成功には非開催日の正常終了を含みます。記録がない日は一覧上で実行を確認できない日であり、未実行とは断定しません。
+
+表示はPages配信時点の記録です。予想ワークフロー終了後は失敗・中止・非開催日でも`Deploy prediction pages`が更新を試みます。API取得や配信自体に失敗した場合は公開済みの表示が残るため、ページの更新日時とActionsの結果を確認してください。
+
+### Artifactsの内容（3日間保存）
+
+Actionsの実行画面の**Artifacts → daily-racing-<実行ID>-<試行回数>**をダウンロード・展開します。処理の進行状況により一部のファイルは生成されない場合があります。
 
 直下に `daily_report.json`（当日・前日の状態）、`daily.log`、公開準備時は `publication_report.json` を保存します。
 `calendar/` に開催判定に用いたHTML、`comparison/` に前日の比較CSV・買い目的中/払戻CSV・JRA結果HTML・診断を保存します。
@@ -82,9 +191,9 @@ Artifactsの予想CSV・予想ページは**成功したレースのみ**を掲�
 一覧は各レースの処理後に保存します。展開した作業用モデル・過去DBはArtifactsから除外します。
 既存DB・モデルは変更しません。
 
-## 公開条件と更新対象
+### 公開条件と更新対象
 
-検出した全レースが全工程に成功した場合だけ、公開用CSVと検証結果の対象日・レース・頭数・
+当日予想と前日照合の必要な処理がすべて成功した場合だけ、公開用CSVと検証結果の対象日・レース・頭数・
 モデル・予測確率を再確認し、以下をデフォルトブランチへcommit・pushします。
 
 - `docs/predictions/<開催日>.html`: 予想ページ
@@ -97,9 +206,9 @@ Artifactsの予想CSV・予想ページは**成功したレースのみ**を掲�
 
 他の開催日のページは保持します。生成日時だけが変わった場合は既存HTMLを保持し、
 ファイルに差分がなければコミットしません。途中の不足・失敗では公開ファイルの更新・
-push・Pages公開をスキップし、Artifactsに診断結果を残します。
+pushをスキップし、Artifactsに診断結果を残します。実行状況の更新には、既にGitへ登録された公開用ファイルだけを使います。
 
-push後は既存の `pages.yml` を再利用して、確定したコミットのPages公開を直接実行します。
+push後は`pages.yml` を呼び出して、確定したコミットのPages公開を直接実行します。
 GITHUB_TOKENによるpushだけに公開起動を依存させません。差分なしでもPages公開は実行し、
 前回push後の公開失敗から再実行で復旧できるようにしています。
 公開処理前にリモート更新を取り込み、競合やpush拒否の場合は強制pushせず停止します。
@@ -110,26 +219,36 @@ GITHUB_TOKENによるpushだけに公開起動を依存させません。差分�
 Pagesのデプロイに失敗した場合、Gitへのコミットは残ります。Actionsのdeployジョブを
 再実行して公開を再試行できます。全体の成功はdeployジョブまで確認してください。
 
-## モデル更新とローカル比較
+`docs/job-status.html`はPages配信時に生成し、Gitへはcommitしません。
+
+### モデル更新とローカル比較
 
 Actionsが参照する登録DBの学習成功済み最新モデルを使用します。モデル本体・前処理器・
 過去レース・速度指数を `prediction_bundle/` から展開し、ID・ハッシュ・実行環境を照合します。
 欠落時に古いモデルへ切り替えません。ローカルの未反映モデルは参照できません。
-更新時は[パッケージ手順](prediction_bundle/README.md)に従って再生成し、登録DBと一緒に反映します。
-Pythonは `prediction_bundle/.python-version`（現在3.12）を使用します。
-
-ローカルで日付単位に実行する例:
+更新時は学習・DB更新を完了し、DBへ書き込む処理を止めてから再生成します。
 
 ```powershell
-.venv/Scripts/python.exe -m src.daily_racing --race-date 2026-09-21 --with-previous --output data/daily_trial1
+.venv/Scripts/python.exe -m src.prediction_bundle
 ```
+
+生成した`runtime.zip`・`manifest.json`・`requirements.txt`・`.python-version`と更新した`data/racing.duckdb`を同じコミットで反映します。詳細は[パッケージ手順](prediction_bundle/README.md)を参照してください。
+Pythonは `prediction_bundle/.python-version`（現在3.12）を使用します。
+
+Actionsと同じ依存ライブラリを専用環境へ入れ、ローカルで日付単位に実行する例:
+
+```powershell
+py -3.12 -m venv .venv-prediction
+.venv-prediction/Scripts/python.exe -m pip install -r prediction_bundle/requirements.txt
+.venv-prediction/Scripts/python.exe -m src.daily_racing --race-date 2026-09-21 --with-previous --output data/daily_trial1
+```
+
+日付は対象開催日に置き換えてください。このコマンドは指定フォルダへ結果を保存し、自動push・Pages配信は行いません。
 
 Actionsと同じコミット・実行パッケージを使い、Artifactを `data/actions_date` へ展開すれば、
 成功したレースを通信なしで再現・比較できます。以下のレースIDは実際の成功レースに置換してください。
 
 ```powershell
-py -3.12 -m venv .venv-prediction
-.venv-prediction/Scripts/python.exe -m pip install -r prediction_bundle/requirements.txt
 .venv-prediction/Scripts/python.exe -m src.prediction_smoke --bundle prediction_bundle --replay data/actions_date/prediction/races/202609040701 --output data/prediction_replay1
 ```
 
@@ -137,154 +256,13 @@ py -3.12 -m venv .venv-prediction
 `prediction_report.json` の `comparison.status: ok` が一致です。
 浮動小数点の比較は絶対許容誤差1e-6・相対許容誤差1e-5を使用します。
 出力先は毎回新しいフォルダを指定してください。
-1レース予想・HTML取得・DB登録のPythonコマンドは診断用として残しています。
 
-## 最初の起動方法（Windows）
+## 予測内容とデータの扱い
 
-1. Python 3.11をインストールします。インストール時に「Add Python to PATH」を有効にします。
-2. このフォルダを任意の場所へ展開します。
-3. `setup_windows.bat` をダブルクリックします。
-4. 完了後、`run_app.bat` をダブルクリックします。
-5. ブラウザで `http://localhost:8501` が開きます。
+各出走馬が**3着以内に入る確率**をPyTorchのMLPで予測します。出馬表の基本条件・馬場状態、近走成績、スピード成績などから特徴量を作ります。JRA券種別オッズは独立して保存し、推論後の買い目別期待値計算に使用します。
 
-手動起動は次のとおりです。
+開催日順に学習・検証・テストへ分割し、Early StoppingとLoss／AUCの推移で過学習を確認します。予想対象レースより前の履歴を使って特徴量を生成します。
 
-```powershell
-py -3.11 -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run app.py
-```
+HTML収集とDB作成は分離しており、DB作成では保存済みHTMLだけを解析します。取得元のHTML構造変更やオッズ公開状況による不足・解析エラーは、保存HTMLと処理ログで確認してください。
 
-## 最初に試す順番
-
-1. **データベース作成** → 「デモデータを生成」
-2. **モデル学習** → 既定値で学習
-3. **学習評価** → Loss・AUCグラフと過学習判定を確認
-4. **週末予想** → デモ週末レースを選択して予想
-5. 動作確認後、**HTML収集（学習用／予想用）**でHTMLを取得し、**データベース作成**で解析・保存
-
-## 保存場所
-
-- `data/raw_html/historical/`: 過去レース・学習用の元HTML
-- `data/raw_html/upcoming/`: 今後レース・予想用の元HTML
-- `data/racing.duckdb`: 統合データベース
-- `data/predictions/`: 実行単位の予想結果
-- `models/`: モデル、前処理器、学習履歴、評価指標
-- `logs/`: 日次ログ
-
-各処理には一意の実行IDが付き、個々の結果を残します。
-
-## 現在の予測内容
-
-各出走馬が**3着以内に入る確率**を二値分類で予測します。モデルはPyTorchのMLPです。
-
-主な特徴量：
-
-- 競馬場、芝・ダート、距離、馬番、枠番、性齢、斤量
-- 騎手ID、調教師ID、オッズ、人気、馬体重
-- 過去出走数、過去勝率、過去3着内率、過去平均着順、前走からの日数
-
-## 過学習・データリーク対策
-
-- 開催日順に学習70%、検証15%、テスト15%へ分割
-- Early Stoppingを実装
-- 学習Loss／検証Loss、学習AUC／検証AUCをグラフ表示
-- 過去成績特徴量は当該レースより前の結果だけを `shift()` で集計
-
-実運用では、予想時点で確定していない結果・払戻・確定後情報を特徴量に入れないでください。オッズを使う場合も、予想を行う時刻と同じ条件で取得した値を学習側にそろえる必要があります。
-
-## スクレイピングについて
-
-HTML収集とデータベース作成を次のフォルダに分離しています。
-
-- `src/10_scrapers_html_collection/`
-  - `scrapers_html_collection_netkeiba.py`: netkeiba HTML収集の公開窓口
-  - `html_collection_jobs.py`: HTML収集のバックグラウンド実行管理
-- `src/20_scrapers_database_creation/`
-  - `scrapers_database_creation_netkeiba.py`: 保存済みHTMLの解析窓口
-  - `database_creation_jobs.py`: DB作成のバックグラウンド実行管理
-  - `demo_data.py`: 動作確認用デモデータ生成
-- `src/30_ai_modeling/`
-  - `registry.py`: 利用可能な予測タスクの登録
-  - `service.py`: 学習・予想をタスク名で呼び分ける統一窓口
-  - `common/`: 特徴量、時系列分割、前処理、評価、保存形式、学習設定
-  - `estimators/mlp.py`: MLPアルゴリズム
-  - `tasks/top3/`: 3着以内確率の目的変数、学習、評価、予想
-- `src/00_common/`
-  - `config.py`: データ、HTML、DB、モデル、予想結果、ログの保存先定義
-  - `netkeiba_common.py`: URL定義、保存先規則、HTML解析補助などの共通実装
-  - `logging_utils.py`: ファイルと画面表示で共用するログ出力
-  - `storage.py`: DuckDBのテーブル定義、保存、読込、実行履歴、集計
-- `src/public_api.py`: アプリから用途別パッケージを通常のimport文で利用する公開窓口
-
-学習済みモデルは予測タスクごとに
-`models/<task_name>/<model_run_id>/` へ保存します。
-各モデルの `manifest.json` にタスク名、アルゴリズム名、
-モデル・特徴量バージョン、目的変数、学習期間を記録します。
-
-- 開催日ページから12桁のレースIDを検出
-- 過去結果は結果ページ、週末データは出馬表ページから取得
-- 取得間隔は内部定数で2秒に固定
-- HTML収集はバックグラウンドで実行され、メニュー移動後も継続
-- 過去レースHTMLは `data/raw_html/historical/<年>/` に年単位でキャッシュ
-- 競走馬の血統HTMLは `data/raw_html/historical/horse/` に `<horse_id>_<競走馬名>.html` 形式で保存し、父・母・母父をデータベースへ登録
-- 予想用HTMLは `data/raw_html/upcoming/<年>/` に年単位でキャッシュ
-- 予想用HTML収集では、取得可能なJRA券種別オッズHTMLも `data/raw_html/upcoming/<年>/odds/` に保存（取得できない場合は従来のレース情報のみ保存）
-- 予想用のデータベース作成時にJRAオッズを独立した `race_odds` テーブルへ登録し、モデル推論後の買い目別期待値計算にだけ使用
-- 予想と確定結果の比較ではJRA公式の結果HTMLを `data/raw_html/jra/historical/<年>/result/` に保存し、確定着順と公式払戻金を使用
-- 予想対象馬の血統HTMLは `data/raw_html/upcoming/horse/` に保存し、学習用に同じ競走馬HTMLがあれば再利用
-- データベース作成時はネットワークへアクセスせず、取得済みHTMLだけを解析
-- 取得済みHTMLからのデータベース作成はバックグラウンドで実行され、画面移動後も継続
-- 解析できないページはログを残し、他レースの処理を継続
-
-WebサイトのHTML構造は変更される可能性があります。解析エラー時は `data/raw_html/historical/<年>/` または `data/raw_html/upcoming/<年>/` のHTMLとログを確認し、パーサーの列名候補やCSSセレクタを調整してください。
-
-## AIを使って今後開発する際の進め方
-
-1. **取得項目一覧を固める**  
-   AIへ「このHTMLから、レースID、馬ID、騎手ID、着順などを抽出するテストを書いて」と依頼します。
-2. **少量データでパーサーを検証する**  
-   1開催日だけ取得し、欠損・重複・型を確認します。
-3. **自動テストを追加する**  
-   保存したHTMLをテスト用サンプルにし、サイトへアクセスせず解析を再現できるようにします。
-4. **取得期間を段階的に広げる**  
-   1日 → 1か月 → 1年の順で増やします。失敗URLの再実行機能を追加します。
-5. **ベースラインモデルを比較する**  
-   MLPだけでなく、ロジスティック回帰、LightGBM、CatBoostと比較します。
-6. **評価指標を増やす**  
-   AUCだけでなく、Calibration、開催月別成績、人気帯別成績、回収率を追加します。
-7. **特徴量を追加する**  
-   脚質、コース適性、距離適性、騎手・調教師成績、休養日数などを追加します。
-8. **再現性を固定する**  
-   学習データ期間、特徴量定義、乱数シード、ライブラリ版をモデルごとに保存します。
-9. **週次運用を自動化する**  
-   Windowsタスクスケジューラでデータ収集を実行し、GUIから学習・予想・評価を行います。
-
-AIへ修正を依頼する際は、次の4点を同時に渡すと精度が上がります。
-
-- 変更したいファイル
-- 実行した操作
-- 画面またはログに出たエラー全文
-- 期待する処理結果
-
-## 注意
-
-このMVPは研究・学習用の土台です。馬券購入を推奨したり、利益を保証したりするものではありません。まずデモデータで全体動作を確認してから、実データのパーサー調整へ進んでください。
-
-## 開催日一括予想とGitHub Pages
-
-「レース予想」画面で開催日を選ぶと、その日に保存されている出馬表の全レースを一括予想できます。画面には各レースの予測上位3頭が一覧表示され、「全出走馬の予想を見る」から全頭を確認できます。
-
-予想後に「GitHub Pages用HTMLを生成」を押すと、次の静的ファイルが作成・更新されます。
-
-- `docs/index.html`: 開催日一覧
-- `docs/predictions/YYYY-MM-DD.html`: 開催日別の予想結果
-
-公開手順:
-
-1. GitHubのリポジトリ設定で **Settings → Pages → Source** を **GitHub Actions** に設定します。
-2. 生成された `docs/` の変更をコミットして `main` ブランチへpushします。
-3. `.github/workflows/pages.yml` が静的ページを公開します。
-
-公開先は通常 `https://<GitHubユーザー名>.github.io/horse_racing_ai/` です。予想データには個人情報や秘密情報を含めないでください。
+本プログラムは研究・学習用です。予想の的中や利益を保証するものではありません。
