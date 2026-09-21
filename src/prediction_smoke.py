@@ -62,6 +62,7 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     report = {"status": "error", "race_date": str(race_date), "race_id": race_id}
+    report.update(prediction_status="skipped", odds_match_status="skipped", betting_status="skipped")
     logger = logging.getLogger(f"prediction_smoke.{output}")
     logger.setLevel(logging.INFO)
     handler = logging.FileHandler(output / "prediction.log", encoding="utf-8")
@@ -122,27 +123,33 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
         import torch
         torch.set_num_threads(1)
         model = import_module("src.30_ai_modeling.tasks.top3.model")
+        report["prediction_status"] = "error"
         predictions, metrics = model.infer_race(history, card, race_id, output / "work/model",
                                                 feature_database=output / "work/features.duckdb")
         if metrics["model_run_id"] != report["model_id"]:
             raise ValueError("使用モデルIDが一致しません。")
         validate_predictions(card, predictions)
+        report["prediction_status"] = "ok"
         predictions["model_run_id"] = report["model_id"]
         predictions.to_csv(output / "predictions.csv", index=False, encoding="utf-8-sig")
         # Independently confirm the odds join before recommendation thresholds filter bets.
         win = odds[odds.bet_type.eq("win")]
+        report["odds_match_status"] = "error"
         joined = predictions.merge(win[["race_id", "selection_1", "odds_min"]],
                                    left_on=["race_id", "horse_number"], right_on=["race_id", "selection_1"],
                                    how="left", validate="one_to_one")
         if not joined.odds_min.gt(0).all():
             raise ValueError("予想と単勝オッズの照合に失敗しました。")
         joined.to_csv(output / "prediction_odds.csv", index=False, encoding="utf-8-sig")
+        report["odds_match_status"] = "ok"
+        report["betting_status"] = "error"
         bets = import_module("src.30_ai_modeling.betting").calculate_bet_recommendations(predictions, odds, best_only=False)
         if not bets.empty:
             numeric = bets[["estimated_probability", "odds_used", "recovery_rate_percent"]].to_numpy(dtype=float)
             if not np.isfinite(numeric).all() or not bets.estimated_probability.between(0, 1).all() or not bets.odds_used.gt(0).all():
                 raise ValueError("買い目計算結果が不正です。")
         bets.to_csv(output / "bets.csv", index=False, encoding="utf-8-sig")
+        report["betting_status"] = "ok"
         build_prediction_site(predictions, race_date, report["model_id"], output / "preview", bet_recommendations=bets)
         report.update(prediction_rows=len(predictions), matched_win_runners=len(joined), bet_rows=len(bets),
                       bet_note="推奨条件を満たす買い目なし" if bets.empty else "計算成功", status="ok")

@@ -1,4 +1,4 @@
-name: Test one race prediction
+name: Test all races for a date
 
 on:
   workflow_dispatch:
@@ -7,22 +7,18 @@ on:
         description: "開催日 (YYYY-MM-DD): オッズが公開されている日"
         required: true
         type: string
-      race_id:
-        description: "netkeibaの12桁レースID"
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: prediction-smoke
+  group: date-prediction-smoke
   cancel-in-progress: false
 
 jobs:
   predict:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       PYTHONUTF8: "1"
       PYTHONUNBUFFERED: "1"
@@ -49,18 +45,17 @@ jobs:
       - name: Fetch, register, predict and calculate bets
         env:
           RACE_DATE: ${{ inputs.race_date }}
-          RACE_ID: ${{ inputs.race_id }}
         run: >-
-          python -m src.prediction_smoke
-          --race-date "$RACE_DATE" --race-id "$RACE_ID"
-          --bundle prediction_bundle --output data/prediction_smoke
+          python -m src.date_prediction_smoke
+          --race-date "$RACE_DATE"
+          --bundle prediction_bundle --output data/date_prediction_smoke
       - name: Save predictions, preview and replay inputs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: prediction-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          name: date-prediction-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            data/prediction_smoke/
-            !data/prediction_smoke/work/
+            data/date_prediction_smoke/
+            !data/date_prediction_smoke/**/work/**
           retention-days: 3
           if-no-files-found: warn

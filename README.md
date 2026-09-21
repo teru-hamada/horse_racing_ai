@@ -2,135 +2,78 @@
 
 指定日のレース情報収集、個別保存、ニューラルネットワーク学習、過学習グラフ、週末レース予想、処理ログ表示をStreamlitのGUIから実行するサンプルです。
 
-## GitHub Actionsで1レースのHTML取得を確認する
+## 開催日全レースの手動予想テスト
 
-定期運用の第1段階として、手動実行専用の `Test one race HTML fetch`
-（`.github/workflows/html-fetch-smoke.yml`）を用意しています。
-DB登録・モデル推論・Gitへのpush・Pages公開は行いません。
+検証用Actionsは **Test all races for a date** に統合しました。
+旧HTML取得・DB登録・1レース予想の3ワークフローは削除しています。
+既存Pagesワークフローは残していますが、このテストからは起動しません。
 
-1. この変更をGitHubのデフォルトブランチへ反映します。
-2. リポジトリの **Actions → Test one race HTML fetch → Run workflow** を開きます。
-3. `race_date` に開催日（例: `2026-09-21`）、`race_id` にnetkeiba出馬表URLの
-   `race_id=`に続く12桁（例: `202609040701`）を入力します。
-   例の日付に固定せず、実行時点で出馬表とJRAオッズが公開されているレースを選んでください。
-4. 実行後、SummaryのJSONと **Artifacts → html-fetch-smoke-…** を確認します。
-   HTML・解析CSV・ログ・`report.json`・`summary.md`は3日間保存します。
-   失敗した場合も、取得できたファイルは保存します。
+## GitHubでの操作
 
-出馬表はキャッシュを使わず取得し、既存処理で単勝オッズ補完と解析を行います。
-JRA側は開催一覧を経由し、指定した1レースの取得可能な券種を収集します。
-血統HTMLや他レースの出馬表は取得しません。通信間隔は既存の2秒です。
+1. 今回の変更（旧ワークフローの削除を含む）をデフォルトブランチへ反映します。
+2. **Actions → Test all races for a date → Run workflow** を開きます。
+3. `race_date` に開催日（YYYY-MM-DD）を指定します。レースIDの入力は不要です。
+4. Summaryのレース別一覧で、出馬表・オッズ・DB・予想・照合・買い目計算を確認します。
+5. Artifactsの `date-prediction-smoke-…` をダウンロード・展開し、直下の `index.html` を開きます。
 
-- `ok`（終了コード0）: 全頭の馬番・枠番が有効で馬番の重複がなく、JRAオッズを1件以上解析できた。
-- `incomplete`（終了コード2）: 馬番・枠番が不足、または有効なJRAオッズを解析できなかった。
-  未発売・公開期間外・日付の指定違い・HTML構造変更などを保存HTMLで確認してください。
-- `error`（終了コード1）: 取得または解析で例外が発生。ログでHTTPエラー等を確認してください。
+開催一覧から検出した中央競馬の全レースを順番に処理します。1レースが失敗しても
+残りを処理します。取得間隔は既存の2秒、Actionsの時間制限は90分です。
+検出対象は取得元の開催一覧に依存するため、検出レース数・会場も確認してください。
+一覧が0件の場合は非開催日か取得不良かを区別できないため、成功にはしません。
 
-`card_odds`は出馬表側の単勝オッズ件数、`jra_odds.rows`はJRA独立オッズの件数です。
-今回の合格条件は接続・基本項目の確認までで、全券種・全頭分のオッズ充足や、
-入力日と出馬表の実開催日の一致は保証しません。出走取消馬などで項目が空の場合も
-要確認として扱います。赤い実行結果だけでアクセス拒否と判断しないでください。
+## 結果の読み方
 
-Ubuntu / Python 3.11で、HTML用依存関係のみをインストールします。
-ワークフローの権限は `contents: read`、最大実行時間は15分です。
-ローカルで同じ確認を行う場合は、リポジトリ直下で以下を実行します。
-出力先には新しいフォルダを指定してください。
+- `ok`: 検証成功。全体がokなら検出した全レースが成功（終了コード0）。
+- `incomplete`: 馬番欠損・オッズ未発売等の不足あり（終了コード2）。
+- `error`: 取得・登録・予想等の例外あり（終了コード1）。
+- `skipped`: 前段が未合格のため、その工程を未実施。
+- `pending`: 未処理。時間制限やキャンセル時の途中一覧に残る場合があります。
 
-```powershell
-python -m pip install -r requirements-html-smoke.txt
-python -m src.html_fetch_smoke --race-date 2026-09-21 --race-id 202609040701 --output data/html_fetch_smoke_trial1
-```
+予想CSV・予想ページは**成功したレースのみ**を掲載します。不足・失敗のある日に
+完成済みの全レース予想と誤認しないよう、最初に直下の `index.html` または
+`race_status.csv` を確認してください。発売前・終了済みレースはオッズ不足になる場合があります。
+買い目が推奨条件を満たさず0件でも、計算が正常に完了すれば成功です。
 
-## GitHub ActionsでDB登録・照合を確認する（第2段階）
+## Artifactsの内容（3日間保存）
 
-HTML取得テストが成功したら、**Actions → Test one race database registration → Run workflow**
-から開催日とレースIDを指定してください。ワークフローを表示するには今回の変更を
-デフォルトブランチへ反映します。第1段階のHTML取得テストも引き続き利用できます。
+- `index.html`: 全体結果、レース別一覧、成功分の予想ページへのリンク
+- `date_report.json` / `race_status.csv`: 工程別結果、件数、不足・失敗理由、使用モデルID
+- `predictions.csv` / `bets.csv`: 成功分を結合した予想・買い目（成功レースがある場合）
+- `preview/`: 成功分をまとめた確認用HTML
+- `races/<レースID>/`: レース別CSV・診断JSON・ログ・取得HTML・再現用DB
+- `discovery/` / `date.log`: 開催一覧の保存HTML・全体ログ
 
-取得・解析した1レースを `data/database_smoke/smoke.duckdb` に登録し、読み戻した後に
-同じデータを別の実行IDで再登録します。アプリと同じ保存・読込関数へ専用DBパスを明示して
-使用するため、既存の `data/racing.duckdb` は更新しません。
+一覧は各レースの処理後に保存します。展開した作業用モデル・過去DBはArtifactsから除外します。
+既存DB・モデルは変更しません。予想結果のGit push・Pages公開・定期実行も行いません。
 
-Summaryの `database.checks` がすべて `true`、全体の `status` が `ok` なら合格です。
+## モデル更新とローカル比較
 
-- 出馬表の登録頭数、券種別オッズ件数が解析結果と一致する。
-- 馬番・枠番が有効で、馬番とオッズの買い目が重複しない。
-- レースID・日付が指定値と一致し、レースIDによるオッズ読込ができる。
-- レースID・馬番で全頭に有効な単勝オッズを照合できる。
-- 2回目の登録後も件数・内容が変わらず、登録実行IDが更新される。
+Actionsが参照する登録DBの学習成功済み最新モデルを使用します。モデル本体・前処理器・
+過去レース・速度指数を `prediction_bundle/` から展開し、ID・ハッシュ・実行環境を照合します。
+欠落時に古いモデルへ切り替えません。ローカルの未反映モデルは参照できません。
+更新時は[パッケージ手順](prediction_bundle/README.md)に従って再生成し、登録DBと一緒に反映します。
+Pythonは `prediction_bundle/.python-version`（現在3.12）を使用します。
 
-不合格時は `database.failed_checks` と `db_win_join.csv` を確認します。
-`left_only` は単勝オッズが見つからない出走馬、`right_only` は出馬表に対応しないオッズです。
-出走取消などで単勝オッズがない馬も要確認（`incomplete`、終了コード2）として扱います。
-取得・DB登録時の例外は `error`（終了コード1）です。
-入力日と実際の開催日の一致、全券種の網羅性は今回の検証対象外です。
-
-Artifactsの `database-smoke-…` にHTML・ログ・診断JSON・専用DB・
-`db_card.csv`・`db_odds.csv`・`db_win_join.csv`を3日間保存します。
-モデル学習・予想作成・Gitへのpush・Pages公開は行いません。
-
-ローカル実行例（出力先は毎回新しいフォルダを指定）:
+ローカルで日付単位に実行する例:
 
 ```powershell
-python -m pip install -r requirements-database-smoke.txt
-python -m src.html_fetch_smoke --race-date 2026-09-21 --race-id 202609040701 --output data/database_smoke_trial1 --verify-db
+.venv/Scripts/python.exe -m src.date_prediction_smoke --race-date 2026-09-21 --output data/date_prediction_trial1
 ```
 
-## GitHub Actionsで1レースの予想を確認する（第3段階）
-
-`prediction_bundle/` に最新モデル本体・前処理器・設定・過去データの
-実行用パッケージを用意しています。更新手順は
-[パッケージの説明](prediction_bundle/README.md)を参照してください。
-過去レースに加え、予想特徴量に必要な速度指数も含めています。
-
-1. コード・`.github/workflows/prediction-smoke.yml`・`prediction_bundle/`一式を
-   デフォルトブランチへ反映します。
-2. **Actions → Test one race prediction → Run workflow** を開きます。
-3. 実行時点で出馬表とJRAオッズが公開されている開催日・レースIDを指定します。
-4. Summaryの最後にある「1レース予想テスト」の `status: ok` を確認します。
-   途中に表示されるHTML・DB検証の成功だけでは、予想テスト全体の成功ではありません。
-
-実行開始時の登録DBにある学習成功済み最新モデルをパッケージと照合します。
-入力不足・モデル欠落時に古いモデルへ切り替えることはありません。
-モデルファイルのハッシュ・ID・実行ライブラリのバージョンも検証します。
-GitHubからローカルPCの未反映モデルを参照することはできません。
-
-予想は既存アプリと共通の推論処理を使用します。DBは展開した作業用コピーを使い、
-対象日より前の過去レースから特徴量を作ります。頭数・対象馬・予測確率・単勝オッズとの
-照合・買い目の数値を検査します。推奨条件を満たす買い目がない場合は、異常ではなく
-「推奨条件を満たす買い目なし」と記録します。
-
-Artifactsの `prediction-smoke-…` を3日間保存します。
-
-- `prediction_report.json`: 使用モデルID、入力のハッシュ、環境、所要時間、検証結果
-- `predictions.csv`: 全頭の予想とモデルID
-- `prediction_odds.csv`: 予想と単勝オッズの照合結果
-- `bets.csv`: 推奨条件を満たした買い目
-- `preview/index.html`、`preview/predictions/<開催日>.html`: 確認用ページ
-- `prediction.log`、`fetch/`: 取得ログ・保存HTML・解析結果・テスト用DB
-
-失敗時にも保存できた診断ファイルは残します。大きな作業用モデル・過去DBはArtifactsに
-含めず、同じコミットのパッケージから復元します。予想結果のGit push・Pages公開・
-スケジュール起動はまだ行いません。
-
-### 同一入力でローカル比較する
-
-Actionsと同じコミットのコードとパッケージを使い、Artifactを
-`data/actions_prediction`へ展開します（`prediction_report.json`が直下にある状態）。
-モデルのライブラリ互換性を保つため、専用仮想環境を推奨します。
+Actionsと同じコミット・実行パッケージを使い、Artifactを `data/actions_date` へ展開すれば、
+成功したレースを通信なしで再現・比較できます。以下のレースIDは実際の成功レースに置換してください。
 
 ```powershell
 py -3.12 -m venv .venv-prediction
 .venv-prediction/Scripts/python.exe -m pip install -r prediction_bundle/requirements.txt
-.venv-prediction/Scripts/python.exe -m src.prediction_smoke --bundle prediction_bundle --replay data/actions_prediction --output data/prediction_replay1
+.venv-prediction/Scripts/python.exe -m src.prediction_smoke --bundle prediction_bundle --replay data/actions_date/races/202609040701 --output data/prediction_replay1
 ```
 
-再現時は通信せず、Artifact内の入力DBを読み、同じモデルで再計算します。
-入力DBとパッケージのハッシュ一致を確認し、予想と買い目をCSV比較します。
+入力DB・パッケージのハッシュを確認後、予想・買い目を比較します。
 `prediction_report.json` の `comparison.status: ok` が一致です。
-浮動小数点の差は絶対許容誤差 `1e-6`、相対許容誤差 `1e-5` 以内を許容し、
-対象馬・買い目・モデルIDなどの相違は不合格になります。
-出力先には毎回新しいフォルダを指定してください。
+浮動小数点の比較は絶対許容誤差1e-6・相対許容誤差1e-5を使用します。
+出力先は毎回新しいフォルダを指定してください。
+1レース予想・HTML取得・DB登録のPythonコマンドは診断用として残しています。
 
 ## 最初の起動方法（Windows）
 
