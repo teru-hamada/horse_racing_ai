@@ -1,6 +1,0 @@
-# Only HTML collection/parsing dependencies; no model or GUI installation.
-numpy>=1.26,<3
-pandas>=2.2,<3
-requests>=2.32,<3
-beautifulsoup4>=4.12,<5
-lxml>=5.3,<7

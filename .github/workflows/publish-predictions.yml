@@ -1,0 +1,105 @@
+name: Publish predictions for a date
+
+on:
+  workflow_dispatch:
+    inputs:
+      race_date:
+        description: "開催日 (YYYY-MM-DD): オッズが公開されている日"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publish-predictions
+  cancel-in-progress: false
+
+jobs:
+  predict:
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.publish.outputs.commit }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      OMP_NUM_THREADS: "1"
+    steps:
+      - name: Require the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: prediction_bundle/.python-version
+      - name: Install pinned CPU prediction environment
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+          manifest = json.loads(Path('prediction_bundle/manifest.json').read_text())
+          version = manifest['versions']['torch'].split('+')[0]
+          subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch==' + version,
+                          '--index-url', 'https://download.pytorch.org/whl/cpu'], check=True)
+          PY
+          python -m pip install -r prediction_bundle/requirements.txt
+      - name: Fetch, register, predict and calculate bets
+        env:
+          RACE_DATE: ${{ inputs.race_date }}
+        run: >-
+          python -m src.date_prediction_smoke
+          --race-date "$RACE_DATE"
+          --bundle prediction_bundle --output data/date_prediction_smoke
+      - name: Save predictions, preview and replay inputs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: date-prediction-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            data/date_prediction_smoke/
+            !data/date_prediction_smoke/**/work/**
+          retention-days: 3
+          if-no-files-found: warn
+      - name: Update public files only after all races pass
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch origin "$DEFAULT_BRANCH"
+          git merge --ff-only "origin/$DEFAULT_BRANCH"
+          python -m src.publish_predictions --results data/date_prediction_smoke --site docs
+      - name: Commit and push changed predictions
+        id: publish
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RACE_DATE: ${{ inputs.race_date }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- docs/.nojekyll docs/index.html "docs/predictions/$RACE_DATE.html" "docs/predictions/$RACE_DATE.csv" "docs/predictions/${RACE_DATE}_bets.csv"
+          if git diff --cached --quiet; then
+            echo "No prediction changes; skipping commit."
+          else
+            git commit -m "Publish predictions for $RACE_DATE"
+            git push origin "HEAD:$DEFAULT_BRANCH"
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: predict
+    uses: ./.github/workflows/pages.yml
+    with:
+      commit: ${{ needs.predict.outputs.commit }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
