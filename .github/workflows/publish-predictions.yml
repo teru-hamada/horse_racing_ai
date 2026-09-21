@@ -1,14 +1,22 @@
 name: Publish predictions for a date
 
 on:
+  schedule:
+    # 18:00 UTC = 03:00 JST the following day.
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       race_date:
         description: "開催日 (YYYY-MM-DD): オッズが公開されている日"
         required: true
         type: string
+      compare_previous:
+        description: "指定日の前日分も結果照合する"
+        default: false
+        type: boolean
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -23,8 +31,9 @@ jobs:
       contents: write
     outputs:
       commit: ${{ steps.publish.outputs.commit }}
+      publication_required: ${{ steps.prepare.outputs.publication_required }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       PYTHONUTF8: "1"
       PYTHONUNBUFFERED: "1"
@@ -53,53 +62,63 @@ jobs:
                           '--index-url', 'https://download.pytorch.org/whl/cpu'], check=True)
           PY
           python -m pip install -r prediction_bundle/requirements.txt
-      - name: Fetch, register, predict and calculate bets
+      - name: Predict today and compare previous results
         env:
           RACE_DATE: ${{ inputs.race_date }}
-        run: >-
-          python -m src.date_prediction_smoke
-          --race-date "$RACE_DATE"
-          --bundle prediction_bundle --output data/date_prediction_smoke
-      - name: Save predictions, preview and replay inputs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: date-prediction-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            data/date_prediction_smoke/
-            !data/date_prediction_smoke/**/work/**
-          retention-days: 3
-          if-no-files-found: warn
+          COMPARE_PREVIOUS: ${{ github.event_name == 'schedule' || inputs.compare_previous }}
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys
+          args = [sys.executable, '-m', 'src.daily_racing']
+          if os.environ.get('RACE_DATE'):
+              args += ['--race-date', os.environ['RACE_DATE']]
+          if os.environ.get('COMPARE_PREVIOUS', '').lower() == 'true':
+              args += ['--with-previous']
+          raise SystemExit(subprocess.call(args))
+          PY
       - name: Update public files only after all races pass
+        id: prepare
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           git fetch origin "$DEFAULT_BRANCH"
           git merge --ff-only "origin/$DEFAULT_BRANCH"
-          python -m src.publish_predictions --results data/date_prediction_smoke --site docs
+          python -m src.daily_racing --prepare-publication
+      - name: Save predictions, comparisons and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: daily-racing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            data/daily_racing/
+            !data/daily_racing/**/work/**
+          retention-days: 3
+          if-no-files-found: warn
       - name: Commit and push changed predictions
         id: publish
+        if: steps.prepare.outputs.publication_required == 'true'
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          RACE_DATE: ${{ inputs.race_date }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- docs/.nojekyll docs/index.html "docs/predictions/$RACE_DATE.html" "docs/predictions/$RACE_DATE.csv" "docs/predictions/${RACE_DATE}_bets.csv"
+          git add -- docs
           if git diff --cached --quiet; then
             echo "No prediction changes; skipping commit."
           else
-            git commit -m "Publish predictions for $RACE_DATE"
+            git commit -m "Publish daily predictions and result comparisons"
             git push origin "HEAD:$DEFAULT_BRANCH"
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: predict
+    if: needs.predict.outputs.publication_required == 'true'
     uses: ./.github/workflows/pages.yml
     with:
       commit: ${{ needs.predict.outputs.commit }}
     permissions:
+      actions: read
       contents: read
       pages: write
       id-token: write

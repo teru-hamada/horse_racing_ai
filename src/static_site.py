@@ -150,7 +150,8 @@ def _write_index(site_dir: Path) -> Path:
     else:
         links = '<p class="empty">公開済みの予想はまだありません。</p>'
     body = f"""<header><div class="eyebrow">Horse Racing AI</div><h1>開催日別<br>レース予想</h1>
-<p class="lead">各レースの3着以内確率を、開催日ごとに掲載しています。</p></header>{links}"""
+<p class="lead">各レースの3着以内確率を、開催日ごとに掲載しています。</p>
+<a class="back" href="job-status.html">ジョブ実行状況 →</a></header>{links}"""
     index_path = site_dir / "index.html"
     index_path.write_text(_page("競馬予想AI", body), encoding="utf-8")
     return index_path
