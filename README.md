@@ -19,29 +19,34 @@ horse_racing_ai/
 │  └─ pages.yml                    Pages配信とジョブ実行状況の生成
 ├─ src/
 │  ├─ 00_common/                  設定、DB操作、ログ、HTML共通処理
-│  ├─ 10_scrapers_html_collection/ HTML・JRAオッズ収集とジョブ管理
-│  ├─ 20_scrapers_database_creation/ 保存HTMLの解析、DB登録、ジョブ管理
-│  ├─ 30_ai_modeling/
+│  ├─ 10_workflows/               処理全体の実行フロー
+│  │  ├─ daily_racing.py          当日予想・前日照合・公開準備の統括
+│  │  ├─ date_prediction.py       全レース処理と工程別検証
+│  │  ├─ race_prediction.py       1レースの予想・照合・再現検証
+│  │  ├─ html_acquisition.py      HTML取得と検証
+│  │  └─ database_validation.py   隔離DBへの登録・再登録検証
+│  ├─ 20_scrapers_html_collection/ HTML・JRAオッズ収集とジョブ管理
+│  │  ├─ date_collector.py        実行単位でHTMLを保存する共通収集クラス
+│  │  ├─ race_calendar.py         開催日・非開催日の判定
+│  │  ├─ jra_results.py           JRA確定結果・公式払戻金の取得
+│  │  └─ weather_forecast.py      GUIの馬場状態設定に使う天気予報
+│  ├─ 30_scrapers_database_creation/ 保存HTMLの解析、DB登録、ジョブ管理
+│  ├─ 40_ai_modeling/
 │  │  ├─ common/                  前処理、評価、モデル保存
 │  │  ├─ estimators/              ニューラルネットワーク（MLP）
 │  │  ├─ feature_engineering/     特徴量生成・保存・鮮度管理
 │  │  ├─ tasks/top3/              3着以内確率の学習・予想
 │  │  ├─ betting.py               買い目と期待値計算
+│  │  ├─ prediction_bundle.py     Actions用モデル・データのパッケージ作成
 │  │  └─ registry.py・service.py  予測タスクの登録と呼び出し
-│  ├─ public_api.py               GUIから各処理を呼ぶ窓口
-│  ├─ daily_racing.py             当日予想・前日照合・公開準備の統括
-│  ├─ race_calendar.py            開催日・非開催日の判定
-│  ├─ date_prediction_smoke.py    全レース処理と工程別検証
-│  ├─ prediction_smoke.py         1レースの予想・照合・再現検証
-│  ├─ html_fetch_smoke.py         HTML取得と検証
-│  ├─ database_smoke.py           隔離DBへの登録・再登録検証
-│  ├─ prediction_bundle.py        Actions用モデル・データのパッケージ作成
-│  ├─ publish_predictions.py      全レース検証と公開用ファイル更新
-│  ├─ prediction_comparison.py    予想・買い目と確定結果の比較
-│  ├─ jra_results.py              JRA確定結果・公式払戻金の取得
-│  ├─ weather_forecast.py         GUIの馬場状態設定に使う天気予報
-│  ├─ static_site.py              予想・比較HTMLの生成
-│  └─ job_status.py               ジョブ実行状況HTMLの生成
+│  ├─ 50_result_comparison/
+│  │  └─ prediction_comparison.py 予想・買い目と確定結果の比較
+│  ├─ 60_publication/
+│  │  ├─ static_site.py           予想・比較HTMLの生成
+│  │  ├─ publish_predictions.py   全レース検証と公開用ファイル更新
+│  │  └─ job_status.py            ジョブ実行状況HTMLの生成
+│  ├─ __init__.py
+│  └─ public_api.py               GUIから各処理を呼ぶ窓口
 ├─ data/
 │  ├─ racing.duckdb               レース、オッズ、モデル登録情報など
 │  ├─ features.duckdb             特徴量DB
@@ -229,7 +234,7 @@ Actionsが参照する登録DBの学習成功済み最新モデルを使用し�
 更新時は学習・DB更新を完了し、DBへ書き込む処理を止めてから再生成します。
 
 ```powershell
-.venv/Scripts/python.exe -m src.prediction_bundle
+.venv/Scripts/python.exe -m src.40_ai_modeling.prediction_bundle
 ```
 
 生成した`runtime.zip`・`manifest.json`・`requirements.txt`・`.python-version`と更新した`data/racing.duckdb`を同じコミットで反映します。詳細は[パッケージ手順](prediction_bundle/README.md)を参照してください。
@@ -240,7 +245,7 @@ Actionsと同じ依存ライブラリを専用環境へ入れ、ローカルで�
 ```powershell
 py -3.12 -m venv .venv-prediction
 .venv-prediction/Scripts/python.exe -m pip install -r prediction_bundle/requirements.txt
-.venv-prediction/Scripts/python.exe -m src.daily_racing --race-date 2026-09-21 --with-previous --output data/daily_trial1
+.venv-prediction/Scripts/python.exe -m src.10_workflows.daily_racing --race-date 2026-09-21 --with-previous --output data/daily_trial1
 ```
 
 日付は対象開催日に置き換えてください。このコマンドは指定フォルダへ結果を保存し、自動push・Pages配信は行いません。
@@ -249,7 +254,7 @@ Actionsと同じコミット・実行パッケージを使い、Artifactを `dat
 成功したレースを通信なしで再現・比較できます。以下のレースIDは実際の成功レースに置換してください。
 
 ```powershell
-.venv-prediction/Scripts/python.exe -m src.prediction_smoke --bundle prediction_bundle --replay data/actions_date/prediction/races/202609040701 --output data/prediction_replay1
+.venv-prediction/Scripts/python.exe -m src.10_workflows.race_prediction --bundle prediction_bundle --replay data/actions_date/prediction/races/202609040701 --output data/prediction_replay1
 ```
 
 入力DB・パッケージのハッシュを確認後、予想・買い目を比較します。

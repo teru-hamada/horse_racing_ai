@@ -224,7 +224,7 @@ def _run_job(job_id: str) -> None:
                     f"対象期間={job.start_date}～{job.end_date}"
                 )
                 odds_parser = import_module(
-                    "src.20_scrapers_database_creation.jra_odds_parser"
+                    "src.30_scrapers_database_creation.jra_odds_parser"
                 )
                 odds_frames = []
                 dated_frame = frame.assign(

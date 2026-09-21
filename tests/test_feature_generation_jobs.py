@@ -6,7 +6,7 @@ from importlib import import_module
 from src.public_api import RecentFormRunConfig
 
 
-jobs = import_module("src.30_ai_modeling.feature_engineering.jobs")
+jobs = import_module("src.40_ai_modeling.feature_engineering.jobs")
 
 
 def _wait_for(job_id: str, statuses: set[str]) -> dict[str, object]:

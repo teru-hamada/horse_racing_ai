@@ -16,7 +16,7 @@ Actionsはこの指定を使用します（現在は3.12）。NumPy 2.5.1はPyth
 モデル学習とDB更新を完了し、DBへ書き込む処理を止めてから、リポジトリ直下で実行します。
 
 ```powershell
-.venv/Scripts/python.exe -m src.prediction_bundle
+.venv/Scripts/python.exe -m src.40_ai_modeling.prediction_bundle
 ```
 
 学習成功（`completed`）の `top3` モデルを登録日時順に選びます。

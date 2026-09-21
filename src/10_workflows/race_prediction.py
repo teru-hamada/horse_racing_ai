@@ -1,5 +1,6 @@
 """Manual one-race inference, or offline replay of an Actions artifact."""
 from __future__ import annotations
+from importlib import import_module as _import_module
 
 import argparse
 import json
@@ -18,9 +19,13 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from .html_fetch_smoke import run_probe
-from .prediction_bundle import PACKAGES, PATHS, latest_model, sha256, unpack_bundle
-from .static_site import build_prediction_site
+from .html_acquisition import run_probe
+PACKAGES = _import_module('src.40_ai_modeling.prediction_bundle').PACKAGES
+PATHS = _import_module('src.40_ai_modeling.prediction_bundle').PATHS
+latest_model = _import_module('src.40_ai_modeling.prediction_bundle').latest_model
+sha256 = _import_module('src.40_ai_modeling.prediction_bundle').sha256
+unpack_bundle = _import_module('src.40_ai_modeling.prediction_bundle').unpack_bundle
+build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
 
 storage = import_module("src.00_common.storage")
 
@@ -122,7 +127,7 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
         report["history_latest_date"] = str(history["race_date"].max().date())
         import torch
         torch.set_num_threads(1)
-        model = import_module("src.30_ai_modeling.tasks.top3.model")
+        model = import_module("src.40_ai_modeling.tasks.top3.model")
         report["prediction_status"] = "error"
         predictions, metrics = model.infer_race(history, card, race_id, output / "work/model",
                                                 feature_database=output / "work/features.duckdb")
@@ -143,7 +148,7 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
         joined.to_csv(output / "prediction_odds.csv", index=False, encoding="utf-8-sig")
         report["odds_match_status"] = "ok"
         report["betting_status"] = "error"
-        bets = import_module("src.30_ai_modeling.betting").calculate_bet_recommendations(predictions, odds, best_only=False)
+        bets = import_module("src.40_ai_modeling.betting").calculate_bet_recommendations(predictions, odds, best_only=False)
         if not bets.empty:
             numeric = bets[["estimated_probability", "odds_used", "recovery_rate_percent"]].to_numpy(dtype=float)
             if not np.isfinite(numeric).all() or not bets.estimated_probability.between(0, 1).all() or not bets.odds_used.gt(0).all():

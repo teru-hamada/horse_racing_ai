@@ -1,4 +1,5 @@
 from __future__ import annotations
+from importlib import import_module as _import_module
 
 from datetime import datetime
 from html import escape
@@ -7,7 +8,7 @@ import re
 
 import pandas as pd
 
-from src.prediction_comparison import compare_recommended_bets
+compare_recommended_bets = _import_module('src.50_result_comparison.prediction_comparison').compare_recommended_bets
 
 
 _STYLE = """

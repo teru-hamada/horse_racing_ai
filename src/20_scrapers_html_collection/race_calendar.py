@@ -5,7 +5,7 @@ import re
 
 from bs4 import BeautifulSoup
 
-from .date_prediction_smoke import DateCollector
+from .date_collector import DateCollector
 
 
 def parse_meeting_day(html: str, target: date) -> bool:

@@ -5,7 +5,7 @@ import pytest
 
 
 JraOddsHtmlCollector = import_module(
-    "src.10_scrapers_html_collection.jra_odds_html"
+    "src.20_scrapers_html_collection.jra_odds_html"
 ).JraOddsHtmlCollector
 
 

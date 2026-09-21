@@ -1,5 +1,6 @@
 """Scheduled predictions and previous-day settlement; publish only complete runs."""
 from __future__ import annotations
+from importlib import import_module as _import_module
 
 import argparse
 from datetime import date, datetime, timedelta, timezone
@@ -13,13 +14,16 @@ import tempfile
 
 import pandas as pd
 
-from .date_prediction_smoke import DateCollector, run_date
-from .jra_results import JraResultFetcher
-from .prediction_bundle import sha256
-from .prediction_comparison import compare_prediction_date, compare_recommended_bets
-from .publish_predictions import prepare_publication
-from .race_calendar import check_meeting_day
-from .static_site import build_prediction_site
+from .date_prediction import run_date
+
+DateCollector = _import_module('src.20_scrapers_html_collection.date_collector').DateCollector
+JraResultFetcher = _import_module('src.20_scrapers_html_collection.jra_results').JraResultFetcher
+sha256 = _import_module('src.40_ai_modeling.prediction_bundle').sha256
+compare_prediction_date = _import_module('src.50_result_comparison.prediction_comparison').compare_prediction_date
+compare_recommended_bets = _import_module('src.50_result_comparison.prediction_comparison').compare_recommended_bets
+prepare_publication = _import_module('src.60_publication.publish_predictions').prepare_publication
+check_meeting_day = _import_module('src.20_scrapers_html_collection.race_calendar').check_meeting_day
+build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
 
 JST = timezone(timedelta(hours=9))
 

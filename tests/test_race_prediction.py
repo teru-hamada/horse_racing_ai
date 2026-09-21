@@ -1,3 +1,4 @@
+from importlib import import_module as _import_module
 import json
 import sys
 from dataclasses import replace
@@ -7,8 +8,9 @@ import duckdb
 import pandas as pd
 import pytest
 
-from src import prediction_bundle as bundle
-from src.prediction_smoke import compare_results, validate_predictions
+bundle = _import_module('src.40_ai_modeling.prediction_bundle')
+compare_results = _import_module('src.10_workflows.race_prediction').compare_results
+validate_predictions = _import_module('src.10_workflows.race_prediction').validate_predictions
 
 
 @pytest.fixture

@@ -6,9 +6,9 @@ import pandas as pd
 import pytest
 
 
-parser = import_module("src.20_scrapers_database_creation.jra_odds_parser")
+parser = import_module("src.30_scrapers_database_creation.jra_odds_parser")
 storage = import_module("src.00_common.storage")
-betting = import_module("src.30_ai_modeling.betting")
+betting = import_module("src.40_ai_modeling.betting")
 
 
 def test_parse_win_place_html(tmp_path):

@@ -1,8 +1,12 @@
+from importlib import import_module as _import_module
 from datetime import datetime, timezone
 
 import pytest
 
-from src.job_status import build_status, fetch_runs, render_status, result_label
+build_status = _import_module('src.60_publication.job_status').build_status
+fetch_runs = _import_module('src.60_publication.job_status').fetch_runs
+render_status = _import_module('src.60_publication.job_status').render_status
+result_label = _import_module('src.60_publication.job_status').result_label
 
 
 @pytest.mark.parametrize("status,conclusion,label", [
@@ -39,6 +43,6 @@ def test_snapshot_has_jst_and_no_error_details(tmp_path):
 def test_api_failure_does_not_become_empty_history(monkeypatch):
     def fail(*args, **kwargs):
         raise OSError("API unavailable")
-    monkeypatch.setattr("src.job_status.urlopen", fail)
+    monkeypatch.setattr("src.60_publication.job_status.urlopen", fail)
     with pytest.raises(OSError):
         fetch_runs("owner/repo", "main", "token")

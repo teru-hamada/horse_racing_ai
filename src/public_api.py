@@ -5,50 +5,50 @@ from importlib import import_module
 
 _storage = import_module("src.00_common.storage")
 _html_jobs = import_module(
-    "src.10_scrapers_html_collection.html_collection_jobs"
+    "src.20_scrapers_html_collection.html_collection_jobs"
 )
 _html_scraper = import_module(
-    "src.10_scrapers_html_collection.scrapers_html_collection_netkeiba"
+    "src.20_scrapers_html_collection.scrapers_html_collection_netkeiba"
 )
 _database_jobs = import_module(
-    "src.20_scrapers_database_creation.database_creation_jobs"
+    "src.30_scrapers_database_creation.database_creation_jobs"
 )
 _database_scraper = import_module(
-    "src.20_scrapers_database_creation.scrapers_database_creation_netkeiba"
+    "src.30_scrapers_database_creation.scrapers_database_creation_netkeiba"
 )
 _demo_data = import_module(
-    "src.20_scrapers_database_creation.demo_data"
+    "src.30_scrapers_database_creation.demo_data"
 )
 _logging = import_module("src.00_common.logging_utils")
 _config = import_module("src.00_common.config")
-_features = import_module("src.30_ai_modeling.common.features")
-_top3_target = import_module("src.30_ai_modeling.tasks.top3.target")
-_modeling = import_module("src.30_ai_modeling.service")
-_model_registry = import_module("src.30_ai_modeling.registry")
+_features = import_module("src.40_ai_modeling.common.features")
+_top3_target = import_module("src.40_ai_modeling.tasks.top3.target")
+_modeling = import_module("src.40_ai_modeling.service")
+_model_registry = import_module("src.40_ai_modeling.registry")
 _feature_engineering = import_module(
-    "src.30_ai_modeling.feature_engineering"
+    "src.40_ai_modeling.feature_engineering"
 )
 _feature_storage = import_module(
-    "src.30_ai_modeling.feature_engineering.storage"
+    "src.40_ai_modeling.feature_engineering.storage"
 )
 _feature_jobs = import_module(
-    "src.30_ai_modeling.feature_engineering.jobs"
+    "src.40_ai_modeling.feature_engineering.jobs"
 )
 _speed_jobs = import_module(
-    "src.30_ai_modeling.feature_engineering.speed_jobs"
+    "src.40_ai_modeling.feature_engineering.speed_jobs"
 )
 _recent_speed_jobs = import_module(
-    "src.30_ai_modeling.feature_engineering.recent_speed_jobs"
+    "src.40_ai_modeling.feature_engineering.recent_speed_jobs"
 )
 _race_entry_jobs = import_module(
-    "src.30_ai_modeling.feature_engineering.race_entry_jobs"
+    "src.40_ai_modeling.feature_engineering.race_entry_jobs"
 )
-_training_dataset = import_module("src.30_ai_modeling.training_dataset")
-_static_site = import_module("src.static_site")
-_prediction_comparison = import_module("src.prediction_comparison")
-_weather_forecast = import_module("src.weather_forecast")
-_betting = import_module("src.30_ai_modeling.betting")
-_jra_results = import_module("src.jra_results")
+_training_dataset = import_module("src.40_ai_modeling.training_dataset")
+_static_site = import_module("src.60_publication.static_site")
+_prediction_comparison = import_module("src.50_result_comparison.prediction_comparison")
+_weather_forecast = import_module("src.20_scrapers_html_collection.weather_forecast")
+_betting = import_module("src.40_ai_modeling.betting")
+_jra_results = import_module("src.20_scrapers_html_collection.jra_results")
 
 cancel_html_collection_job = _html_jobs.cancel_job
 list_html_collection_jobs = _html_jobs.list_jobs

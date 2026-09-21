@@ -6,7 +6,7 @@ from importlib import import_module
 from src.public_api import RecentSpeedRunConfig
 
 
-jobs = import_module("src.30_ai_modeling.feature_engineering.recent_speed_jobs")
+jobs = import_module("src.40_ai_modeling.feature_engineering.recent_speed_jobs")
 
 
 def _wait(job_id: str, statuses: set[str]):

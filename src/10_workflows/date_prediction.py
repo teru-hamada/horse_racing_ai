@@ -1,5 +1,6 @@
 """Manual date-wide orchestration with durable per-race diagnostics."""
 from __future__ import annotations
+from importlib import import_module as _import_module
 
 import argparse
 from contextlib import contextmanager
@@ -14,20 +15,10 @@ import time
 
 import pandas as pd
 
-from .html_fetch_smoke import NetkeibaHtmlCollector
-from .prediction_smoke import run_prediction
-from .static_site import build_prediction_site
+from .race_prediction import run_prediction
 
-
-class DateCollector(NetkeibaHtmlCollector):
-    def __init__(self, logger, directory):
-        super().__init__(logger)
-        self.directory = directory
-
-    def _cache_path(self, dataset_type, storage_key, kind, key):
-        path = self.directory / kind / f"{key}.html"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
+DateCollector = _import_module('src.20_scrapers_html_collection.date_collector').DateCollector
+build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
 
 
 @contextmanager

@@ -1,3 +1,4 @@
+from importlib import import_module as _import_module
 from calendar import monthrange
 from datetime import date, datetime, timezone
 import json
@@ -5,9 +6,9 @@ import json
 import pandas as pd
 import pytest
 
-from src import daily_racing as daily
-from src.race_calendar import parse_meeting_day
-from src.static_site import build_prediction_site
+daily = _import_module('src.10_workflows.daily_racing')
+parse_meeting_day = _import_module('src.20_scrapers_html_collection.race_calendar').parse_meeting_day
+build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
 
 
 def calendar_html(year=2026, month=9):

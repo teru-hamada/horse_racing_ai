@@ -14,13 +14,13 @@ from pathlib import Path
 import pandas as pd
 
 NetkeibaHtmlCollector = import_module(
-    "src.10_scrapers_html_collection.scrapers_html_collection_netkeiba"
+    "src.20_scrapers_html_collection.scrapers_html_collection_netkeiba"
 ).NetkeibaHtmlCollector
 JraOddsHtmlCollector = import_module(
-    "src.10_scrapers_html_collection.jra_odds_html"
+    "src.20_scrapers_html_collection.jra_odds_html"
 ).JraOddsHtmlCollector
 parse_odds_directory = import_module(
-    "src.20_scrapers_database_creation.jra_odds_parser"
+    "src.30_scrapers_database_creation.jra_odds_parser"
 ).parse_odds_directory
 
 
@@ -115,7 +115,7 @@ def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = 
                 report["database"] = {"status": "incomplete", "reason": "取得・解析失敗のためDB検証をスキップ"}
             else:
                 try:
-                    from .database_smoke import verify_database
+                    from .database_validation import verify_database
                     report["database"] = verify_database(frame, odds, race_date, race_id, output)
                 except Exception as exc:
                     logger.exception("テスト用DBの登録または検証に失敗")

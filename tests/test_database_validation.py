@@ -1,10 +1,11 @@
+from importlib import import_module as _import_module
 from datetime import date
 from dataclasses import replace
 
 import pandas as pd
 import pytest
 
-from src import database_smoke as smoke
+smoke = _import_module('src.10_workflows.database_validation')
 
 
 @pytest.fixture
@@ -91,7 +92,7 @@ def test_detects_duplicate_append_on_reregistration(tmp_path, monkeypatch, frame
 @pytest.mark.parametrize("database_error", [False, True])
 def test_cli_database_mode_reports_success_and_errors(tmp_path, monkeypatch, frames, database_error):
     import json
-    from src import html_fetch_smoke as html
+    html = _import_module('src.10_workflows.html_acquisition')
 
     card, odds = frames
     monkeypatch.setattr(html.NetkeibaHtmlCollector, "_download", lambda *a, **kw: "<html></html>")

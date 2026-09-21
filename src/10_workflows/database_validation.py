@@ -27,7 +27,7 @@ def _same_values(left: pd.DataFrame, right: pd.DataFrame, columns: list[str]) ->
 
 def verify_database(card: pd.DataFrame, odds: pd.DataFrame, race_date: date,
                     race_id: str, output: Path) -> dict:
-    from .html_fetch_smoke import inspect_card
+    from .html_acquisition import inspect_card
 
     database = output / "smoke.duckdb"
     if database.resolve() == storage.PATHS.database.resolve() or database.exists():

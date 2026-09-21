@@ -69,7 +69,7 @@ jobs:
         run: |
           python - <<'PY'
           import os, subprocess, sys
-          args = [sys.executable, '-m', 'src.daily_racing']
+          args = [sys.executable, '-m', 'src.10_workflows.daily_racing']
           if os.environ.get('RACE_DATE'):
               args += ['--race-date', os.environ['RACE_DATE']]
           if os.environ.get('COMPARE_PREVIOUS', '').lower() == 'true':
@@ -83,7 +83,7 @@ jobs:
         run: |
           git fetch origin "$DEFAULT_BRANCH"
           git merge --ff-only "origin/$DEFAULT_BRANCH"
-          python -m src.daily_racing --prepare-publication
+          python -m src.10_workflows.daily_racing --prepare-publication
       - name: Save predictions, comparisons and diagnostics
         if: always()
         uses: actions/upload-artifact@v7

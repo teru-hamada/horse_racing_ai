@@ -32,7 +32,7 @@ def _history() -> pd.DataFrame:
 def test_service_generates_requested_period_and_records_run(tmp_path, monkeypatch):
     from importlib import import_module
 
-    service = import_module("src.30_ai_modeling.feature_engineering.service")
+    service = import_module("src.40_ai_modeling.feature_engineering.service")
     monkeypatch.setattr(service._source_storage, "load_records", lambda _: _history())
     feature_db = tmp_path / "features.duckdb"
     config = RecentFormRunConfig(

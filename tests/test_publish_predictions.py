@@ -1,9 +1,10 @@
+from importlib import import_module as _import_module
 import json
 
 import pandas as pd
 import pytest
 
-from src.publish_predictions import prepare_publication
+prepare_publication = _import_module('src.60_publication.publish_predictions').prepare_publication
 
 
 @pytest.fixture

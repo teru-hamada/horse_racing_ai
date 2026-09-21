@@ -1,10 +1,11 @@
+from importlib import import_module as _import_module
 from datetime import date
 import json
 
 import pandas as pd
 import pytest
 
-from src import html_fetch_smoke as smoke
+smoke = _import_module('src.10_workflows.html_acquisition')
 
 
 @pytest.mark.parametrize("numbers,frames,status", [

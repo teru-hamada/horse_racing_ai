@@ -106,9 +106,9 @@ def test_saved_html_to_prediction_comparison_is_offline_and_isolated(
     isolated_paths = get_paths(tmp_path / "isolated_app")
 
     storage = import_module("src.00_common.storage")
-    feature_storage = import_module("src.30_ai_modeling.feature_engineering.storage")
-    freshness = import_module("src.30_ai_modeling.feature_engineering.freshness")
-    top3_model = import_module("src.30_ai_modeling.tasks.top3.model")
+    feature_storage = import_module("src.40_ai_modeling.feature_engineering.storage")
+    freshness = import_module("src.40_ai_modeling.feature_engineering.freshness")
+    top3_model = import_module("src.40_ai_modeling.tasks.top3.model")
     monkeypatch.setattr(storage, "PATHS", isolated_paths)
     monkeypatch.setattr(feature_storage, "PATHS", isolated_paths)
     monkeypatch.setattr(freshness, "PATHS", isolated_paths)

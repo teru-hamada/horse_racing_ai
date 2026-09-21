@@ -1,10 +1,11 @@
+from importlib import import_module as _import_module
 from datetime import date
 import json
 
 import pandas as pd
 import pytest
 
-from src import date_prediction_smoke as daily
+daily = _import_module('src.10_workflows.date_prediction')
 
 
 @pytest.mark.parametrize("statuses,expected", [

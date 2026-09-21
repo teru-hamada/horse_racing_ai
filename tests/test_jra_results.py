@@ -1,8 +1,10 @@
 from __future__ import annotations
+from importlib import import_module as _import_module
 
 from datetime import date
 
-from src.jra_results import JraResultFetcher, parse_jra_result_html
+JraResultFetcher = _import_module('src.20_scrapers_html_collection.jra_results').JraResultFetcher
+parse_jra_result_html = _import_module('src.20_scrapers_html_collection.jra_results').parse_jra_result_html
 
 
 RESULT_HTML = """<!doctype html><html><head><meta charset="Shift_JIS"></head><body>

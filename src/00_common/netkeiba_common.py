@@ -893,7 +893,7 @@ class NetkeibaCommon:
                     from importlib import import_module
 
                     odds_module = import_module(
-                        "src.10_scrapers_html_collection.jra_odds_html"
+                        "src.20_scrapers_html_collection.jra_odds_html"
                     )
                     odds_collector = odds_module.JraOddsHtmlCollector(
                         logger=self.logger,

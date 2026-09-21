@@ -114,7 +114,7 @@ Pythonは `prediction_bundle/.python-version`（現在3.12）を使用します�
 ローカルで日付単位に実行する例:
 
 ```powershell
-.venv/Scripts/python.exe -m src.daily_racing --race-date 2026-09-21 --with-previous --output data/daily_trial1
+.venv/Scripts/python.exe -m src.10_workflows.daily_racing --race-date 2026-09-21 --with-previous --output data/daily_trial1
 ```
 
 Actionsと同じコミット・実行パッケージを使い、Artifactを `data/actions_date` へ展開すれば、
@@ -123,7 +123,7 @@ Actionsと同じコミット・実行パッケージを使い、Artifactを `dat
 ```powershell
 py -3.12 -m venv .venv-prediction
 .venv-prediction/Scripts/python.exe -m pip install -r prediction_bundle/requirements.txt
-.venv-prediction/Scripts/python.exe -m src.prediction_smoke --bundle prediction_bundle --replay data/actions_date/prediction/races/202609040701 --output data/prediction_replay1
+.venv-prediction/Scripts/python.exe -m src.10_workflows.race_prediction --bundle prediction_bundle --replay data/actions_date/prediction/races/202609040701 --output data/prediction_replay1
 ```
 
 入力DB・パッケージのハッシュを確認後、予想・買い目を比較します。
