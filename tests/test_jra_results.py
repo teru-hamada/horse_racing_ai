@@ -2,6 +2,10 @@ from __future__ import annotations
 from importlib import import_module as _import_module
 
 from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import pytest
 
 JraResultFetcher = _import_module('src.20_scrapers_html_collection.jra_results').JraResultFetcher
 parse_jra_result_html = _import_module('src.20_scrapers_html_collection.jra_results').parse_jra_result_html
@@ -21,6 +25,57 @@ RESULT_HTML = """<!doctype html><html><head><meta charset="Shift_JIS"></head><bo
 <li class="umaren"><div class="line"><div class="num">3-8</div><div class="yen">930円</div></div></li>
 <li class="umatan"><div class="line"><div class="num">3-8</div><div class="yen">1,690円</div></div></li>
 </div></body></html>"""
+
+
+@pytest.mark.parametrize("race_id,horse_number,status", [
+    ("202609040704", 7, "excluded"),
+    ("202609040706", 15, "did_not_finish"),
+])
+def test_actual_september_results_preserve_non_finishers(race_id, horse_number, status):
+    frame = parse_jra_result_html(Path(__file__).parent / "fixtures/jra" / f"{race_id}.html", race_id)
+    horse = frame.set_index("horse_number").loc[horse_number]
+    assert horse.result_status == status
+    assert pd.isna(horse.finish_position)
+    assert frame.finish_position.eq(1).sum() == 1
+    assert frame.result_status.eq("finished").sum() == len(frame) - 1
+    assert frame.attrs["official_refunds"] == {
+        "horse_numbers": [7] if status == "excluded" else [],
+        "frame_numbers": [],
+        "same_frame_numbers": [4] if status == "excluded" else [],
+    }
+
+
+@pytest.mark.parametrize("label,status", [
+    ("取消", "scratched"), ("失格", "disqualified"),
+    ("未確定", "unknown"), ("", "unknown"), ("不明1", "unknown"),
+])
+def test_non_numeric_finish_is_never_guessed(tmp_path, label, status):
+    path = tmp_path / "result.html"
+    path.write_text(RESULT_HTML.replace('<td class="place">2</td>', f'<td class="place">{label}</td>'), encoding="utf-8")
+    frame = parse_jra_result_html(path, "r1")
+    assert frame.iloc[1].result_status == status
+    assert pd.isna(frame.iloc[1].finish_position)
+
+
+@pytest.mark.parametrize("refund_text,expected", [
+    ("返還馬番　３番、８番　返還枠番　２枠　返還同枠　４枠", {
+        "horse_numbers": [3, 8], "frame_numbers": [2], "same_frame_numbers": [4],
+    }),
+    ("返還馬番 3番 返還対象不明", None),
+    ("返還馬番 3番 返還同枠", None),
+    ("返還馬番 0番", None),
+])
+def test_official_refund_sections_are_parsed_or_rejected(tmp_path, refund_text, expected):
+    path = tmp_path / "result.html"
+    html = RESULT_HTML.replace('<div class="refund_area">',
+        '<div class="refund_area"><div class="restoration"><dl><dt>返還</dt>'
+        f'<dd>{refund_text}</dd></dl></div>')
+    path.write_text(html, encoding="utf-8")
+    if expected is None:
+        with pytest.raises(ValueError, match="公式返還"):
+            parse_jra_result_html(path, "r1")
+    else:
+        assert parse_jra_result_html(path, "r1").attrs["official_refunds"] == expected
 
 
 class _Logger:

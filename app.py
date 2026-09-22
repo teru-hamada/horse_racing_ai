@@ -25,6 +25,7 @@ from src.public_api import (
     prediction_date_status,
     compare_prediction_date,
     compare_recommended_bets,
+    RESULT_STATUS_LABELS,
     predict_historical_race,
     predict_race,
     predict_race_date,
@@ -131,6 +132,7 @@ _PREDICTION_COLUMN_LABELS = {
     "top3_probability": "3着以内確率",
     "expected_value_index": "期待値指数",
     "finish_position": "実着順",
+    "result_status": "出走結果",
     "predicted_top3": "予測上位3頭",
     "actual_top3": "実際の3着以内",
     "top3_hit": "的中",
@@ -2931,6 +2933,7 @@ elif page == "レース予想":
                                 "bets": compare_recommended_bets(
                                     recommendations,
                                     comparison_summary.get("official_payouts", {}),
+                                    comparison_summary.get("official_refunds", {}),
                                 ),
                             }
                             if comparison_page_path is not None:
@@ -2974,7 +2977,7 @@ elif page == "レース予想":
                                 use_container_width=True,
                                 hide_index=True,
                             )
-                            st.caption("公式払戻金で判定しています。払戻情報を取得できない券種は未確認です。")
+                            st.caption("公式払戻・返還情報で判定しています。返還は100円当たり100円、情報を取得できない券種は未確認です。")
                         metric1, metric2, metric3, metric4 = st.columns(4)
                         metric1.metric(
                             "比較完了レース",
@@ -3006,6 +3009,8 @@ elif page == "レース予想":
                         if comparison_display.empty:
                             st.info("比較できる確定結果がまだありません。")
                         else:
+                            if "result_status" in comparison_display:
+                                comparison_display["result_status"] = comparison_display["result_status"].map(RESULT_STATUS_LABELS)
                             comparison_display["top3_probability"] = comparison_display[
                                 "top3_probability"
                             ].map(lambda value: f"{value:.1%}")
@@ -3022,7 +3027,7 @@ elif page == "レース予想":
                             comparison_columns = [
                                 "course_name", "race_number", "race_name",
                                 "prediction_rank", "horse_number", "horse_name",
-                                "top3_probability", "finish_position", "predicted_top3",
+                                "top3_probability", "finish_position", "result_status", "predicted_top3",
                                 "actual_top3", "top3_hit", "odds", "popularity",
                                 "expected_value_index", "jockey_name",
                             ]

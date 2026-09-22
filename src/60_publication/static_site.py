@@ -9,6 +9,7 @@ import re
 import pandas as pd
 
 compare_recommended_bets = _import_module('src.50_result_comparison.prediction_comparison').compare_recommended_bets
+RESULT_STATUS_LABELS = _import_module('src.50_result_comparison.prediction_comparison').RESULT_STATUS_LABELS
 
 
 _STYLE = """
@@ -55,6 +56,7 @@ def _displayed_bets(bets: pd.DataFrame) -> pd.DataFrame:
 def _bet_return_summary(
     bets: pd.DataFrame,
     official_payouts: dict[str, dict[str, int]],
+    official_refunds: dict[str, dict[str, list[int]]] | None = None,
 ) -> dict[str, object]:
     """Settle displayed 100-yen bets with JRA's official payout amounts."""
     displayed = _displayed_bets(bets)
@@ -63,13 +65,13 @@ def _bet_return_summary(
     hit_bets = 0
     payout = 0.0
 
-    for bet in compare_recommended_bets(displayed, official_payouts).itertuples():
+    for bet in compare_recommended_bets(displayed, official_payouts, official_refunds).itertuples():
         if bet.bet_result == "未確認":
             continue
         settled_bets += 1
         if bet.bet_result == "的中":
             hit_bets += 1
-            payout += float(bet.payout_per_100)
+        payout += float(bet.payout_per_100)
 
     return {
         "total_bets": total_bets,
@@ -193,7 +195,7 @@ def build_prediction_site(
             merge_keys = ["race_id", "horse_id"]
         comparison_columns = merge_keys + [
             column
-            for column in ("finish_position", "predicted_top3", "actual_top3", "top3_hit")
+            for column in ("finish_position", "result_status", "predicted_top3", "actual_top3", "top3_hit")
             if column in comparison.columns
         ]
         page_predictions = page_predictions.merge(
@@ -201,7 +203,7 @@ def build_prediction_site(
             on=merge_keys,
             how="left",
         )
-    for column in ("finish_position", "predicted_top3", "actual_top3", "top3_hit"):
+    for column in ("finish_position", "result_status", "predicted_top3", "actual_top3", "top3_hit"):
         if column not in page_predictions.columns:
             page_predictions[column] = pd.NA
 
@@ -214,14 +216,19 @@ def build_prediction_site(
             comparison_cells = ""
             if has_comparison:
                 finish_position = getattr(runner, "finish_position", pd.NA)
+                result_status = getattr(runner, "result_status", pd.NA)
+                status = str(result_status) if pd.notna(result_status) else "unknown"
+                finish_label = _text(finish_position) if pd.notna(finish_position) else _text(
+                    RESULT_STATUS_LABELS.get(status), "-"
+                )
                 top3_hit = getattr(runner, "top3_hit", pd.NA)
                 judgment = "-"
                 judgment_class = ""
-                if pd.notna(finish_position) and rank <= 3 and pd.notna(top3_hit):
+                if (pd.notna(finish_position) or status in {"did_not_finish", "disqualified"}) and rank <= 3 and pd.notna(top3_hit):
                     judgment = "的中" if bool(top3_hit) else "不的中"
                     judgment_class = "hit" if bool(top3_hit) else "miss"
                 comparison_cells = (
-                    f'<td>{_text(finish_position)}</td>'
+                    f'<td>{finish_label}</td>'
                     f'<td class="{judgment_class}">{judgment}</td>'
                 )
             rows.append(
@@ -247,7 +254,8 @@ def build_prediction_site(
                 )
             else:
                 race_bets = compare_recommended_bets(
-                    race_bets, (comparison_summary or {}).get("official_payouts", {})
+                    race_bets, (comparison_summary or {}).get("official_payouts", {}),
+                    (comparison_summary or {}).get("official_refunds", {}),
                 )
                 bet_rows = "".join(
                     "<tr>"
@@ -315,6 +323,7 @@ def build_prediction_site(
             returns = _bet_return_summary(
                 bet_recommendations,
                 summary.get("official_payouts", {}) or {},
+                summary.get("official_refunds", {}) or {},
             )
             if returns["total_bets"] == 0:
                 bet_return_text = '<span>おすすめ買い目の回収率: 対象なし</span>'

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+from importlib import import_module
 
 from src.public_api import (
     build_prediction_site,
@@ -260,3 +261,36 @@ def test_prediction_date_status_survives_application_restart(tmp_path):
         "2026-09-06", predictions_dir, site_dir
     ) == (True, None)
     assert latest_prediction_file("invalid", predictions_dir) is None
+
+
+def test_refunds_are_displayed_and_included_in_recovery_without_counting_as_hits(tmp_path):
+    predictions = pd.DataFrame([{
+        "race_id": "r1", "race_number": 4, "race_name": "新馬", "course_name": "阪神",
+        "horse_number": 7, "horse_name": "除外馬", "jockey_name": "騎手",
+        "prediction_rank": 1, "top3_probability": .5, "odds": 2., "expected_value_index": 1.,
+    }])
+    comparison = predictions.assign(finish_position=float('nan'), result_status="excluded",
+                                    predicted_top3=True, actual_top3=False, top3_hit=False)
+    bets = pd.DataFrame([{
+        "race_id": "r1", "bet_type": "win", "selection": selection,
+        "bet_type_label": "単勝", "estimated_probability": .5, "odds_used": 2.,
+        "recovery_rate_percent": 100., "bet_type_reliability": 1.,
+        "recommendation_score": 100., "expected_profit_per_100": 0.,
+    } for selection in ["7", "1", "15"]])
+    payouts = {"r1": {"win:1": 300}}
+    refunds = {"r1": {"horse_numbers": [7], "same_frame_numbers": [4]}}
+    module = import_module('src.60_publication.static_site')
+    summary = module._bet_return_summary(bets, payouts, refunds)
+    assert summary["settled_bets"] == 3
+    assert summary["hit_bets"] == 1
+    assert summary["payout"] == 400
+    assert summary["purchase"] == 300
+    page = build_prediction_site(predictions, "2026-09-21", "test", tmp_path / "docs",
+        comparison=comparison, comparison_summary={"requested_races": 1, "compared_races": 1,
+            "official_payouts": payouts, "official_refunds": refunds}, bet_recommendations=bets)
+    html = page.read_text(encoding="utf-8")
+    assert '<tr><td>返還</td><td>単勝</td>' in html
+    assert '<td>100円</td>' in html
+    assert '<td>除外</td>' in html
+    assert '的中 1 点・払戻 400円' in html
+    assert '回収率 133.3%' in html

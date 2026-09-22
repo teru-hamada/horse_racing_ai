@@ -200,6 +200,37 @@ def _selection(text: str, *, unordered: bool) -> str:
     return "-".join(map(str, values))
 
 
+def _finish(text: str) -> tuple[int | None, str]:
+    normalized = unicodedata.normalize("NFKC", text).strip()
+    if re.fullmatch(r"[1-9]\d*", normalized):
+        return int(normalized), "finished"
+    return None, {
+        "取消": "scratched", "除外": "excluded", "中止": "did_not_finish",
+        "失格": "disqualified",
+    }.get(normalized, "unknown")
+
+
+def _official_refunds(soup: BeautifulSoup) -> dict[str, list[int]]:
+    """Read horse refunds, whole-frame refunds and same-frame-only refunds."""
+    refunds = {"horse_numbers": [], "frame_numbers": [], "same_frame_numbers": []}
+    fields = {"馬番": "horse_numbers", "枠番": "frame_numbers",
+              "同枠": "same_frame_numbers"}
+    for node in soup.select(".refund_area .restoration dd"):
+        text = unicodedata.normalize("NFKC", node.get_text(" ", strip=True))
+        sections = re.split(r"返還(馬番|枠番|同枠)", text)
+        if sections[0].strip() or len(sections) == 1:
+            raise ValueError(f"公式返還情報を解析できません: {text}")
+        for label, values in zip(sections[1::2], sections[2::2]):
+            unit = "番" if label == "馬番" else "枠"
+            if not re.fullmatch(rf"[\s\d{unit}、,・]+", values) or not re.search(r"\d", values):
+                raise ValueError(f"公式返還情報を解析できません: {text}")
+            numbers = [int(value) for value in re.findall(r"\d+", values)]
+            if any(n < 1 or n > (18 if label == "馬番" else 8) for n in numbers):
+                raise ValueError(f"公式返還番号が不正です: {text}")
+            refunds[fields[label]].extend(numbers)
+    return {key: sorted(set(values)) for key, values in refunds.items()}
+
+
 def parse_jra_result_html(path: Path, race_id: str) -> pd.DataFrame:
     """保存済みJRA結果HTMLから着順と100円当たりの公式払戻金を読む。"""
     soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "lxml")
@@ -219,6 +250,8 @@ def parse_jra_result_html(path: Path, race_id: str) -> pd.DataFrame:
             frame_number = _integer(frame_node.get_text(" ", strip=True)) if frame_node else None
             if frame_number is None and frame_node and frame_node.find("img"):
                 frame_number = _integer(frame_node.find("img").get("alt", ""))
+            place = tr.select_one("td.place")
+            finish_position, result_status = _finish(place.get_text(" ", strip=True) if place else "")
             rows.append({
                 "race_id": race_id,
                 "horse_id": pd.NA,
@@ -226,9 +259,8 @@ def parse_jra_result_html(path: Path, race_id: str) -> pd.DataFrame:
                 "horse_name": tr.select_one("td.horse").get_text(" ", strip=True)
                 if tr.select_one("td.horse") else pd.NA,
                 "frame_number": frame_number,
-                "finish_position": _integer(
-                    tr.select_one("td.place").get_text(" ", strip=True)
-                ) if tr.select_one("td.place") else None,
+                "finish_position": finish_position,
+                "result_status": result_status,
             })
 
     payouts: dict[str, int] = {}
@@ -248,8 +280,9 @@ def parse_jra_result_html(path: Path, race_id: str) -> pd.DataFrame:
 
     frame = pd.DataFrame(rows, columns=[
         "race_id", "horse_id", "horse_number", "horse_name",
-        "frame_number", "finish_position",
+        "frame_number", "finish_position", "result_status",
     ])
     frame.attrs["official_payouts"] = payouts
+    frame.attrs["official_refunds"] = _official_refunds(soup)
     frame.attrs["source_html"] = str(path)
     return frame

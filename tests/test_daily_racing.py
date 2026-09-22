@@ -2,6 +2,7 @@ from importlib import import_module as _import_module
 from calendar import monthrange
 from datetime import date, datetime, timezone
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -150,3 +151,38 @@ def test_changed_previous_inputs_prevent_both_publications(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="変更"):
         daily.prepare_daily_publication(output, prior_site)
     assert before == {p.name:p.read_bytes() for p in prior_site.rglob('*') if p.is_file()}
+
+
+def test_real_excluded_and_stopped_races_complete_daily_run_and_publication(tmp_path, monkeypatch):
+    """Replay the two failed races using their published predictions and JRA HTML."""
+    repo = Path(__file__).resolve().parents[1]
+    ids = {"202609040704", "202609040706"}
+    site = tmp_path / "docs"
+    (site / "predictions").mkdir(parents=True)
+    for suffix in ("", "_bets"):
+        name = f"2026-09-21{suffix}.csv"
+        frame = pd.read_csv(repo / "docs/predictions" / name,
+                            dtype={"race_id": str, "horse_id": str, "selection": str})
+        frame[frame.race_id.isin(ids)].to_csv(site / "predictions" / name, index=False)
+    parser = _import_module('src.20_scrapers_html_collection.jra_results').parse_jra_result_html
+    def fetch(self, race_id, *args, **kwargs):
+        return parser(repo / "tests/fixtures/jra" / f"{race_id}.html", race_id)
+    monkeypatch.setattr(daily.JraResultFetcher, "fetch_result_for_comparison", fetch)
+    monkeypatch.setattr(daily.DateCollector, "race_ids_for_date", lambda *a, **kw: sorted(ids))
+    monkeypatch.setattr(daily, "check_meeting_day", lambda day, *a: day == date(2026, 9, 21))
+    output = tmp_path / "run"
+    result = daily.run_daily(date(2026, 9, 22), tmp_path, site, output, True)
+    assert result["status"] == "ok"
+    assert result["publication_required"]
+    report = json.loads((output / "comparison/report.json").read_text(encoding="utf-8"))
+    assert report["summary"]["compared_races"] == 2
+    assert report["summary"]["failed_races"] == 0
+    comparison = pd.read_csv(output / "comparison/comparison.csv", dtype={"race_id": str})
+    assert set(comparison.result_status) == {"finished", "excluded", "did_not_finish"}
+    judged = pd.read_csv(output / "comparison/bets_results.csv")
+    assert not judged.bet_result.eq("未確認").any()
+    assert daily.prepare_daily_publication(output, site)
+    html = (site / "predictions/2026-09-21.html").read_text(encoding="utf-8")
+    assert "<td>除外</td>" in html
+    assert "<td>中止</td>" in html
+    assert 'data-comparison-status="completed"' in html

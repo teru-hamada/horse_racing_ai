@@ -57,8 +57,6 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
         expected = predictions[predictions.race_id.eq(race_id)]
         if actual.horse_number.duplicated().any() or set(actual.horse_number) != set(expected.horse_number):
             raise ValueError("確定結果と予想の馬番が一致しません。")
-        if not actual.finish_position.gt(0).all() or not actual.finish_position.eq(1).any():
-            raise ValueError("確定着順不足（取消・中止等を含む）。手動確認が必要です。")
         payouts = actual.attrs.get("official_payouts", {})
         if not any(key.startswith("win:") for key in payouts):
             raise ValueError("公式払戻金が不足しています。")
@@ -68,10 +66,14 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     finally:
         fetcher.session.close()
     comparison.to_csv(output / "comparison.csv", index=False, encoding="utf-8-sig")
-    judged = compare_recommended_bets(bets, summary["official_payouts"])
+    judged = compare_recommended_bets(bets, summary["official_payouts"], summary["official_refunds"])
     judged.to_csv(output / "bets_results.csv", index=False, encoding="utf-8-sig")
     complete = summary["failed_races"] == 0 and summary["compared_races"] == len(ids)
     complete = complete and not judged.bet_result.eq("未確認").any()
+    for failure in summary["failures"]:
+        logger.warning("結果照合失敗: race_id=%s, %s", failure["race_id"], failure["message"])
+    if judged.bet_result.eq("未確認").any():
+        logger.warning("払戻・返還を確認できない買い目が %s 点あります。", int(judged.bet_result.eq("未確認").sum()))
     result = {"status": "ok" if complete else "incomplete", "race_date": str(day),
               "source_hashes": source_hashes, "summary": summary}
     (output / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
