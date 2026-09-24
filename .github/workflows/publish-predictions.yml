@@ -84,6 +84,17 @@ jobs:
           git fetch origin "$DEFAULT_BRANCH"
           git merge --ff-only "origin/$DEFAULT_BRANCH"
           python -m src.10_workflows.daily_racing --prepare-publication
+      - name: Collect race counts for public job status
+        if: always()
+        run: python -m src.60_publication.job_status --write-counts data/job_status/race_counts.json
+      - name: Save race counts for public job status
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: daily-racing-counts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data/job_status/race_counts.json
+          retention-days: 90
+          if-no-files-found: warn
       - name: Save predictions, comparisons and diagnostics
         if: always()
         uses: actions/upload-artifact@v7
