@@ -1,0 +1,72 @@
+# 公開済みの予想HTMLにジョブ実行状況を加え、GitHub Pagesへ配信する。
+# このワークフロー内では、レースの予想や結果照合は実行しない。
+name: 予想サイト配信・実行状況更新
+
+on:
+  # 予想ワークフローの終了後に起動する。失敗・中止・非開催日も履歴を更新する。
+  workflow_run:
+    workflows: ["日次予想・結果照合・公開"]
+    types: [completed]
+  # mainへ公開ファイルまたは配信処理の変更をpushした場合に起動する。
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/deploy-pages.yml"
+      - "src/60_publication/job_status.py"
+  # Actions画面から、公開済みデータの再配信を手動で実行できる。
+  workflow_dispatch:
+  # 予想ワークフローから直接呼び出し、公開用ファイルを登録したコミットを配信する。
+  workflow_call:
+    inputs:
+      commit:
+        # 呼び出し元が指定する、配信対象のコミットSHA。
+        required: true
+        type: string
+
+permissions:
+  # 実行履歴と、予想・結果照合の件数を保存したArtifactの読み取り。
+  actions: read
+  # リポジトリ内の公開ファイル・配信プログラムの読み取り。
+  contents: read
+  # Pagesへの配信と、配信時のOIDC認証に必要な権限。
+  pages: write
+  id-token: write
+
+concurrency:
+  # Pagesの配信が重ならないようにする。実行中の配信は中断しない。
+  group: deploy-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # 予想終了を契機に起動した場合は、デフォルトブランチの実行だけを配信対象にする。
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == github.event.repository.default_branch
+    environment:
+      # 配信先の環境名と、Actions画面に表示する公開URL。
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      # 直接呼び出しでは指定コミット、それ以外はデフォルトブランチを取得する。
+      # 失敗した予想の作業ファイルではなく、Gitに登録済みの公開ファイルを使用する。
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit || github.event.repository.default_branch }}
+      # 最新7件の実行日時・結果・予想レース数・結果照合数をdocs/job-status.htmlへ生成し、
+      # 予想一覧・各予想ページにリンクを追加する。この変更はGitへコミットしない。
+      - name: Build public job status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python -m src.60_publication.job_status --site docs
+      # リポジトリのPages設定を読み込み、配信を準備する。
+      - uses: actions/configure-pages@v5
+      # ジョブ実行状況を含むdocs全体を、Pages配信用のArtifactとして保存する。
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+      # 保存したArtifactをPagesへ配信する。公開URLは上のenvironment.urlへ渡す。
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

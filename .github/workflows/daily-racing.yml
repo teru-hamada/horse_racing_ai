@@ -1,55 +1,71 @@
-name: Publish predictions for a date
+# 当日予想と任意の前日結果照合を行い、検証済みの公開ファイルをGitへ登録・配信する。
+name: 日次予想・結果照合・公開
 
 on:
+  # 毎日、日本時間3:00（前日のUTC 18:00）に起動する。開始が遅れる場合もある。
   schedule:
-    # 18:00 UTC = 03:00 JST the following day.
     - cron: '0 18 * * *'
+  # Actions画面の「Run workflow」から日付を指定して手動実行する。
   workflow_dispatch:
     inputs:
+      # 予想対象日。前日照合を有効にすると、この日付の1日前を照合する。
       race_date:
         description: "開催日 (YYYY-MM-DD): オッズが公開されている日"
         required: true
         type: string
+      # 手動実行では任意。定期実行では常に前日照合を有効にする。
       compare_previous:
         description: "指定日の前日分も結果照合する"
         default: false
         type: boolean
 
+# 実行履歴・Artifactとリポジトリの読み取り、Pages配信・OIDC認証の権限。
 permissions:
   actions: read
   contents: read
   pages: write
   id-token: write
 
+# 予想・公開処理の同時実行を防ぐ。実行中の処理は中断しない。
 concurrency:
-  group: publish-predictions
+  group: daily-racing
   cancel-in-progress: false
 
 jobs:
   predict:
     permissions:
+      # 検証済みの公開ファイルをデフォルトブランチへpushするための権限。
       contents: write
+    # 後続の配信ジョブへ、対象コミットと公開の要否を渡す。
     outputs:
       commit: ${{ steps.publish.outputs.commit }}
       publication_required: ${{ steps.prepare.outputs.publication_required }}
     runs-on: ubuntu-latest
+    # HTML取得などで処理が長引いても、最大2時間で打ち切る。
     timeout-minutes: 120
     env:
+      # 日本語をUTF-8で扱い、Pythonのログをためずに出力する。
       PYTHONUTF8: "1"
       PYTHONUNBUFFERED: "1"
+      # OpenMPのスレッド数を制限し、CPUの過剰な並列使用を抑える。
       OMP_NUM_THREADS: "1"
     steps:
+      # 別ブランチを選んだ手動実行は、予想・公開を始める前に停止する。
       - name: Require the default branch
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+      # デフォルトブランチのコードとデータを取得する。
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.repository.default_branch }}
+          # 公開直前のリモート取り込みに備え、Git履歴を省略せず取得する。
           fetch-depth: 0
+      # モデルの実行パッケージに記録されたPython版を使用する。
       - uses: actions/setup-python@v6
         with:
           python-version-file: prediction_bundle/.python-version
+      # 記録済みのPyTorch CPU版と固定バージョンの依存ライブラリを準備する。
       - name: Install pinned CPU prediction environment
         shell: bash
         run: |
@@ -62,6 +78,8 @@ jobs:
                           '--index-url', 'https://download.pytorch.org/whl/cpu'], check=True)
           PY
           python -m pip install -r prediction_bundle/requirements.txt
+      # 定期実行は処理開始時の日本時間の当日、手動実行は指定日を予想する。
+      # 前日照合には公開済み予想を使う。非開催日は正常終了し、不足・失敗は終了コードへ反映する。
       - name: Predict today and compare previous results
         env:
           RACE_DATE: ${{ inputs.race_date }}
@@ -76,6 +94,8 @@ jobs:
               args += ['--with-previous']
           raise SystemExit(subprocess.call(args))
           PY
+      # 予想・照合の成功後に、最新のリモート更新を取り込んでdocsを更新する。
+      # 履歴が分岐していれば停止する。両日とも非開催なら公開不要と判定する。
       - name: Update public files only after all races pass
         id: prepare
         env:
@@ -84,9 +104,12 @@ jobs:
           git fetch origin "$DEFAULT_BRANCH"
           git merge --ff-only "origin/$DEFAULT_BRANCH"
           python -m src.10_workflows.daily_racing --prepare-publication
+      # 前段が失敗しても、残っている処理レポートから予想・照合の完了件数を集計する。
       - name: Collect race counts for public job status
         if: always()
         run: python -m src.60_publication.job_status --write-counts data/job_status/race_counts.json
+      # ジョブ実行状況ページが参照する件数ファイルを90日間保存する。
+      # 実行IDと試行回数を名前に含め、再実行前の件数と混同しないようにする。
       - name: Save race counts for public job status
         if: always()
         uses: actions/upload-artifact@v7
@@ -95,6 +118,8 @@ jobs:
           path: data/job_status/race_counts.json
           retention-days: 90
           if-no-files-found: warn
+      # 成否にかかわらず、生成済みの予想・照合結果・ログ・取得HTMLなどを3日間保存する。
+      # 展開したモデルや作業用DBを含むworkフォルダは、大きいため保存対象から除く。
       - name: Save predictions, comparisons and diagnostics
         if: always()
         uses: actions/upload-artifact@v7
@@ -105,6 +130,8 @@ jobs:
             !data/daily_racing/**/work/**
           retention-days: 3
           if-no-files-found: warn
+      # 公開が必要な場合だけdocsを登録する。差分がなければcommit・pushを省略する。
+      # 差分の有無にかかわらず、後続のPages配信用に現在のコミットSHAを出力する。
       - name: Commit and push changed predictions
         id: publish
         if: steps.prepare.outputs.publication_required == 'true'
@@ -122,10 +149,13 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+  # 予想ジョブ成功後、公開が必要ならdeploy-pages.ymlを呼び出して対象コミットを配信する。
+  # GITHUB_TOKENによるpushだけに配信開始を依存させず、差分がない場合も再配信できる。
+  # 失敗・非開催日などの実行状況更新は、deploy-pages.yml側のworkflow_runでも起動する。
   deploy:
     needs: predict
     if: needs.predict.outputs.publication_required == 'true'
-    uses: ./.github/workflows/pages.yml
+    uses: ./.github/workflows/deploy-pages.yml
     with:
       commit: ${{ needs.predict.outputs.commit }}
     permissions:

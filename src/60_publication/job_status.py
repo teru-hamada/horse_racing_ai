@@ -118,7 +118,7 @@ def fetch_counts(repository: str, run: dict, token: str) -> dict:
 def fetch_runs(repository: str, branch: str, token: str) -> list[dict]:
     query = urlencode({"branch": branch, "per_page": 100})
     request = api_request(
-        f"https://api.github.com/repos/{repository}/actions/workflows/publish-predictions.yml/runs?{query}", token)
+        f"https://api.github.com/repos/{repository}/actions/workflows/daily-racing.yml/runs?{query}", token)
     with urlopen(request, timeout=30) as response:
         payload = json.load(response)
     # Missing or invalid API data must not be presented as an empty run history.
