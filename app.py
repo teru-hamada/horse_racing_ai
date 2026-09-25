@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import uuid
 from datetime import date, datetime, timedelta
@@ -27,7 +26,6 @@ from src.public_api import (
     compare_recommended_bets,
     RESULT_STATUS_LABELS,
     predict_historical_race,
-    predict_race,
     predict_race_date,
     race_record_summary,
     race_record_years,
@@ -110,12 +108,6 @@ st.markdown(
 if "ui_logs" not in st.session_state:
     st.session_state.ui_logs = []
 
-if "scraping_urls" not in st.session_state:
-    st.session_state.scraping_urls = []
-
-
-_URL_PATTERN = re.compile(r"https?://[^\s<>'\"\]\)]+", re.IGNORECASE)
-
 _PREDICTION_COLUMN_LABELS = {
     "prediction_rank": "予測順位",
     "race_id": "レースID",
@@ -147,91 +139,6 @@ def _cached_jravan_weather(
     """Avoid repeated JRA-VAN requests during Streamlit reruns."""
 
     return fetch_jravan_weather(course_name, target_date)
-
-
-def _extract_urls(value: object) -> list[str]:
-    """文字列やコレクションからHTTP(S) URLを重複なく抽出する。"""
-    if value is None:
-        return []
-
-    if isinstance(value, str):
-        candidates = _URL_PATTERN.findall(value)
-    elif isinstance(value, dict):
-        candidates = []
-        for item in value.values():
-            candidates.extend(_extract_urls(item))
-    elif isinstance(value, (list, tuple, set)):
-        candidates = []
-        for item in value:
-            candidates.extend(_extract_urls(item))
-    else:
-        candidates = _URL_PATTERN.findall(str(value))
-
-    cleaned: list[str] = []
-    for url in candidates:
-        normalized = url.rstrip(".,;:!?、。】」』")
-        if normalized and normalized not in cleaned:
-            cleaned.append(normalized)
-    return cleaned
-
-
-def _append_scraping_urls(urls: list[str]) -> None:
-    """セッション内の取得URL一覧へ、順序を維持して追加する。"""
-    current = list(st.session_state.scraping_urls)
-    for url in urls:
-        if url not in current:
-            current.append(url)
-    st.session_state.scraping_urls = current[-1000:]
-
-
-def _frame_source_urls(frame: pd.DataFrame | None) -> list[str]:
-    """取得結果DataFrameに含まれるURL列からURLを抽出する。"""
-    if frame is None or frame.empty:
-        return []
-
-    urls: list[str] = []
-    candidate_columns = [
-        "source_url",
-        "race_url",
-        "url",
-        "page_url",
-        "request_url",
-    ]
-    for column in candidate_columns:
-        if column not in frame.columns:
-            continue
-        for value in frame[column].dropna().astype(str).tolist():
-            for url in _extract_urls(value):
-                if url not in urls:
-                    urls.append(url)
-    return urls
-
-
-def _scraper_debug_urls(scraper: object) -> list[str]:
-    """スクレイパーが保持している代表的な属性からURLを回収する。"""
-    urls: list[str] = []
-    candidate_attributes = [
-        "current_url",
-        "last_url",
-        "requested_url",
-        "requested_urls",
-        "visited_urls",
-        "race_urls",
-        "source_urls",
-        "diagnostics",
-        "debug_info",
-    ]
-    for name in candidate_attributes:
-        if not hasattr(scraper, name):
-            continue
-        try:
-            value = getattr(scraper, name)
-        except Exception:
-            continue
-        for url in _extract_urls(value):
-            if url not in urls:
-                urls.append(url)
-    return urls
 
 
 def ui_log_callback(line: str) -> None:
@@ -496,7 +403,6 @@ def _delete_model_run(selected_model: pd.Series) -> dict[str, object]:
 
 def _clear_ui_state() -> None:
     st.session_state.ui_logs = []
-    st.session_state.scraping_urls = []
     st.cache_data.clear()
 
 

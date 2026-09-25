@@ -75,7 +75,7 @@ def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = 
     try:
         collector = NetkeibaHtmlCollector(logger)
         try:
-            # fetch_card also downloads pedigrees; this probe only needs the card.
+            # This acquisition step only needs the card, without pedigree downloads.
             html = collector._download(
                 collector.CARD_URL.format(race_id=race_id),
                 output / "card_raw.html", force=True,

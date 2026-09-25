@@ -9,7 +9,6 @@ from io import StringIO
 from pathlib import Path
 from typing import Iterable
 
-import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup, Comment
@@ -727,56 +726,6 @@ class NetkeibaCommon:
             )
         return race_ids
 
-    def collect_date_range(
-        self,
-        start_date: date,
-        end_date: date,
-        dataset_type: str,
-        run_id: str,
-        force: bool = False,
-        progress_callback=None,
-    ) -> pd.DataFrame:
-        if end_date < start_date:
-            raise ValueError("終了日は開始日以降にしてください。")
-        dates = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-        all_records: list[pd.DataFrame] = []
-        total_dates = len(dates)
-        for date_index, target_date in enumerate(dates, start=1):
-            storage_key = str(target_date.year)
-            race_ids = self.race_ids_for_date(
-                target_date,
-                storage_key,
-                dataset_type,
-                force=force,
-            )
-            if not race_ids:
-                self.logger.error(
-                    f"{target_date}: 詳細ページへ進めるレースIDが0件です。"
-                )
-                if progress_callback:
-                    progress_callback(date_index / total_dates)
-                continue
-
-            for race_index, race_id in enumerate(race_ids, start=1):
-                try:
-                    if dataset_type == "historical":
-                        frame = self.fetch_result(
-                            race_id, target_date, storage_key, force=force
-                        )
-                    else:
-                        frame = self.fetch_card(
-                            race_id, target_date, storage_key, force=force
-                        )
-                    if not frame.empty:
-                        all_records.append(frame)
-                    self.logger.info(f"{target_date} {race_id}: {len(frame)}頭を解析")
-                except Exception as exc:  # noqa: BLE001 - continue other races and retain raw HTML/logs
-                    self.logger.error(f"{target_date} {race_id}: 取得・解析失敗: {exc}")
-                if progress_callback:
-                    fraction = ((date_index - 1) + race_index / max(len(race_ids), 1)) / total_dates
-                    progress_callback(min(float(fraction), 1.0))
-        return pd.concat(all_records, ignore_index=True) if all_records else pd.DataFrame()
-
     def _collect_html_date_range(
         self,
         start_date: date,
@@ -1002,112 +951,6 @@ class NetkeibaCommon:
             if progress_callback:
                 progress_callback(index / len(dates))
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-    def fetch_card(self, race_id: str, race_date: date, run_id: str, force: bool = False) -> pd.DataFrame:
-        url = self.CARD_URL.format(race_id=race_id)
-        self.logger.info(f"出馬表解析対象URL: {url}")
-        cache_path = self._cache_path(
-            "upcoming",
-            run_id,
-            "card",
-            race_id,
-        )
-        html = self._download(
-            url,
-            cache_path,
-            force=force,
-        )
-        cache_path = self._resolve_race_cache_path(cache_path)
-        html = self._enrich_upcoming_html_with_odds(
-            html,
-            race_id,
-            cache_path,
-            force=force,
-        )
-        frame = self._parse_page(
-            html,
-            race_id,
-            race_date,
-            dataset_type="upcoming",
-        )
-        return self._add_pedigrees(
-            frame,
-            str(race_date.year),
-            dataset_type="upcoming",
-            download=True,
-            force=force,
-        )
-
-    def fetch_result(
-        self,
-        race_id: str,
-        race_date: date,
-        run_id: str,
-        force: bool = False,
-    ) -> pd.DataFrame:
-        """
-        過去レース結果は旧DBページだけを取得する。
-
-        保存先:
-            raw_html/historical/<year>/result/<race_id>.html
-        """
-        url = self.RESULT_FALLBACK_URL.format(race_id=race_id)
-        cache = self._cache_path(
-            "historical", run_id, "result", race_id
-        )
-
-        self.logger.info(f"過去結果解析対象URL: {url}")
-
-        html = self._download(
-            url,
-            cache,
-            force=force,
-        )
-
-        frame = self._parse_page(
-            html,
-            race_id,
-            race_date,
-            dataset_type="historical",
-        )
-
-        race_name = (
-            frame["race_name"].dropna().iloc[0]
-            if not frame.empty
-            and "race_name" in frame.columns
-            and frame["race_name"].notna().any()
-            else "レース名不明"
-        )
-        course_name = (
-            frame["course_name"].dropna().iloc[0]
-            if not frame.empty
-            and "course_name" in frame.columns
-            and frame["course_name"].notna().any()
-            else "開催地不明"
-        )
-        race_number = (
-            frame["race_number"].dropna().iloc[0]
-            if not frame.empty
-            and "race_number" in frame.columns
-            and frame["race_number"].notna().any()
-            else None
-        )
-
-        self._rename_race_html(
-            cache,
-            race_id,
-            race_date,
-            race_name,
-            course_name,
-            race_number,
-        )
-        return self._add_pedigrees(
-            frame,
-            str(race_date.year),
-            dataset_type="historical",
-            download=True,
-            force=force,
-        )
 
     def _select_table(self, html: str, dataset_type: str) -> pd.DataFrame:
         # ページ全体を pd.read_html() に渡すと、古い保存HTMLに含まれる

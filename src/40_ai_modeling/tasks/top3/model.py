@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from importlib import import_module
 from pathlib import Path
@@ -14,10 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score, log_loss, precision_score, recall_score, roc_auc_score
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.metrics import accuracy_score, log_loss, precision_score, recall_score
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
