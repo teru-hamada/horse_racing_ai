@@ -14,6 +14,28 @@ result_label = _import_module('src.60_publication.job_status').result_label
 module = _import_module('src.60_publication.job_status')
 
 
+@pytest.mark.parametrize("result,label", [("success", "成功"), ("failure", "失敗"),
+                                         ("skipped", "スキップ")])
+def test_current_prediction_result_does_not_claim_final_success(result, label):
+    runs = [{"id": 42, "run_attempt": 2, "status": "in_progress", "conclusion": None,
+             "run_started_at": "2026-09-20T18:00:00Z"},
+            {"id": 41, "run_attempt": 1, "status": "completed", "conclusion": "failure",
+             "run_started_at": "2026-09-19T18:00:00Z"}]
+    module.annotate_current_run(runs, "42", "2", result)
+    page = render_status(runs, datetime.now(timezone.utc))
+    assert f"<td>{label}</td><td>配信中（最終結果未確定）</td>" in page
+    assert "<td>—</td><td>失敗</td>" in page
+    assert "prediction_result" not in runs[1]
+
+
+def test_current_result_does_not_overwrite_previous_attempt():
+    runs = [{"id": 42, "run_attempt": 1, "status": "completed", "conclusion": "failure"}]
+    module.annotate_current_run(runs, "42", "2", "success")
+    assert "prediction_result" not in runs[0]
+    with pytest.raises(ValueError):
+        module.annotate_current_run(runs, "42", "1", "unknown")
+
+
 @pytest.mark.parametrize("status,conclusion,label", [
     ("completed", "success", "成功"), ("completed", "failure", "失敗"),
     ("completed", "timed_out", "失敗"), ("completed", "cancelled", "中止"),

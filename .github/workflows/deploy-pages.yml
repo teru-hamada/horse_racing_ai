@@ -1,72 +1,83 @@
+# .github/workflows/ にワークフロー用の .yml または .yaml ファイルを置き、GitHubへコミット・pushすると自動で認識される。別途登録操作は不要。
 # 公開済みの予想HTMLにジョブ実行状況を加え、GitHub Pagesへ配信する。
 # このワークフロー内では、レースの予想や結果照合は実行しない。
+
+# GitHUb Actionsのワークフローの表示名。
 name: 予想サイト配信・実行状況更新
 
+# **「いつこのワークフローを実行するか」というきっかけ（トリガー）**を指定。
 on:
-  # 予想ワークフローの終了後に起動する。失敗・中止・非開催日も履歴を更新する。
-  workflow_run:
-    workflows: ["日次予想・結果照合・公開"]
-    types: [completed]
-  # mainへ公開ファイルまたは配信処理の変更をpushした場合に起動する。
-  push:
-    branches: [main]
-    paths:
-      - "docs/**"
-      - ".github/workflows/deploy-pages.yml"
-      - "src/60_publication/job_status.py"
-  # Actions画面から、公開済みデータの再配信を手動で実行できる。
-  workflow_dispatch:
   # 予想ワークフローから直接呼び出し、公開用ファイルを登録したコミットを配信する。
   workflow_call:
     inputs:
       commit:
-        # 呼び出し元が指定する、配信対象のコミットSHA。
+        # 公開成功時のコミットSHA。省略時は公開済みのデフォルトブランチを使う。
+        type: string
+      prediction_result:
+        # 配信中は全体の結果が未確定なので、予想ジョブの結果を別に表示する。
         required: true
         type: string
 
+# ワークフローが使う GITHUB_TOKEN に与える権限。
 permissions:
   # 実行履歴と、予想・結果照合の件数を保存したArtifactの読み取り。
   actions: read
-  # リポジトリ内の公開ファイル・配信プログラムの読み取り。
+  # リポジトリ内のコードやファイルの読み取り。
   contents: read
-  # Pagesへの配信と、配信時のOIDC認証に必要な権限。
+  # GitHub Pagesへの配信。
   pages: write
+  # 配信時の認証に使うOIDCトークンの発行。
   id-token: write
 
-concurrency:
-  # Pagesの配信が重ならないようにする。実行中の配信は中断しない。
-  group: deploy-pages
-  cancel-in-progress: false
+# 配信を同時実行せず、実行中の配信が終了するまで待機する。
+concurrency: deploy-pages
 
+# ワークフロー内のジョブ定義。ジョブは並列実行される。
 jobs:
+  # deploy：生成したページを配信するジョブ。
   deploy:
-    # 予想終了を契機に起動した場合は、デフォルトブランチの実行だけを配信対象にする。
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == github.event.repository.default_branch
+    # 別ブランチからの日次処理では公開しない。
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    # ジョブの配信先となる環境を指定する設定。
     environment:
-      # 配信先の環境名と、Actions画面に表示する公開URL。
+      # 配信先の環境名。
       name: github-pages
+      # Actions画面に表示する公開URL。
       url: ${{ steps.deployment.outputs.page_url }}
+    # ジョブの実行環境。ubuntu-latestはGitHubが用意する最新のUbuntu。
     runs-on: ubuntu-latest
+    # ジョブ内で実行する個々の処理を、実行順に並べる定義。
     steps:
-      # 直接呼び出しでは指定コミット、それ以外はデフォルトブランチを取得する。
-      # 失敗した予想の作業ファイルではなく、Gitに登録済みの公開ファイルを使用する。
-      - uses: actions/checkout@v6
+      # １．Checkout public files：リポジトリのファイルを、配信処理を実行する仮想マシンに取得する。
+      - name: Checkout public files
+        # 実行する処理の種類。actions/checkout@v6は、リポジトリのファイルを取得する処理。
+        uses: actions/checkout@v6
+        # 取得対象(inputs.commit ：日次処理から渡されたコミット時点のファイル、default_branch ：省略時のデフォルトブランチ)を指定する。
         with:
           ref: ${{ inputs.commit || github.event.repository.default_branch }}
-      # 最新7件の実行日時・結果・予想レース数・結果照合数をdocs/job-status.htmlへ生成し、
-      # 予想一覧・各予想ページにリンクを追加する。この変更はGitへコミットしない。
+      # ２．Build public job status：予想ジョブの実行状況を、公開用HTMLに反映する。
       - name: Build public job status
+        # 実行プログラム
+        run: python -m src.60_publication.job_status
+        # 実行環境に渡す変数
         env:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: python -m src.60_publication.job_status --site docs
-      # リポジトリのPages設定を読み込み、配信を準備する。
-      - uses: actions/configure-pages@v5
-      # ジョブ実行状況を含むdocs全体を、Pages配信用のArtifactとして保存する。
-      - uses: actions/upload-pages-artifact@v4
+          PREDICTION_RESULT: ${{ inputs.prediction_result }}
+      # ３．Configure GitHub Pages：GitHub Pagesの配信設定を行う。
+      - name: Configure GitHub Pages
+        # 実行する処理の種類。actions/configure-pages@v5は、GitHub Pagesの配信設定を行う処理。
+        uses: actions/configure-pages@v5
+      # ４．Upload Pages artifact：生成したPages用のArtifactをアップロードする。
+      - name: Upload Pages artifact
+        # 実行する処理の種類。actions/upload-pages-artifact@v4は、生成したPages用のArtifactをアップロードする処理。
+        uses: actions/upload-pages-artifact@v4
+        # アップロード対象のディレクトリを指定する。
         with:
           path: docs
-      # 保存したArtifactをPagesへ配信する。公開URLは上のenvironment.urlへ渡す。
+      # ５．Deploy GitHub Pages：アップロードしたPages用のArtifactを、GitHub Pagesへ配信する。
       - name: Deploy GitHub Pages
+        # ジョブ内でのIDを指定することで、後続の処理から配信結果を参照できる。
         id: deployment
+        # 実行する処理の種類。actions/deploy-pages@v4は、アップロードしたPages用のArtifactを、GitHub Pagesへ配信する処理。
         uses: actions/deploy-pages@v4

@@ -1,12 +1,18 @@
+# .github/workflows/ にワークフロー用の .yml または .yaml ファイルを置き、GitHubへコミット・pushすると自動で認識される。別途登録操作は不要。
 # 当日予想と任意の前日結果照合を行い、検証済みの公開ファイルをGitへ登録・配信する。
+
+# GitHUb Actionsのワークフローの表示名。
 name: 日次予想・結果照合・公開
 
+# **「いつこのワークフローを実行するか」というきっかけ（トリガー）**を指定。
 on:
+  # schedule：指定したスケジュールになったとき。
   # 毎日、日本時間3:00（前日のUTC 18:00）に起動する。開始が遅れる場合もある。
   schedule:
     - cron: '0 18 * * *'
-  # Actions画面の「Run workflow」から日付を指定して手動実行する。
+  # workflow_dispatch：Actions画面などから手動実行したとき。
   workflow_dispatch:
+    # Actions画面などから手動実行したときの入力。
     inputs:
       # 予想対象日。前日照合を有効にすると、この日付の1日前を照合する。
       race_date:
@@ -19,55 +25,73 @@ on:
         default: false
         type: boolean
 
-# 実行履歴・Artifactとリポジトリの読み取り、Pages配信・OIDC認証の権限。
+# ワークフローが使う GITHUB_TOKEN に与える権限。
 permissions:
+  # 実行履歴と、予想・結果照合の件数を保存したArtifactの読み取り。
   actions: read
+  # リポジトリ内のコードやファイルの読み取り。
   contents: read
+  # GitHub Pagesへの配信。
   pages: write
+  # 配信時の認証に使うOIDCトークンの発行。
   id-token: write
 
-# 予想・公開処理の同時実行を防ぐ。実行中の処理は中断しない。
+# 同じグループの処理が同時に実行されないように制御する設定。
 concurrency:
+  # 同時実行を制御するグループ名。
   group: daily-racing
+  # 実行中の配信を中断せず、次の配信を待機させる。
   cancel-in-progress: false
 
+# ワークフロー内のジョブ定義。ジョブは並列実行される。
 jobs:
+  # predict：当日の予想を実行するジョブ。
   predict:
+    # predictに与える権限。
     permissions:
       # 検証済みの公開ファイルをデフォルトブランチへpushするための権限。
       contents: write
-    # 後続の配信ジョブへ、対象コミットと公開の要否を渡す。
+    # 後続の配信ジョブへ、対象コミットを渡す。
     outputs:
       commit: ${{ steps.publish.outputs.commit }}
-      publication_required: ${{ steps.prepare.outputs.publication_required }}
+    # ジョブの実行環境。ubuntu-latestはGitHubが用意する最新のUbuntu。
     runs-on: ubuntu-latest
     # HTML取得などで処理が長引いても、最大2時間で打ち切る。
     timeout-minutes: 120
+    # 実行時の環境変数を設定する。ジョブ内のすべてのステップで使える。
     env:
-      # 日本語をUTF-8で扱い、Pythonのログをためずに出力する。
+      # 日本語をUTF-8で扱う。
       PYTHONUTF8: "1"
+      # Pythonの標準出力・標準エラーをバッファリングせず、リアルタイムでログに出力する。
       PYTHONUNBUFFERED: "1"
       # OpenMPのスレッド数を制限し、CPUの過剰な並列使用を抑える。
       OMP_NUM_THREADS: "1"
+    # ジョブ内で実行する個々の処理を、実行順に並べる定義。
     steps:
-      # 別ブランチを選んだ手動実行は、予想・公開を始める前に停止する。
+      # １．Require the default branch：デフォルトブランチ以外からの実行は中断する。
       - name: Require the default branch
+        # 実行する処理の種類。testは、条件式の真偽を判定する処理。
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
-      # デフォルトブランチのコードとデータを取得する。
-      - uses: actions/checkout@v6
+      # ２．Checkout prediction files：リポジトリのファイルを、予想処理を実行する仮想マシンに取得する。
+      - name: Checkout prediction files
+        # 実行する処理の種類。actions/checkout@v6は、リポジトリのファイルを取得する処理。
+        uses: actions/checkout@v6
+        # 取得対象(default_branch ：省略時のデフォルトブランチ)を指定する。
         with:
           ref: ${{ github.event.repository.default_branch }}
           # 公開直前のリモート取り込みに備え、Git履歴を省略せず取得する。
           fetch-depth: 0
-      # モデルの実行パッケージに記録されたPython版を使用する。
-      - uses: actions/setup-python@v6
+      # ３．Set up Python：Pythonの実行環境を準備する。
+      - name: Set up Python
+        # 実行する処理の種類。actions/setup-python@v6は、Pythonの実行環境を準備する処理。
+        uses: actions/setup-python@v6
+        # 予想処理のPythonバージョンを、リポジトリ内のファイルから指定する。
         with:
           python-version-file: prediction_bundle/.python-version
-      # 記録済みのPyTorch CPU版と固定バージョンの依存ライブラリを準備する。
+      # ４．Install pinned CPU prediction environment：予想処理のPython依存パッケージを、リポジトリ内のファイルから指定する。
       - name: Install pinned CPU prediction environment
-        shell: bash
         run: |
           python - <<'PY'
           import json, subprocess, sys
@@ -78,12 +102,10 @@ jobs:
                           '--index-url', 'https://download.pytorch.org/whl/cpu'], check=True)
           PY
           python -m pip install -r prediction_bundle/requirements.txt
-      # 定期実行は処理開始時の日本時間の当日、手動実行は指定日を予想する。
-      # 前日照合には公開済み予想を使う。非開催日は正常終了し、不足・失敗は終了コードへ反映する。
+        shell: bash
+      # ５．Predict today and compare previous results：当日のレースを予想し、過去の結果と照合する。
       - name: Predict today and compare previous results
-        env:
-          RACE_DATE: ${{ inputs.race_date }}
-          COMPARE_PREVIOUS: ${{ github.event_name == 'schedule' || inputs.compare_previous }}
+        # 実行する処理の種類。python -m src.10_workflows.daily_racingは、当日の予想と前日照合を行う処理。
         run: |
           python - <<'PY'
           import os, subprocess, sys
@@ -94,49 +116,64 @@ jobs:
               args += ['--with-previous']
           raise SystemExit(subprocess.call(args))
           PY
-      # 予想・照合の成功後に、最新のリモート更新を取り込んでdocsを更新する。
-      # 履歴が分岐していれば停止する。両日とも非開催なら公開不要と判定する。
-      - name: Update public files only after all races pass
-        id: prepare
+        # 実行環境に渡す変数
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # 予想対象日。前日照合を有効にすると、この日付の1日前を照合する。
+          RACE_DATE: ${{ inputs.race_date }}
+          # 手動実行では任意。定期実行では常に前日照合を有効にする。
+          COMPARE_PREVIOUS: ${{ github.event_name == 'schedule' || inputs.compare_previous }}
+      # ６．Update public files only after all races pass：すべてのレースが正常に予想・照合された場合のみ、公開用ファイルを更新する。
+      - name: Update public files only after all races pass
+        # idを指定することで、後続の処理から公開が必要かどうかを参照できる。
+        id: prepare
+        # 実行する処理の種類。python -m src.10_workflows.daily_racing --prepare-publicationは、公開用ファイルを更新する処理。 
         run: |
           git fetch origin "$DEFAULT_BRANCH"
           git merge --ff-only "origin/$DEFAULT_BRANCH"
           python -m src.10_workflows.daily_racing --prepare-publication
-      # 前段が失敗しても、残っている処理レポートから予想・照合の完了件数を集計する。
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      # ７．Collect race counts for public job status：公開用ジョブ状況ページが参照する件数ファイルを生成する。
       - name: Collect race counts for public job status
+        # always()を指定することで、前段の処理が失敗しても実行される。
         if: always()
+        # 実行する処理の種類。python -m src.60_publication.job_status --write-countsは、公開用ジョブ状況ページが参照する件数ファイルを生成する処理。
         run: python -m src.60_publication.job_status --write-counts data/job_status/race_counts.json
-      # ジョブ実行状況ページが参照する件数ファイルを90日間保存する。
-      # 実行IDと試行回数を名前に含め、再実行前の件数と混同しないようにする。
+      # ８．Save race counts for public job status：公開用ジョブ状況ページが参照する件数ファイルを、Artifactとして保存する。
       - name: Save race counts for public job status
+        # always()を指定することで、前段の処理が失敗しても実行される。
         if: always()
+        # 実行する処理の種類。actions/upload-artifact@v7は、指定したファイルをArtifactとして保存する処理。
         uses: actions/upload-artifact@v7
         with:
+          # Artifact名を指定する。run_idとrun_attemptを含めることで、同一ワークフローの複数回実行でもArtifact名が重複しない。
           name: daily-racing-counts-${{ github.run_id }}-${{ github.run_attempt }}
+          # アップロード対象のファイルを指定する。
           path: data/job_status/race_counts.json
+          # Artifactの保存期間を指定する。90日間保存する。
           retention-days: 90
-          if-no-files-found: warn
-      # 成否にかかわらず、生成済みの予想・照合結果・ログ・取得HTMLなどを3日間保存する。
-      # 展開したモデルや作業用DBを含むworkフォルダは、大きいため保存対象から除く。
+      # ９．Save predictions, comparisons and diagnostics：予想・照合の結果や診断情報を、Artifactとして保存する。
       - name: Save predictions, comparisons and diagnostics
+        # always()を指定することで、前段の処理が失敗しても実行される。
         if: always()
+        # 実行する処理の種類。 actions/upload-artifact@v7は、指定したファイルをArtifactとして保存する処理。
         uses: actions/upload-artifact@v7
         with:
+          # Artifact名を指定する。run_idとrun_attemptを含めることで、同一ワークフローの複数回実行でもArtifact名が重複しない。
           name: daily-racing-${{ github.run_id }}-${{ github.run_attempt }}
+          # アップロード対象のディレクトリを指定する。
           path: |
             data/daily_racing/
             !data/daily_racing/**/work/**
+          # Artifactの保存期間を指定する。3日間保存する。
           retention-days: 3
-          if-no-files-found: warn
-      # 公開が必要な場合だけdocsを登録する。差分がなければcommit・pushを省略する。
-      # 差分の有無にかかわらず、後続のPages配信用に現在のコミットSHAを出力する。
+      # １０．Commit and push changed predictions：公開用ファイルに変更があれば、デフォルトブランチへコミット・pushする。
       - name: Commit and push changed predictions
+        # ジョブ内でのIDを指定することで、後続の処理からコミット結果を参照できる。
         id: publish
+        # 前段の処理で公開用ファイルに変更があれば、デフォルトブランチへコミット・pushする。
         if: steps.prepare.outputs.publication_required == 'true'
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # 実行する処理の種類。bashは、シェルスクリプトを実行する処理。
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -148,18 +185,28 @@ jobs:
             git push origin "HEAD:$DEFAULT_BRANCH"
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
-  # 予想ジョブ成功後、公開が必要ならdeploy-pages.ymlを呼び出して対象コミットを配信する。
-  # GITHUB_TOKENによるpushだけに配信開始を依存させず、差分がない場合も再配信できる。
-  # 失敗・非開催日などの実行状況更新は、deploy-pages.yml側のworkflow_runでも起動する。
+  # deploy：生成したページを配信するジョブ
   deploy:
+    # deployに与える権限。
+    permissions:
+      # 実行履歴と、予想・結果照合の件数を保存したArtifactの読み取り。
+      actions: read
+      # リポジトリ内のコードやファイルの読み取り。
+      contents: read
+      # GitHub Pagesへの配信。
+      pages: write
+      # 配信時の認証に使うOIDCトークンの発行。
+      id-token: write
+    # predictジョブの完了後に実行する。predictジョブが中断された場合はdeployジョブも中断する。
     needs: predict
-    if: needs.predict.outputs.publication_required == 'true'
+    # 前段のジョブが中断されていなければ、配信を実行する。
+    if: ${{ !cancelled() }}
+    # 呼び出すワークフローのパスを指定する。withで入力値を渡す。
     uses: ./.github/workflows/deploy-pages.yml
+    # 前段のジョブのコミットSHAと実行結果を、配信用ワークフローに渡す。
     with:
       commit: ${{ needs.predict.outputs.commit }}
-    permissions:
-      actions: read
-      contents: read
-      pages: write
-      id-token: write
+      prediction_result: ${{ needs.predict.result }}

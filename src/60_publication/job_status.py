@@ -57,10 +57,13 @@ def render_status(runs: list[dict], now: datetime) -> str:
         started = datetime.fromisoformat(run["run_started_at"].replace("Z", "+00:00"))
         rows.append("<tr>" + "".join(f"<td>{escape(value)}</td>" for value in (
             started.astimezone(JST).strftime("%Y-%m-%d %H:%M:%S"),
-            result_label(run), count_label(run.get("predicted_races")), count_label(run.get("compared_races")),
+            result_label({"status": "completed", "conclusion": run["prediction_result"]})
+            if "prediction_result" in run else "—",
+            "配信中（最終結果未確定）" if "prediction_result" in run else result_label(run),
+            count_label(run.get("predicted_races")), count_label(run.get("compared_races")),
         )) + "</tr>")
     content = (
-        "<table><thead><tr><th>実行日時（日本時間）</th><th>結果</th>"
+        "<table><thead><tr><th>実行日時（日本時間）</th><th>予想・結果照合</th><th>全体結果（配信含む）</th>"
         "<th>予想レース数</th><th>レース結果照合数</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         if rows else "<p>実行記録はありません。</p>"
     )
@@ -76,6 +79,8 @@ a{{color:#38d996}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:
 <p>当日予想・前日結果照合の実行記録（最新7件まで）。毎日日本時間3:00に実行予定です。
 成功には非開催日の正常終了も含みます。実行日時は予想対象日とは異なる場合があります。</p>
 <p>レース数は各処理が完了した件数です。非開催・照合未指定は0、記録を取得できない場合は「—」で表示します。</p>
+<p>今回の予想・結果照合欄は予想ジョブの結果です。配信中のため、全体の最終結果はGitHubのActions画面で確認してください。
+過去分の全体結果は次回配信時に更新します。予想ジョブ単独の結果を取得していない過去分は「—」で表示します。</p>
 <p>表示はページ公開時点の記録です。記録がない日は、この一覧では実行を確認できません。
 実行の遅延や履歴の保存期間により、すべての実行を表示できない場合があります。</p>
 <div class="table">{content}</div></body></html>'''
@@ -150,6 +155,15 @@ def build_status(site: Path, runs: list[dict], now: datetime) -> None:
         path.write_text(html.replace("<main>", "<main>" + link, 1), encoding="utf-8")
 
 
+def annotate_current_run(runs: list[dict], run_id: str, attempt: str, result: str) -> None:
+    """Attach the caller's job result only to this run and this retry attempt."""
+    if result not in {"success", "failure", "cancelled", "skipped"}:
+        raise ValueError("Invalid prediction job result")
+    for run in runs:
+        if str(run.get("id")) == run_id and str(run.get("run_attempt", 1)) == attempt:
+            run["prediction_result"] = result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--site", type=Path, default=Path("docs"))
@@ -161,6 +175,9 @@ def main() -> None:
         args.write_counts.write_text(json.dumps(collect_counts(args.run_output)), encoding="utf-8")
         return
     runs = fetch_runs(os.environ["GITHUB_REPOSITORY"], os.environ["DEFAULT_BRANCH"], os.environ["GH_TOKEN"])
+    if os.environ.get("PREDICTION_RESULT"):
+        annotate_current_run(runs, os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"],
+                             os.environ["PREDICTION_RESULT"])
     build_status(args.site, runs, datetime.now(JST))
 
 
