@@ -45,7 +45,7 @@ def race_row(race_id, report, directory):
         "prediction": report.get("prediction_status", "skipped"),
         "odds_match": report.get("odds_match_status", "skipped"),
         "betting": report.get("betting_status", "skipped"),
-        "runners": fetch.get("card", {}).get("runners", 0),
+        "runners": database.get("expected_runners", fetch.get("card", {}).get("runners", 0)),
         "odds_rows": fetch.get("jra_odds", {}).get("rows", 0),
         "prediction_rows": report.get("prediction_rows", 0),
         "bet_rows": report.get("bet_rows", 0),

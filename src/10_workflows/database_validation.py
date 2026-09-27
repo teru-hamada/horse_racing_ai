@@ -29,6 +29,15 @@ def verify_database(card: pd.DataFrame, odds: pd.DataFrame, race_date: date,
                     race_id: str, output: Path) -> dict:
     from .html_acquisition import inspect_card
 
+    statuses = card.get("entry_status", pd.Series("active", index=card.index))
+    withdrawn = card.loc[statuses.isin({"scratched", "excluded"})]
+    withdrawn_numbers = withdrawn.horse_number.dropna().astype(int).tolist()
+    card = card.loc[~statuses.isin({"scratched", "excluded"})].copy()
+    # Horse-number tickets involving withdrawn horses are not prediction inputs.
+    # Frame numbers are a separate namespace; do not filter frame tickets by horse number.
+    involves_withdrawn = odds[["selection_1", "selection_2", "selection_3"]].isin(withdrawn_numbers).any(axis=1)
+    odds = odds.loc[~(odds.bet_type.ne("bracket_quinella") & involves_withdrawn)].copy()
+
     database = output / "smoke.duckdb"
     if database.resolve() == storage.PATHS.database.resolve() or database.exists():
         raise ValueError("検証DBには新しい専用ファイルが必要です。")
@@ -92,6 +101,7 @@ def verify_database(card: pd.DataFrame, odds: pd.DataFrame, race_date: date,
     return {
         "status": "ok" if all(checks.values()) else "incomplete",
         "database": database.name, "checks": checks,
+        "withdrawn_horse_numbers": withdrawn_numbers,
         "failed_checks": [key for key, value in checks.items() if not value],
         "expected_runners": len(card), "registered_runners": len(loaded_card),
         "expected_odds_by_bet_type": expected_counts,

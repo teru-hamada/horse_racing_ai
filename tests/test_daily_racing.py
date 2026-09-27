@@ -40,9 +40,11 @@ def test_japan_day_uses_local_date_and_year_boundary():
     (False, False, "ok", False),
     (False, True, "ok", True),
     (True, False, "ok", True),
-    ("error", True, "error", False),
-    (True, "error", "error", False),
-    ("incomplete", True, "incomplete", False),
+    ("error", True, "error", True),
+    (True, "error", "error", True),
+    ("incomplete", True, "incomplete", True),
+    ("error", "error", "error", False),
+    ("incomplete", False, "incomplete", False),
 ])
 def test_daily_calendar_errors_never_become_nonmeeting(tmp_path, monkeypatch, today, previous, expected, publication):
     called = []
@@ -93,15 +95,18 @@ def prior_site(tmp_path, monkeypatch):
     return site
 
 
-def test_previous_results_update_without_repredicting_and_preserve_original(tmp_path, prior_site):
+@pytest.mark.parametrize("prediction_status", ["no_races", "incomplete", "error"])
+def test_previous_results_update_without_repredicting_and_preserve_original(tmp_path, prior_site, prediction_status):
     import logging
     output = tmp_path / "run"
     output.mkdir()
     original = (prior_site / "predictions/2026-09-19.csv").read_bytes()
     result = daily.compare_previous(date(2026, 9, 19), prior_site, output / "comparison", logging.getLogger())
     assert result["status"] == "ok"
-    (output / "daily_report.json").write_text(json.dumps({"status": "ok", "publication_required": True,
-        "tasks": {"prediction": {"status": "no_races"}, "comparison": {"status": "ok", "race_date": "2026-09-19"}}}), encoding="utf-8")
+    (output / "daily_report.json").write_text(json.dumps({
+        "status": "ok" if prediction_status == "no_races" else prediction_status,
+        "publication_required": prediction_status == "no_races",
+        "tasks": {"prediction": {"status": prediction_status}, "comparison": {"status": "ok", "race_date": "2026-09-19"}}}), encoding="utf-8")
     assert daily.prepare_daily_publication(output, prior_site)
     assert (prior_site / "predictions/2026-09-19.csv").read_bytes() == original
     assert (prior_site / "predictions/2026-09-19_comparison.csv").exists()
@@ -186,3 +191,52 @@ def test_real_excluded_and_stopped_races_complete_daily_run_and_publication(tmp_
     assert "<td>除外</td>" in html
     assert "<td>中止</td>" in html
     assert 'data-comparison-status="completed"' in html
+
+
+@pytest.mark.parametrize("withdrawn_before_prediction", [False, True])
+def test_daily_settles_withdrawals_before_and_after_prediction(tmp_path, monkeypatch, prior_site, withdrawn_before_prediction):
+    import logging
+    race_id = "202606040510"
+    predictions_path = prior_site / "predictions/2026-09-19.csv"
+    if not withdrawn_before_prediction:
+        predictions = pd.read_csv(predictions_path, dtype={"race_id": str})
+        withdrawn = predictions.iloc[0].copy()
+        withdrawn["horse_number"] = 6
+        withdrawn["horse_id"] = "h6"
+        withdrawn["prediction_rank"] = 2
+        pd.concat([predictions, withdrawn.to_frame().T]).to_csv(predictions_path, index=False)
+        bets_path = prior_site / "predictions/2026-09-19_bets.csv"
+        bets = pd.read_csv(bets_path, dtype={"race_id": str, "selection": str})
+        bets.loc[0, "selection"] = "6"
+        bets.to_csv(bets_path, index=False)
+    def fetch(*args, **kwargs):
+        actual = pd.DataFrame([
+            {"horse_id": None, "horse_number": 1, "finish_position": 1, "result_status": "finished"},
+            {"horse_id": None, "horse_number": 6, "finish_position": None, "result_status": "scratched"},
+        ])
+        actual.attrs["official_payouts"] = {"win:1": 300}
+        actual.attrs["official_refunds"] = {"horse_numbers": [6]}
+        return actual
+    monkeypatch.setattr(daily.JraResultFetcher, "fetch_result_for_comparison", fetch)
+    output = tmp_path / "comparison"
+    report = daily.compare_previous(date(2026, 9, 19), prior_site, output, logging.getLogger(__name__))
+    assert report["status"] == "ok"
+    judged = pd.read_csv(output / "bets_results.csv")
+    assert judged.iloc[0].bet_result == ("的中" if withdrawn_before_prediction else "返還")
+    assert judged.iloc[0].payout_per_100 == (300 if withdrawn_before_prediction else 100)
+
+
+def test_unpredicted_active_horse_still_blocks_comparison(tmp_path, monkeypatch, prior_site):
+    import logging
+    def fetch(*args, **kwargs):
+        actual = pd.DataFrame([
+            {"horse_id": None, "horse_number": 1, "finish_position": 1},
+            {"horse_id": None, "horse_number": 6, "finish_position": 2},
+        ])
+        actual.attrs["official_payouts"] = {"win:1": 300}
+        return actual
+    monkeypatch.setattr(daily.JraResultFetcher, "fetch_result_for_comparison", fetch)
+    report = daily.compare_previous(date(2026, 9, 19), prior_site, tmp_path / "comparison", logging.getLogger(__name__))
+    assert report["status"] == "incomplete"
+    assert report["summary"]["failed_races"] == 1
+    assert "馬番が一致" in report["summary"]["failures"][0]["message"]

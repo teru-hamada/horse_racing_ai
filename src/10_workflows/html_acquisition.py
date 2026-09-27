@@ -140,7 +140,7 @@ def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = 
             summary += (
                 "\nDB検証: 専用smoke.duckdbに2回登録し、件数・番号・日付・重複・"
                 "単勝オッズとの全頭照合を確認します。database.checksはtrueが合格です。\n"
-                "取消等で単勝オッズがない馬も要確認としてincompleteになります。\n"
+                "出馬表に取消・除外の明示がある馬を除いて検証します。それ以外の単勝オッズ欠落はincompleteになります。\n"
             )
         (output / "summary.md").write_text(summary, encoding="utf-8")
         if os.environ.get("GITHUB_STEP_SUMMARY"):

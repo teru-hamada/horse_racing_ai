@@ -105,6 +105,8 @@ jobs:
         shell: bash
       # ５．Predict today and compare previous results：当日のレースを予想し、過去の結果と照合する。
       - name: Predict today and compare previous results
+        # idを指定することで、後続の処理から公開が必要かどうかを参照できる。
+        id: daily
         # 実行する処理の種類。python -m src.10_workflows.daily_racingは、当日の予想と前日照合を行う処理。
         run: |
           python - <<'PY'
@@ -122,11 +124,13 @@ jobs:
           RACE_DATE: ${{ inputs.race_date }}
           # 手動実行では任意。定期実行では常に前日照合を有効にする。
           COMPARE_PREVIOUS: ${{ github.event_name == 'schedule' || inputs.compare_previous }}
-      # ６．Update public files only after all races pass：すべてのレースが正常に予想・照合された場合のみ、公開用ファイルを更新する。
-      - name: Update public files only after all races pass
+      # ６．予想・結果照合の片方が失敗しても、成功した側の公開用ファイルを更新する。
+      - name: Update public files for successful tasks
         # idを指定することで、後続の処理から公開が必要かどうかを参照できる。
         id: prepare
-        # 実行する処理の種類。python -m src.10_workflows.daily_racing --prepare-publicationは、公開用ファイルを更新する処理。 
+        # 日次処理の失敗をジョブに残したまま公開準備を続ける。キャンセル時は停止する。
+        if: ${{ !cancelled() && (steps.daily.outcome == 'success' || steps.daily.outcome == 'failure') }}
+        # 成功した処理だけを公開対象とし、失敗した側の既存ファイルは保持する。
         run: |
           git fetch origin "$DEFAULT_BRANCH"
           git merge --ff-only "origin/$DEFAULT_BRANCH"
@@ -172,7 +176,7 @@ jobs:
         # ジョブ内でのIDを指定することで、後続の処理からコミット結果を参照できる。
         id: publish
         # 前段の処理で公開用ファイルに変更があれば、デフォルトブランチへコミット・pushする。
-        if: steps.prepare.outputs.publication_required == 'true'
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.prepare.outputs.publication_required == 'true' }}
         # 実行する処理の種類。bashは、シェルスクリプトを実行する処理。
         run: |
           git config user.name "github-actions[bot]"

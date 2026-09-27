@@ -295,6 +295,10 @@ class NetkeibaCommon:
             popularity_node = soup.select_one(f"#ninki-1_{suffix}")
             if odds_node is None or popularity_node is None:
                 continue
+            if any(node.get_text(strip=True) in {"取消", "出走取消", "除外", "競走除外"}
+                   for node in (odds_node, popularity_node)):
+                # Do not overwrite an explicit withdrawal with stale API odds.
+                continue
             odds_text = str(values[0]).strip()
             popularity_text = str(values[2]).strip()
             if (
@@ -1819,5 +1823,12 @@ class NetkeibaCommon:
                     "dataset_type": dataset_type,
                 }
             )
+            if dataset_type == "upcoming":
+                # Only explicit withdrawal labels count; missing odds alone do not.
+                labels = {str(value).strip() for value in row.values}
+                record["entry_status"] = (
+                    "scratched" if labels & {"取消", "出走取消"} else
+                    "excluded" if labels & {"除外", "競走除外"} else "active"
+                )
             records.append(record)
         return pd.DataFrame(records)

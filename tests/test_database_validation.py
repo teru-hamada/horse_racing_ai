@@ -89,6 +89,39 @@ def test_detects_duplicate_append_on_reregistration(tmp_path, monkeypatch, frame
     assert "reregistration_unchanged" in report["failed_checks"]
 
 
+@pytest.mark.parametrize("status", ["scratched", "excluded"])
+@pytest.mark.parametrize("stale_odds", [False, True])
+def test_withdrawn_horses_are_not_in_prediction_database(tmp_path, frames, status, stale_odds):
+    card, odds = frames
+    card["entry_status"] = ["active", status]
+    if not stale_odds:
+        odds = odds[odds.selection_1.eq(1)]
+    report = verify((card, odds), tmp_path)
+    assert report["status"] == "ok"
+    assert report["withdrawn_horse_numbers"] == [2]
+    assert report["matched_win_runners"] == 1
+    assert report["registered_runners"] == 1
+    loaded = smoke.storage.load_records("upcoming", database=tmp_path / "smoke.duckdb")
+    assert loaded.horse_number.tolist() == [1]
+    loaded_odds = smoke.storage.load_race_odds([card.race_id.iloc[0]], database=tmp_path / "smoke.duckdb")
+    assert set(loaded_odds.selection_1) == {1}
+
+
+def test_sixteen_entries_with_number_six_scratched(tmp_path, frames):
+    template_card, template_odds = frames
+    card = pd.DataFrame([{**template_card.iloc[0].to_dict(), "horse_id": str(n),
+                          "horse_number": n, "frame_number": (n + 1) // 2,
+                          "entry_status": "scratched" if n == 6 else "active"}
+                         for n in range(1, 17)])
+    odds = pd.DataFrame([{**template_odds.iloc[0].to_dict(), "selection_1": n}
+                         for n in range(1, 17) if n != 6])
+    report = verify((card, odds), tmp_path)
+    assert report["status"] == "ok"
+    assert report["registered_runners"] == report["matched_win_runners"] == 15
+    assert report["withdrawn_horse_numbers"] == [6]
+    assert report["unmatched_card_numbers"] == []
+
+
 @pytest.mark.parametrize("database_error", [False, True])
 def test_cli_database_mode_reports_success_and_errors(tmp_path, monkeypatch, frames, database_error):
     import json

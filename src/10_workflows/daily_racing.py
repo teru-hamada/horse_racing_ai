@@ -1,4 +1,4 @@
-"""Scheduled predictions and previous-day settlement; publish only complete runs."""
+"""Scheduled predictions and previous-day settlement; publish each successful task."""
 from __future__ import annotations
 from importlib import import_module as _import_module
 
@@ -21,6 +21,7 @@ JraResultFetcher = _import_module('src.20_scrapers_html_collection.jra_results')
 sha256 = _import_module('src.40_ai_modeling.prediction_bundle').sha256
 compare_prediction_date = _import_module('src.50_result_comparison.prediction_comparison').compare_prediction_date
 compare_recommended_bets = _import_module('src.50_result_comparison.prediction_comparison').compare_recommended_bets
+validated_result_status = _import_module('src.50_result_comparison.prediction_comparison').validated_result_status
 prepare_publication = _import_module('src.60_publication.publish_predictions').prepare_publication
 check_meeting_day = _import_module('src.20_scrapers_html_collection.race_calendar').check_meeting_day
 build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
@@ -55,7 +56,14 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     def fetch(race_id, race_date):
         actual = fetcher.fetch_result_for_comparison(race_id, race_date, force=True)
         expected = predictions[predictions.race_id.eq(race_id)]
-        if actual.horse_number.duplicated().any() or set(actual.horse_number) != set(expected.horse_number):
+        statuses = validated_result_status(actual)
+        actual_numbers = set(actual.horse_number)
+        expected_numbers = set(expected.horse_number)
+        withdrawn = set(actual.loc[statuses.isin({"scratched", "excluded"}), "horse_number"])
+        # Results retain horses already withdrawn before prediction. Only those
+        # officially confirmed withdrawals may be absent from published predictions.
+        if (actual.horse_number.duplicated().any() or not expected_numbers <= actual_numbers
+                or not (actual_numbers - expected_numbers) <= withdrawn):
             raise ValueError("確定結果と予想の馬番が一致しません。")
         payouts = actual.attrs.get("official_payouts", {})
         if not any(key.startswith("win:") for key in payouts):
@@ -109,7 +117,7 @@ def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: 
         statuses = [task["status"] for task in report["tasks"].values()]
         report["status"] = "error" if "error" in statuses else (
             "ok" if all(s in {"ok", "no_races"} for s in statuses) else "incomplete")
-        report["publication_required"] = report["status"] == "ok" and "ok" in statuses
+        report["publication_required"] = "ok" in statuses
     finally:
         text = json.dumps(report, ensure_ascii=False, indent=2)
         (output / "daily_report.json").write_text(text, encoding="utf-8")
@@ -126,9 +134,12 @@ def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: 
 
 def prepare_daily_publication(output: Path, site: Path) -> bool:
     report = json.loads((output / "daily_report.json").read_text(encoding="utf-8"))
-    if report["status"] != "ok" or any(t["status"] not in {"ok", "no_races"} for t in report["tasks"].values()):
-        raise ValueError("日次処理が未合格のため公開を停止します。")
-    if not report["publication_required"]:
+    if report["status"] not in {"ok", "incomplete", "error"}:
+        raise ValueError("日次処理が終了していないため公開を停止します。")
+    # Decide from individual task results, including reports from older runs.
+    if not any(t["status"] == "ok" for t in report["tasks"].values()):
+        if any(t["status"] != "no_races" for t in report["tasks"].values()):
+            raise ValueError("公開できる成功済みの処理がありません。")
         return False
     with tempfile.TemporaryDirectory() as temporary:
         staged = Path(temporary) / "docs"

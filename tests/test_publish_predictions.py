@@ -42,6 +42,45 @@ def test_preserves_other_dates_and_identical_results_do_not_change_files(tmp_pat
     assert snapshot == {str(p.relative_to(site)): p.read_bytes() for p in site.rglob("*") if p.is_file()}
 
 
+@pytest.mark.parametrize("comparison_status", ["error", "incomplete"])
+def test_successful_prediction_publishes_despite_failed_comparison(tmp_path, results, comparison_status):
+    daily = _import_module('src.10_workflows.daily_racing')
+    output = tmp_path / "run"
+    output.mkdir()
+    results.rename(output / "prediction")
+    (output / "daily_report.json").write_text(json.dumps({
+        "status": comparison_status, "publication_required": True,
+        "tasks": {"prediction": {"status": "ok"}, "comparison": {"status": comparison_status}},
+    }), encoding="utf-8")
+    site = tmp_path / "docs"
+    (site / "predictions").mkdir(parents=True)
+    prior = site / "predictions/2026-09-18.html"
+    prior.write_bytes(b"previous result must stay")
+    assert daily.prepare_daily_publication(output, site)
+    assert (site / "predictions/2026-09-19.csv").exists()
+    assert (site / "predictions/2026-09-19.html").exists()
+    assert prior.read_bytes() == b"previous result must stay"
+
+
+def test_publication_uses_active_runner_count_after_withdrawal(tmp_path, results):
+    date_workflow = _import_module('src.10_workflows.date_prediction')
+    race_dir = tmp_path / "race"
+    (race_dir / "fetch").mkdir(parents=True)
+    (race_dir / "fetch/report.json").write_text(json.dumps({
+        "card": {"status": "ok", "runners": 2}, "jra_odds": {"status": "ok"},
+        "database": {"status": "ok", "expected_runners": 1, "withdrawn_horse_numbers": [6]},
+    }), encoding="utf-8")
+    path = results / "date_report.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["races"] = [date_workflow.race_row(report["race_ids"][0], {
+        "status": "ok", "prediction_status": "ok", "odds_match_status": "ok",
+        "betting_status": "ok", "prediction_rows": 1, "bet_rows": 0, "model_id": "m",
+    }, race_dir)]
+    path.write_text(json.dumps(report), encoding="utf-8")
+    assert report["races"][0]["runners"] == 1
+    assert prepare_publication(results, tmp_path / "docs")
+
+
 @pytest.mark.parametrize("problem", ["partial", "stage", "missing_race", "count", "nan_probability"])
 def test_rejects_incomplete_or_inconsistent_results_without_touching_site(tmp_path, results, problem):
     path = results / "date_report.json"

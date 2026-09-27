@@ -1,4 +1,5 @@
 from datetime import date
+import pytest
 
 from src.public_api import (
     AppLogger,
@@ -11,6 +12,22 @@ from importlib import import_module
 _passing_positions = import_module(
     "src.00_common.netkeiba_common"
 )._passing_positions
+
+
+@pytest.mark.parametrize("label,status", [("取消", "scratched"), ("除外", "excluded"),
+                                         ("--", "active"), ("3.2", "active")])
+def test_upcoming_explicit_withdrawal_status(tmp_path, label, status):
+    html = '''<table class="RaceTable01"><tr><th>枠</th><th>馬番</th><th>馬名</th>
+    <th>性齢</th><th>斤量</th><th>騎手</th><th>単勝</th><th>人気</th></tr>
+    <tr class="HorseList"><td>3</td><td>6</td><td><a href="/horse/2024100001">ニシノドリーマー</a></td>
+    <td>牝2</td><td>55</td><td>野中</td><td>LABEL</td><td>LABEL</td></tr></table>'''.replace("LABEL", label)
+    scraper = NetkeibaHtmlCollector(AppLogger(tmp_path))
+    try:
+        frame = scraper._parse_page(html, "202606040901", date(2026, 9, 27), "upcoming")
+    finally:
+        scraper.session.close()
+    assert frame.iloc[0].entry_status == status
+    assert frame.iloc[0].horse_number == 6
 
 
 RESULT_HTML = """
@@ -123,6 +140,13 @@ def test_upcoming_odds_are_embedded_in_saved_html():
     assert 'id="odds-1_02">8.6<' in enriched
     assert 'id="ninki-1_02">2<' in enriched
     assert NetkeibaHtmlCollector._has_embedded_win_odds(enriched)
+
+
+def test_odds_enrichment_preserves_withdrawal_labels():
+    html = '<span id="odds-1_06">取消</span><span id="ninki-1_06">取消</span>'
+    enriched, count = NetkeibaHtmlCollector._embed_win_odds(html, {"06": ["3.2", "0", "1"]})
+    assert count == 0
+    assert enriched.count("取消") == 2
 
 
 def test_pedigree_parser():
