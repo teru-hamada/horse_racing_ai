@@ -6,9 +6,74 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import requests
+import logging
 
 JraResultFetcher = _import_module('src.20_scrapers_html_collection.jra_results').JraResultFetcher
 parse_jra_result_html = _import_module('src.20_scrapers_html_collection.jra_results').parse_jra_result_html
+
+
+def _http_response(status, text="ok"):
+    response = requests.Response()
+    response.status_code = status
+    response.url = JraResultFetcher.URL
+    response._content = text.encode("cp932")
+    response._content_consumed = True
+    return response
+
+
+@pytest.mark.parametrize("failure", [500, 502, 503, 504, "timeout", "connection"])
+def test_transient_result_errors_retry_with_backoff(monkeypatch, failure, caplog):
+    session = requests.Session()
+    calls, sleeps = [], []
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        if len(calls) <= 3:
+            if failure == "timeout":
+                raise requests.Timeout("timed out")
+            if failure == "connection":
+                raise requests.ConnectionError("connection lost")
+            return _http_response(failure)
+        return _http_response(200, "結果")
+    monkeypatch.setattr(session, "post", post)
+    monkeypatch.setattr('src.20_scrapers_html_collection.jra_results.time.sleep', sleeps.append)
+    fetcher = JraResultFetcher(logging.getLogger(__name__), interval_seconds=0, session=session)
+    assert fetcher._post("result-page") == "結果"
+    assert sleeps == [10, 30, 60]
+    assert len(calls) == 4 and all(call == calls[0] for call in calls)
+    assert "再試行" in caplog.text
+
+
+def test_retry_exhaustion_does_not_save_error_html(tmp_path, monkeypatch):
+    session = requests.Session()
+    calls, sleeps = [], []
+    def post(*args, **kwargs):
+        calls.append(kwargs)
+        return _http_response(503, "Unavailable")
+    monkeypatch.setattr(session, "post", post)
+    monkeypatch.setattr('src.20_scrapers_html_collection.jra_results.time.sleep', sleeps.append)
+    fetcher = JraResultFetcher(logging.getLogger(__name__), interval_seconds=0, session=session, output_root=tmp_path)
+    monkeypatch.setattr(fetcher, "_discover_race_cname", lambda *a: "result-page")
+    with pytest.raises(requests.HTTPError, match="503"):
+        fetcher.fetch_result_for_comparison("202609040808", date(2026, 9, 26))
+    assert len(calls) == 4
+    assert sleeps == [10, 30, 60]
+    assert not list(tmp_path.rglob("*.html"))
+
+
+@pytest.mark.parametrize("status", [400, 403, 404])
+def test_permanent_http_errors_are_not_retried(monkeypatch, status):
+    session = requests.Session()
+    calls, sleeps = [], []
+    def post(*args, **kwargs):
+        calls.append(kwargs)
+        return _http_response(status)
+    monkeypatch.setattr(session, "post", post)
+    monkeypatch.setattr('src.20_scrapers_html_collection.jra_results.time.sleep', sleeps.append)
+    fetcher = JraResultFetcher(logging.getLogger(__name__), interval_seconds=0, session=session)
+    with pytest.raises(requests.HTTPError):
+        fetcher._post("result-page")
+    assert len(calls) == 1 and sleeps == []
 
 
 RESULT_HTML = """<!doctype html><html><head><meta charset="Shift_JIS"></head><body>

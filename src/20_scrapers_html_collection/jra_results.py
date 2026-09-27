@@ -31,6 +31,8 @@ class JraResultFetcher:
 
     URL = "https://www.jra.go.jp/JRADB/accessS.html"
     ENTRY_CNAME = "pw01sli00/AF"
+    RETRY_DELAYS = (10, 30, 60)
+    RETRY_STATUS_CODES = {500, 502, 503, 504}
     _ACTION_PATTERN = re.compile(
         r"(?:doAction\(\s*['\"]\/JRADB\/accessS\.html['\"]\s*,\s*['\"]"
         r"|accessS\.html\?CNAME=)([^'\"&]+)",
@@ -78,16 +80,36 @@ class JraResultFetcher:
         return list(dict.fromkeys(cls._ACTION_PATTERN.findall(html)))
 
     def _post(self, cname: str) -> str:
-        response = self.session.post(
-            self.URL,
-            data={"cname": cname},
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": self.URL,
-            },
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
+        # These POSTs only retrieve result pages; retry the same page on transient failures.
+        for attempt in range(len(self.RETRY_DELAYS) + 1):
+            try:
+                response = self.session.post(
+                    self.URL,
+                    data={"cname": cname},
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Referer": self.URL,
+                    },
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                break
+            except (requests.HTTPError, requests.Timeout, requests.ConnectionError) as exc:
+                if isinstance(exc, requests.HTTPError):
+                    status = exc.response.status_code if exc.response is not None else None
+                    if exc.response is not None:
+                        exc.response.close()
+                    retryable = status in self.RETRY_STATUS_CODES
+                else:
+                    retryable = not isinstance(exc, requests.exceptions.SSLError)
+                if not retryable or attempt == len(self.RETRY_DELAYS):
+                    raise
+                delay = self.RETRY_DELAYS[attempt]
+                self.logger.warning(
+                    "JRA結果取得の一時エラー: cname=%s, %s秒後に再試行 (%s/%s): %s",
+                    cname, delay, attempt + 1, len(self.RETRY_DELAYS), exc,
+                )
+                time.sleep(delay)
         response.encoding = "cp932"
         html = response.text
         if "パラメータエラー" in html or "ＤＢ検索エラー" in html:
