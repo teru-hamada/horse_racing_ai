@@ -11,6 +11,28 @@ from src.public_api import compare_prediction_date, compare_recommended_bets
 comparison_module = import_module('src.50_result_comparison.prediction_comparison')
 
 
+@pytest.mark.parametrize("kind,selection,allowed", [
+    ("win", "1", {6}), ("win", "6", set()), ("trio", "1-2-6", set()),
+    ("bracket_quinella", "3-4", {6}), ("bracket_quinella", "3-3", set()),
+])
+def test_unlisted_withdrawal_requires_no_prediction_or_ticket_exposure(kind, selection, allowed):
+    actual = pd.DataFrame({"horse_number": [1, 5, 6], "frame_number": [1, 3, 3],
+                           "finish_position": [1, 2, None],
+                           "result_status": ["finished", "finished", "scratched"]})
+    prediction = actual.iloc[:2]
+    bets = pd.DataFrame([{"bet_type": kind, "selection": selection}])
+    assert comparison_module.withdrawals_without_exposure(actual, prediction, bets) == allowed
+    assert comparison_module.withdrawals_without_exposure(actual, actual, bets) == set()
+    if allowed:
+        comparison_module.validated_result_status(actual, allowed)
+        actual.attrs["official_refunds"] = {"horse_numbers": [9]}
+        with pytest.raises(ValueError, match="公式返還"):
+            comparison_module.validated_result_status(actual, allowed)
+    else:
+        with pytest.raises(ValueError, match="公式返還"):
+            comparison_module.validated_result_status(actual, allowed)
+
+
 @pytest.mark.parametrize("bet_type,selection,judgment,payout", [
     ("win", "7", "返還", 100),
     ("place", "7", "返還", 100),

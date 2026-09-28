@@ -22,6 +22,7 @@ sha256 = _import_module('src.40_ai_modeling.prediction_bundle').sha256
 compare_prediction_date = _import_module('src.50_result_comparison.prediction_comparison').compare_prediction_date
 compare_recommended_bets = _import_module('src.50_result_comparison.prediction_comparison').compare_recommended_bets
 validated_result_status = _import_module('src.50_result_comparison.prediction_comparison').validated_result_status
+withdrawals_without_exposure = _import_module('src.50_result_comparison.prediction_comparison').withdrawals_without_exposure
 prepare_publication = _import_module('src.60_publication.publish_predictions').prepare_publication
 check_meeting_day = _import_module('src.20_scrapers_html_collection.race_calendar').check_meeting_day
 build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
@@ -56,7 +57,8 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     def fetch(race_id, race_date):
         actual = fetcher.fetch_result_for_comparison(race_id, race_date, force=True)
         expected = predictions[predictions.race_id.eq(race_id)]
-        statuses = validated_result_status(actual)
+        allowed = withdrawals_without_exposure(actual, expected, bets[bets.race_id.eq(race_id)])
+        statuses = validated_result_status(actual, allowed)
         actual_numbers = set(actual.horse_number)
         expected_numbers = set(expected.horse_number)
         withdrawn = set(actual.loc[statuses.isin({"scratched", "excluded"}), "horse_number"])
@@ -70,7 +72,7 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
             raise ValueError("公式払戻金が不足しています。")
         return actual
     try:
-        comparison, summary = compare_prediction_date(predictions, day, fetch)
+        comparison, summary = compare_prediction_date(predictions, day, fetch, bets=bets)
     finally:
         fetcher.session.close()
     comparison.to_csv(output / "comparison.csv", index=False, encoding="utf-8-sig")

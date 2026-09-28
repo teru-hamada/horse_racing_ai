@@ -194,7 +194,8 @@ def test_real_excluded_and_stopped_races_complete_daily_run_and_publication(tmp_
 
 
 @pytest.mark.parametrize("withdrawn_before_prediction", [False, True])
-def test_daily_settles_withdrawals_before_and_after_prediction(tmp_path, monkeypatch, prior_site, withdrawn_before_prediction):
+@pytest.mark.parametrize("refund_listed", [False, True])
+def test_daily_settles_withdrawals_before_and_after_prediction(tmp_path, monkeypatch, prior_site, withdrawn_before_prediction, refund_listed):
     import logging
     race_id = "202606040510"
     predictions_path = prior_site / "predictions/2026-09-19.csv"
@@ -215,11 +216,15 @@ def test_daily_settles_withdrawals_before_and_after_prediction(tmp_path, monkeyp
             {"horse_id": None, "horse_number": 6, "finish_position": None, "result_status": "scratched"},
         ])
         actual.attrs["official_payouts"] = {"win:1": 300}
-        actual.attrs["official_refunds"] = {"horse_numbers": [6]}
+        actual.attrs["official_refunds"] = {"horse_numbers": [6] if refund_listed else []}
         return actual
     monkeypatch.setattr(daily.JraResultFetcher, "fetch_result_for_comparison", fetch)
     output = tmp_path / "comparison"
     report = daily.compare_previous(date(2026, 9, 19), prior_site, output, logging.getLogger(__name__))
+    if not withdrawn_before_prediction and not refund_listed:
+        assert report["status"] == "incomplete"
+        assert report["summary"]["failed_races"] == 1
+        return
     assert report["status"] == "ok"
     judged = pd.read_csv(output / "bets_results.csv")
     assert judged.iloc[0].bet_result == ("的中" if withdrawn_before_prediction else "返還")

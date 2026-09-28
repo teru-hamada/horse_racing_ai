@@ -14,7 +14,26 @@ RESULT_STATUS_LABELS = {
 }
 
 
-def validated_result_status(actual: pd.DataFrame) -> pd.Series:
+def withdrawals_without_exposure(actual: pd.DataFrame, prediction: pd.DataFrame, bets: pd.DataFrame) -> set:
+    """Withdrawals absent from predictions and not needed by any saved ticket."""
+    statuses = actual.get("result_status", pd.Series("unknown", index=actual.index))
+    withdrawn = actual.loc[statuses.isin({"scratched", "excluded"})]
+    allowed = set(withdrawn.horse_number) - set(prediction.horse_number)
+    for bet in bets.itertuples():
+        selections = [int(value) for value in str(bet.selection).split("-")]
+        if bet.bet_type != "bracket_quinella":
+            allowed.difference_update(selections)
+        else:
+            if "frame_number" not in actual:
+                return set()
+            active = actual.loc[~statuses.isin({"scratched", "excluded"})]
+            for frame in set(selections):
+                if active.frame_number.eq(frame).sum() < selections.count(frame):
+                    allowed.difference_update(withdrawn.loc[withdrawn.frame_number.eq(frame), "horse_number"])
+    return allowed
+
+
+def validated_result_status(actual: pd.DataFrame, allowed_unlisted: set | None = None) -> pd.Series:
     """Accept known non-finishers, but never silently accept missing results."""
     positions = pd.to_numeric(actual.finish_position, errors="coerce")
     statuses = actual.get("result_status")
@@ -29,7 +48,8 @@ def validated_result_status(actual: pd.DataFrame) -> pd.Series:
         raise ValueError("確定着順または出走結果の状態が不明です。手動確認が必要です。")
     withdrawn = set(actual.loc[statuses.isin({"scratched", "excluded"}), "horse_number"])
     refunds = actual.attrs.get("official_refunds", {})
-    if withdrawn != set(refunds.get("horse_numbers", [])):
+    refunded = set(refunds.get("horse_numbers", []))
+    if not refunded <= withdrawn or not (withdrawn - refunded) <= (allowed_unlisted or set()):
         raise ValueError("取消・除外馬と公式返還馬番が一致しません。手動確認が必要です。")
     return statuses
 
@@ -78,6 +98,7 @@ def compare_recommended_bets(
 def compare_prediction_with_finish(
     prediction: pd.DataFrame,
     actual: pd.DataFrame,
+    allowed_unlisted: set | None = None,
 ) -> pd.DataFrame:
     """Join one race prediction with its confirmed finish positions."""
 
@@ -91,7 +112,7 @@ def compare_prediction_with_finish(
         raise ValueError(f"結果HTMLに着順列がありません: {sorted(missing)}")
 
     finish = actual.loc[:, list(required_actual)].copy()
-    finish["result_status"] = validated_result_status(actual)
+    finish["result_status"] = validated_result_status(actual, allowed_unlisted)
     finish["finish_position"] = pd.to_numeric(
         finish["finish_position"], errors="coerce"
     )
@@ -121,6 +142,7 @@ def compare_prediction_date(
     predictions: pd.DataFrame,
     race_date: date,
     fetch_result: ResultFetcher,
+    bets: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     """Fetch and compare every predicted race on a date, retaining partial success."""
 
@@ -136,8 +158,9 @@ def compare_prediction_date(
     for race_id, race_prediction in predictions.groupby("race_id", sort=False):
         try:
             actual = fetch_result(str(race_id), race_date)
+            allowed = withdrawals_without_exposure(actual, race_prediction, bets[bets.race_id.astype(str).eq(str(race_id))]) if bets is not None else set()
             comparisons.append(
-                compare_prediction_with_finish(race_prediction.copy(), actual)
+                compare_prediction_with_finish(race_prediction.copy(), actual, allowed)
             )
             payouts = actual.attrs.get("official_payouts", {})
             if payouts:
