@@ -14,6 +14,21 @@ result_label = _import_module('src.60_publication.job_status').result_label
 module = _import_module('src.60_publication.job_status')
 
 
+def test_public_page_includes_script_and_run_attempt_without_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("DEFAULT_BRANCH", 'main"<branch>')
+    monkeypatch.setenv("GH_TOKEN", "DO_NOT_PUBLISH_TOKEN")
+    build_status(tmp_path, [{"id": 42, "run_attempt": 2, "status": "in_progress",
+                            "run_started_at": "2026-09-30T18:00:00Z"}], datetime.now(timezone.utc))
+    page = (tmp_path / "job-status.html").read_text(encoding="utf-8")
+    script = (tmp_path / "job-status.js").read_text(encoding="utf-8")
+    assert 'data-run-id="42" data-attempt="2"' in page
+    assert 'data-repository="owner/repo"' in page
+    assert 'data-branch="main&quot;&lt;branch&gt;"' in page
+    assert 'src="job-status.js"' in page
+    assert "DO_NOT_PUBLISH_TOKEN" not in page + script
+
+
 @pytest.mark.parametrize("result,label", [("success", "成功"), ("failure", "失敗"),
                                          ("skipped", "スキップ")])
 def test_current_prediction_result_does_not_claim_final_success(result, label):
@@ -60,6 +75,10 @@ def test_snapshot_has_jst_and_no_error_details(tmp_path):
     page = (tmp_path / "job-status.html").read_text(encoding="utf-8")
     assert "2026-09-21 03:00:00" in page
     assert "失敗" in page
+    assert "更新日時：" not in page
+    index = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert index.count('id="job-status-updated"') == 1
+    assert "更新日時：2026-09-21 03:00:00（日本時間）" in index
     assert "実行方法" not in page and "試行回数" not in page
     assert "予想レース数" in page and "レース結果照合数" in page
     assert "SECRET" not in page and "<script>" not in page

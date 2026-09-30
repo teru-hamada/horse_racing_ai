@@ -8,6 +8,7 @@ from io import BytesIO
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -51,11 +52,12 @@ def result_label(run: dict) -> str:
     )
 
 
-def render_status(runs: list[dict], now: datetime) -> str:
+def render_status(runs: list[dict], now: datetime, repository: str = "", branch: str = "") -> str:
     rows = []
     for run in runs[:MAX_RUNS]:
         started = datetime.fromisoformat(run["run_started_at"].replace("Z", "+00:00"))
-        rows.append("<tr>" + "".join(f"<td>{escape(value)}</td>" for value in (
+        attrs = f' data-run-id="{escape(str(run.get("id", "")))}" data-attempt="{escape(str(run.get("run_attempt", 1)))}"' if repository else ""
+        rows.append(f"<tr{attrs}>" + "".join(f"<td>{escape(value)}</td>" for value in (
             started.astimezone(JST).strftime("%Y-%m-%d %H:%M:%S"),
             result_label({"status": "completed", "conclusion": run["prediction_result"]})
             if "prediction_result" in run else "—",
@@ -67,7 +69,15 @@ def render_status(runs: list[dict], now: datetime) -> str:
         "<th>予想レース数</th><th>レース結果照合数</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         if rows else "<p>実行記録はありません。</p>"
     )
-    updated = now.astimezone(JST).strftime("%Y-%m-%d %H:%M:%S")
+    live = ""
+    if repository:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+            raise ValueError("Invalid public repository")
+        live = (f'<p id="live-status" role="status" data-repository="{escape(repository)}" '
+                f'data-branch="{escape(branch)}">最新結果を確認しています…</p>'
+                f'<p><a href="https://github.com/{escape(repository)}/actions/workflows/daily-racing.yml">GitHub Actionsで確認 →</a></p>'
+                '<noscript><p>JavaScriptが無効なため、保存時点の情報を表示しています。</p></noscript>'
+                '<script src="job-status.js" defer></script>')
     return f'''<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ジョブ実行状況</title><style>
@@ -75,15 +85,14 @@ body{{font-family:system-ui,sans-serif;background:#07130f;color:#f4f7f5;margin:2
 a{{color:#38d996}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:12px;border-bottom:1px solid #25483a}}
 .table{{overflow-x:auto}}p{{line-height:1.7}}
 </style></head><body><a href="index.html">予想一覧へ戻る</a><h1>ジョブ実行状況</h1>
-<p>更新日時：{updated}（日本時間）</p>
 <p>当日予想・前日結果照合の実行記録（最新7件まで）。毎日日本時間3:00に実行予定です。
 成功には非開催日の正常終了も含みます。実行日時は予想対象日とは異なる場合があります。</p>
 <p>レース数は各処理が完了した件数です。非開催・照合未指定は0、記録を取得できない場合は「—」で表示します。</p>
-<p>今回の予想・結果照合欄は予想ジョブの結果です。配信中のため、全体の最終結果はGitHubのActions画面で確認してください。
-過去分の全体結果は次回配信時に更新します。予想ジョブ単独の結果を取得していない過去分は「—」で表示します。</p>
-<p>表示はページ公開時点の記録です。記録がない日は、この一覧では実行を確認できません。
+<p>全体結果はページを開いたときに最新情報を取得します。実行中の場合は、しばらくしてページを再読み込みしてください。
+予想・結果照合とレース数は保存時点の情報です。再実行などで対応する記録がない場合は「—」で表示します。</p>
+<p>最新結果を取得できない場合は、保存時点の記録を表示します。
 実行の遅延や履歴の保存期間により、すべての実行を表示できない場合があります。</p>
-<div class="table">{content}</div></body></html>'''
+{live}<div class="table" id="run-history">{content}</div></body></html>'''
 
 
 def api_request(url: str, token: str) -> Request:
@@ -140,19 +149,31 @@ def fetch_runs(repository: str, branch: str, token: str) -> list[dict]:
 
 
 def build_status(site: Path, runs: list[dict], now: datetime) -> None:
-    page = render_status(runs, now)
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    page = render_status(runs, now, repository, os.environ.get("DEFAULT_BRANCH", ""))
     site.mkdir(parents=True, exist_ok=True)
     (site / "job-status.html").write_text(page, encoding="utf-8")
+    if repository:
+        (site / "job-status.js").write_text(Path(__file__).with_name("job_status.js").read_text(encoding="utf-8"), encoding="utf-8")
     # Include the navigation even for prediction pages generated before this feature.
     for path in [site / "index.html", *(site / "predictions").glob("*.html")]:
         if not path.exists():
             continue
         html = path.read_text(encoding="utf-8")
-        if 'href="job-status.html"' in html or 'href="../job-status.html"' in html:
-            continue
-        href = "job-status.html" if path.parent == site else "../job-status.html"
-        link = f'<p><a style="color:#38d996" href="{href}">ジョブ実行状況 →</a></p>'
-        path.write_text(html.replace("<main>", "<main>" + link, 1), encoding="utf-8")
+        if 'href="job-status.html"' not in html and 'href="../job-status.html"' not in html:
+            href = "job-status.html" if path.parent == site else "../job-status.html"
+            link = f'<p><a style="color:#38d996" href="{href}">ジョブ実行状況 →</a></p>'
+            html = html.replace("<main>", "<main>" + link, 1)
+        if path == site / "index.html":
+            updated = now.astimezone(JST).strftime("%Y-%m-%d %H:%M:%S")
+            stamp = f'<p id="job-status-updated" class="meta">ジョブ実行状況の更新日時：{updated}（日本時間）</p>'
+            if 'id="job-status-updated"' in html:
+                html = re.sub(r'<p\b[^>]*id="job-status-updated"[^>]*>.*?</p>', stamp, html, flags=re.DOTALL)
+            elif "</header>" in html:
+                html = html.replace("</header>", stamp + "</header>", 1)
+            else:
+                html = html.replace("<main>", "<main>" + stamp, 1)
+        path.write_text(html, encoding="utf-8")
 
 
 def annotate_current_run(runs: list[dict], run_id: str, attempt: str, result: str) -> None:
