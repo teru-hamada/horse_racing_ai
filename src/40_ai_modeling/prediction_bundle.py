@@ -19,6 +19,7 @@ from importlib import import_module, metadata
 from pathlib import Path
 
 import duckdb
+from .common.calibration import load_calibration
 
 # プロジェクト既定の保存先。DBを差し替えるテストではこの参照も隔離先へ変更する。
 PATHS = import_module("src.00_common.config").PATHS
@@ -26,6 +27,7 @@ PATHS = import_module("src.00_common.config").PATHS
 MODEL_FILES = ("model.pt", "preprocessor.joblib", "metrics.json", "manifest.json")
 # ZIPに存在してよいファイル名の集合。展開前に過不足と重複を検査する。
 MEMBERS = {"racing.duckdb", "features.duckdb", *(f"model/{name}" for name in MODEL_FILES)}
+CALIBRATED_MEMBERS = MEMBERS | {"model/calibration.json"}
 # 実行環境を固定・確認するライブラリ名の一覧。
 PACKAGES = ("numpy", "pandas", "requests", "beautifulsoup4", "lxml", "duckdb",
             "pyarrow", "torch", "scikit-learn", "joblib")
@@ -77,6 +79,12 @@ def export_bundle(output: Path) -> dict:
                 raise FileNotFoundError(f"最新モデルの必須ファイルがありません: {source}")
             shutil.copy2(source, stage / "model" / name)
         metrics = json.loads((stage / "model/metrics.json").read_text(encoding="utf-8"))
+        # 旧モデルは形式1を維持。補正定義を持つモデルは形式2にして必ずハッシュ検証する。
+        calibration_path = model_dir / "calibration.json"
+        members = CALIBRATED_MEMBERS if calibration_path.exists() else MEMBERS
+        if calibration_path.exists():
+            shutil.copy2(calibration_path, stage / "model/calibration.json")
+        load_calibration(stage / "model", metrics)
         model_manifest = json.loads((stage / "model/manifest.json").read_text(encoding="utf-8"))
         if any(item.get("model_run_id") != selected["model_id"] for item in (metrics, model_manifest)):
             raise ValueError("DBとモデルのIDが一致しません。")
@@ -108,14 +116,15 @@ def export_bundle(output: Path) -> dict:
         requirements = "".join(f"{name}=={version.split('+')[0]}\n" for name, version in versions.items())
         (stage / "requirements.txt").write_text(requirements, encoding="utf-8", newline="\n")
         with zipfile.ZipFile(stage / "runtime.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            for name in sorted(MEMBERS):
+            for name in sorted(members):
                 archive.write(stage / name, name)
         manifest = {
-            "format": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
+            "format": 2 if members == CALIBRATED_MEMBERS else 1,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
             "python_version": python_version,
             "model_id": selected["model_id"], "model_created_at": selected["created_at"],
             "history_rows": history_rows, "speed_rows": speed_rows, "versions": versions,
-            "files": {name: sha256(stage / name) for name in sorted(MEMBERS)},
+            "files": {name: sha256(stage / name) for name in sorted(members)},
             "archive_sha256": sha256(stage / "runtime.zip"),
             "requirements_sha256": sha256(stage / "requirements.txt"),
             "archive_bytes": (stage / "runtime.zip").stat().st_size,
@@ -131,7 +140,8 @@ def unpack_bundle(bundle: Path, output: Path) -> dict:
     # bundle: runtime.zipとmanifestなどがある配布用バンドルのディレクトリ。
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     # 対応する形式と収録ファイル一覧を確認し、未知の構成を展開しない。
-    if manifest.get("format") != 1 or set(manifest["files"]) != MEMBERS:
+    members = {1: MEMBERS, 2: CALIBRATED_MEMBERS}.get(manifest.get("format"))
+    if members is None or set(manifest["files"]) != members:
         raise ValueError("Unsupported bundle manifest")
     for name, key in (("runtime.zip", "archive_sha256"), ("requirements.txt", "requirements_sha256")):
         # マニフェストと異なるZIPや依存一覧は、モデル読み込みより前に拒否する。
@@ -140,9 +150,9 @@ def unpack_bundle(bundle: Path, output: Path) -> dict:
     output.mkdir(parents=True, exist_ok=False)
     with zipfile.ZipFile(bundle / "runtime.zip") as archive:
         # 余分なファイルや同名重複を拒否し、期待する固定メンバーだけを展開する。
-        if set(archive.namelist()) != MEMBERS or len(archive.namelist()) != len(MEMBERS):
+        if set(archive.namelist()) != members or len(archive.namelist()) != len(members):
             raise ValueError("Unexpected archive members")
-        for name in sorted(MEMBERS):
+        for name in sorted(members):
             destination = output / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(name) as source, destination.open("wb") as target:
@@ -153,6 +163,7 @@ def unpack_bundle(bundle: Path, output: Path) -> dict:
     with duckdb.connect(str(output / "racing.duckdb"), read_only=True) as con:
         selected = latest_model(con)
     metrics = json.loads((output / "model/metrics.json").read_text(encoding="utf-8"))
+    load_calibration(output / "model", metrics)
     model_manifest = json.loads((output / "model/manifest.json").read_text(encoding="utf-8"))
     if (selected["model_id"] != manifest["model_id"]
             or any(item.get("model_run_id") != selected["model_id"] for item in (metrics, model_manifest))):

@@ -73,6 +73,18 @@ def prepare_publication(results: Path, site: Path) -> list[str]:
         bets.to_csv(export / f"{day}_bets.csv", index=False, encoding="utf-8-sig", lineterminator="\n")
         names = [".nojekyll", "index.html", f"predictions/{day}.html",
                  f"predictions/{day}.csv", f"predictions/{day}_bets.csv"]
+        # 方式別比較はデータとして永続化し、公開HTMLの表示方式とは独立させる。
+        comparison_root = results / 'calibration'
+        if comparison_root.exists():
+            for source in comparison_root.rglob('*'):
+                relative = source.relative_to(comparison_root)
+                if not source.is_file() or source.name == 'odds.csv' or source.suffix not in {'.csv', '.json'}:
+                    continue
+                name = f'predictions/calibration/{day}/{relative.as_posix()}'
+                target = staged / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                names.append(name)
         for name in names:
             source, target = staged / name, site / name
             content = source.read_bytes()

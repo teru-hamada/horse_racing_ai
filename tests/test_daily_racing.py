@@ -146,6 +146,52 @@ def test_missing_prior_prediction_is_error(tmp_path):
         daily.compare_previous(date(2026, 9, 19), tmp_path, tmp_path / "comparison", logging.getLogger())
 
 
+def test_calibration_returns_reuse_results_and_reach_public_html(tmp_path, monkeypatch, prior_site):
+    import logging
+    day = '2026-09-19'
+    predictions = pd.read_csv(prior_site / f'predictions/{day}.csv', dtype={'race_id': str, 'horse_id': str})
+    bets = pd.read_csv(prior_site / f'predictions/{day}_bets.csv', dtype={'race_id': str, 'selection': str})
+    root = prior_site / f'predictions/calibration/{day}'
+    root.mkdir(parents=True)
+    (root / 'status.json').write_text(json.dumps({m: {'status': 'ok'} for m in ('class_weight', 'sigmoid')}))
+    for method in ('class_weight', 'sigmoid'):
+        target = root / method
+        target.mkdir()
+        predictions.assign(calibration_method=method, calibration_id='cal_' + method).to_csv(target / 'predictions.csv', index=False)
+        shadow_bets = bets.assign(calibration_method=method, calibration_id='cal_' + method,
+                                  bet_type='win' if method == 'class_weight' else 'place')
+        shadow_bets.to_csv(target / 'bets.csv', index=False)
+        shadow_bets.to_csv(target / 'recommended_bets.csv', index=False)
+    calls = []
+    def fetch(self, race_id, *args, **kwargs):
+        calls.append(race_id)
+        frame = pd.DataFrame([{'horse_id': None, 'horse_number': 1, 'finish_position': 1}])
+        frame.attrs['official_payouts'] = {'win:1': 300, 'place:1': 150}
+        return frame
+    monkeypatch.setattr(daily.JraResultFetcher, 'fetch_result_for_comparison', fetch)
+    output = tmp_path / 'run'
+    result = daily.compare_previous(date.fromisoformat(day), prior_site, output / 'comparison', logging.getLogger())
+    assert calls == [predictions.race_id.iloc[0]]  # 比較方式のための追加通信はしない。
+    assert result['calibration_returns']['class_weight']['recovery_rate'] == 300
+    assert result['calibration_returns']['sigmoid']['recovery_rate'] == 150
+    (output / 'daily_report.json').write_text(json.dumps({'status': 'ok', 'tasks': {
+        'prediction': {'status': 'no_races'}, 'comparison': {'status': 'ok', 'race_date': day}}}))
+    assert daily.prepare_daily_publication(output, prior_site)
+    html = (prior_site / f'predictions/{day}.html').read_text(encoding='utf-8')
+    assert '重み付け補正【検証中】' in html and 'sigmoid補正【検証中】' in html
+    assert '回収率 300.0%' in html and '回収率 150.0%' in html
+    assert (root / 'returns.json').is_file()
+    assert (root / 'sigmoid/bets_results.csv').is_file()
+    assert pd.read_csv(root / 'sigmoid/recommended_bets.csv').bet_type.iloc[0] == 'place'
+    # 公開後に入力が変わった場合は、同じ比較結果で再公開せず停止する。
+    with (root / 'sigmoid/recommended_bets.csv').open('a') as stream:
+        stream.write('\n')
+    before = (prior_site / f'predictions/{day}.html').read_bytes()
+    with pytest.raises(ValueError, match='変更'):
+        daily.prepare_daily_publication(output, prior_site)
+    assert (prior_site / f'predictions/{day}.html').read_bytes() == before
+
+
 # 着順があっても公式払戻金が不足していれば、照合を完了扱いにしない。
 def test_missing_payout_stops_comparison(tmp_path, monkeypatch, prior_site):
     import logging

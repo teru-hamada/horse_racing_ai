@@ -46,6 +46,7 @@ def predict_task(
     upcoming_records: pd.DataFrame,
     race_id: str,
     model_dir: Path,
+    *, calibration_method: str = "none",
 ):
     # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
     # upcoming_records: 予想対象の出馬表。結果がまだ分からない行として扱う。
@@ -58,6 +59,7 @@ def predict_task(
             upcoming_records,
             race_id,
             model_dir,
+            calibration_method=calibration_method,
         )
     raise AssertionError(f"タスク実装がありません: {task_name}")
 
@@ -68,6 +70,7 @@ def predict_historical_task(
     historical_records: pd.DataFrame,
     race_id: str,
     model_dir: Path,
+    *, calibration_method: str = "none",
 ):
     # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
     # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
@@ -78,6 +81,7 @@ def predict_historical_task(
             historical_records,
             race_id,
             model_dir,
+            calibration_method=calibration_method,
         )
     raise AssertionError(f"タスク実装がありません: {task_name}")
 
@@ -89,6 +93,7 @@ def predict_date_task(
     upcoming_records: pd.DataFrame,
     race_date: object,
     model_dir: Path,
+    *, calibration_method: str = "none",
 ):
     # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
     # upcoming_records: 予想対象の出馬表。結果がまだ分からない行として扱う。
@@ -97,7 +102,8 @@ def predict_date_task(
     get_task(task_name)
     if task_name == "top3":
         return _predict_top3_date(
-            historical_records, upcoming_records, race_date, model_dir
+            historical_records, upcoming_records, race_date, model_dir,
+            calibration_method=calibration_method,
         )
     raise AssertionError(f"タスク実装がありません: {task_name}")
 

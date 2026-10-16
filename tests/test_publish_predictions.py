@@ -10,6 +10,35 @@ import pytest
 prepare_publication = _import_module('src.60_publication.publish_predictions').prepare_publication
 
 
+def test_comparison_files_are_persisted_without_changing_public_html(tmp_path, results):
+    calibration = _import_module('src.40_ai_modeling.common.calibration')
+    site = tmp_path / 'site'
+    prepare_publication(results, site)
+    page = site / 'predictions/2026-09-19.html'
+    original = page.read_bytes()
+    calibration.save_calibrations(tmp_path / 'calibration.json', [
+        calibration.ProbabilityCalibration('m'),
+        calibration.ProbabilityCalibration('m', 'class_weight', {'pos_weight': 4.}),
+        calibration.ProbabilityCalibration('m', 'sigmoid', {'slope': 1., 'intercept': -1.}),
+    ])
+    frame = pd.read_csv(results / 'predictions.csv', dtype={'race_id': str, 'horse_id': str})
+    comparison = calibration.attach_probabilities(frame, frame.top3_probability, tmp_path, {'model_run_id': 'm'})
+    odds = pd.DataFrame({'race_id': frame.race_id, 'bet_type': 'place', 'selection_1': 1,
+                         'selection_2': float('nan'), 'selection_3': float('nan'), 'odds_min': 3.})
+    calibration.save_comparison_outputs(comparison, results, odds)
+    changed = prepare_publication(results, site)
+    assert changed and all(name.startswith('predictions/calibration/') for name in changed)
+    assert page.read_bytes() == original
+    root = site / 'predictions/calibration/2026-09-19'
+    assert (root / 'status.json').exists()
+    for method in calibration.METHODS:
+        assert (root / method / 'predictions.csv').exists()
+        assert (root / method / 'recommended_bets.csv').exists()
+        assert not (root / method / 'predictions.parquet').exists()
+    assert not (root / 'odds.csv').exists()
+    assert prepare_publication(results, site) == []
+
+
 # 結果取得・精算に使う固定の応答を作り、対象ケースを再現する。
 @pytest.fixture
 def results(tmp_path):

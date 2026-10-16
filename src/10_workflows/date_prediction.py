@@ -23,6 +23,7 @@ from .race_prediction import run_prediction
 
 DateCollector = _import_module('src.20_scrapers_html_collection.date_collector').DateCollector
 build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
+aggregate_comparison_outputs = _import_module('src.40_ai_modeling.common.calibration').aggregate_comparison_outputs
 
 
 # 内側の各レースがActionsサマリーへ大量出力しないよう、一時的に環境変数を外して最後に戻す。
@@ -72,12 +73,13 @@ def save_progress(output, report):
 
 
 # 対象日のレースを処理し、成功分をCSVとプレビューへ集約する。全レースの成否は別途保持する。
-def run_date(bundle: Path, output: Path, race_date: date):
+def run_date(bundle: Path, output: Path, race_date: date, *, calibration_method: str = "none"):
     # bundle: runtime.zipとmanifestなどがある配布用バンドルのディレクトリ。
     # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
-    report = {"race_date": str(race_date), "status": "running", "race_ids": [], "races": []}
+    report = {"race_date": str(race_date), "status": "running", "race_ids": [], "races": [],
+              "calibration_method": calibration_method}
     logger = logging.getLogger(f"date_probe.{output}")
     logger.setLevel(logging.INFO)
     handlers = [logging.FileHandler(output / "date.log", encoding="utf-8"), logging.StreamHandler()]
@@ -104,7 +106,8 @@ def run_date(bundle: Path, output: Path, race_date: date):
             directory = output / "races" / race_id
             try:
                 with race_summaries_off():
-                    result = run_prediction(bundle, directory, race_date, race_id)
+                    result = run_prediction(bundle, directory, race_date, race_id,
+                                            **({"calibration_method": calibration_method} if calibration_method != "none" else {}))
                 row = race_row(race_id, result, directory)
                 if result["status"] == "ok":
                     race_predictions = pd.read_csv(directory / "predictions.csv", dtype={"race_id": str, "horse_id": str})
@@ -127,6 +130,7 @@ def run_date(bundle: Path, output: Path, race_date: date):
                 raise ValueError("レース間で使用モデルが異なります。")
             combined.to_csv(output / "predictions.csv", index=False, encoding="utf-8-sig")
             combined_bets.to_csv(output / "bets.csv", index=False, encoding="utf-8-sig")
+            aggregate_comparison_outputs(output, [output / 'races' / row['race_id'] for row in report['races'] if row['status'] == 'ok'])
             build_prediction_site(combined, race_date, combined.model_run_id.iloc[0], output / "preview", bet_recommendations=combined_bets)
     # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
     except Exception as exc:
@@ -164,13 +168,14 @@ def run_date(bundle: Path, output: Path, race_date: date):
 # コマンドライン引数を解析して処理を起動する入口。省略時の保存先やモードはparserで定義する。
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--calibration-method", choices=["none", "class_weight", "sigmoid"], default="none")
     parser.add_argument("--race-date", type=date.fromisoformat, required=True)
     parser.add_argument("--bundle", type=Path, default=Path("prediction_bundle"))
     parser.add_argument("--output", type=Path, default=Path("data/date_prediction_smoke"))
     args = parser.parse_args()
     if args.output.exists():
         parser.error("新しい出力フォルダを指定してください。")
-    result = run_date(args.bundle, args.output, args.race_date)
+    result = run_date(args.bundle, args.output, args.race_date, calibration_method=args.calibration_method)
     return {"ok": 0, "incomplete": 2, "error": 1}[result["status"]]
 
 

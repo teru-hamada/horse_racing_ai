@@ -9,6 +9,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 import re
+import json
 
 import pandas as pd
 
@@ -187,6 +188,32 @@ def _write_index(site_dir: Path) -> Path:
 
 
 # 日別の予想・買い目・結果比較ページを生成して一覧を更新する。モデル内部情報の表示は最小限にする。
+def _calibration_return_block(returns: dict | None) -> str:
+    """公式結果で精算した比較方式の成績。未精算・データなしは回収率と区別する。"""
+    items = []
+    labels = {'class_weight': '重み付け補正', 'sigmoid': 'sigmoid補正'}
+    for method, label in labels.items():
+        result = (returns or {}).get(method, {})
+        status = result.get('status', 'missing')
+        if status == 'completed':
+            text = (f'{int(result["total_bets"])}点・購入 {int(result["purchase"]):,}円・'
+                    f'的中 {int(result["hit_bets"])}点・払戻 {float(result["payout"]):,.0f}円・'
+                    f'回収率 {float(result["recovery_rate"]):.1f}%')
+        elif status == 'no_bets':
+            text = '購入対象なし（見送り）'
+        elif status == 'pending':
+            text = f'集計中（{int(result.get("settled_bets", 0))} / {int(result.get("total_bets", 0))}点確定）'
+        elif status == 'incomplete':
+            text = '検証未完了'
+        else:
+            text = '比較データなし'
+        items.append(f'<span data-calibration-method="{method}" data-status="{_text(status)}">'
+                     f'{label}【検証中】: {_text(text)}</span>')
+    return ('<section class="comparison-summary calibration-verification">'
+            '<strong>補正方式の回収率（検証中）</strong>' + ''.join(items)
+            + '<span>予想時に保存した各レース上位3点を各100円購入した場合。JRA公式払戻金・返還で精算。</span></section>')
+
+
 def build_prediction_site(
     predictions: pd.DataFrame,
     race_date: object,
@@ -195,6 +222,7 @@ def build_prediction_site(
     comparison: pd.DataFrame | None = None,
     comparison_summary: dict[str, object] | None = None,
     bet_recommendations: pd.DataFrame | None = None,
+    calibration_returns: dict | None = None,
 ) -> Path:
     """Write a dependency-free GitHub Pages site for one prediction date."""
 
@@ -213,6 +241,10 @@ def build_prediction_site(
         raise ValueError("静的ページの開催日が正しくありません。")
     date_text = target_date.strftime("%Y-%m-%d")
     prediction_dir = site_dir / "predictions"
+    # アプリから既存ページを再生成する場合も、保存済みの検証回収率を失わないようにする。
+    returns_path = prediction_dir / 'calibration' / date_text / 'returns.json'
+    if calibration_returns is None and returns_path.is_file():
+        calibration_returns = json.loads(returns_path.read_text(encoding='utf-8'))
     prediction_dir.mkdir(parents=True, exist_ok=True)
     (site_dir / ".nojekyll").touch()
 
@@ -381,6 +413,7 @@ def build_prediction_site(
             f'{bet_return_text}'
             f'{failure_text}</section>'
         )
+        comparison_block += _calibration_return_block(calibration_returns)
     # この生成runで共通に付与する生成日時。行ごとにばらつかせない。
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     body = f"""<a class="back" href="../index.html">← 開催日一覧</a><header><div class="eyebrow">Daily Predictions</div>

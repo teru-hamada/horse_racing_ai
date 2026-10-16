@@ -33,6 +33,10 @@ from ...common.preprocessing import (
     prepare_registered_feature_frame,
 )
 from ...common.types import TrainConfig
+from ...common.calibration import (
+    ProbabilityCalibration, attach_probabilities, load_calibration, save_calibrations,
+    save_comparison_outputs,
+)
 from ...estimators.mlp import MLP
 from ...training_dataset import TrainingDatasetBuilder, TrainingDatasetConfig
 from .config import (
@@ -328,6 +332,10 @@ def train_model(
     test_pred = (test_prob >= 0.5).astype(int)
     metrics = {
         "model_run_id": model_run_id,
+        # 再学習後も当時の損失の重みを正確に復元できるよう保存する。
+        "pos_weight": negatives / positives,
+        "calibration_file": "calibration.json",
+        "target_column": TARGET_COLUMN,
         "task_name": TASK_NAME,
         "estimator_name": ESTIMATOR_NAME,
         "model_version": MODEL_VERSION,
@@ -375,9 +383,17 @@ def train_model(
             "horse_name": test_df["horse_name"].to_numpy(),
             "actual_top3": y_test.astype(int),
             "predicted_probability": test_prob,
+            "raw_top3_probability": test_prob,
+            "race_date": test_df["race_date"].to_numpy(),
+            "model_run_id": model_run_id,
         }
     ).to_parquet(model_dir / "test_predictions.parquet", index=False)
     json_dump(model_dir / "metrics.json", metrics)
+    # 本番の既定動作は補正なし。sigmoid校正は別の学習外データで明示的に作成する。
+    save_calibrations(model_dir / "calibration.json", [
+        ProbabilityCalibration(model_run_id),
+        ProbabilityCalibration(model_run_id, 'class_weight', {'pos_weight': negatives / positives}),
+    ])
     save_manifest(
         model_dir,
         {
@@ -424,6 +440,8 @@ def train_model(
 
 # チェックポイントの構造でMLPを再作成し、同じ学習runの前処理器と指標を読み込む。
 def load_model_bundle(model_dir: Path) -> tuple[MLP, ColumnTransformer, dict[str, object]]:
+    metrics = json.loads((model_dir / "metrics.json").read_text(encoding="utf-8"))
+    load_calibration(model_dir, metrics)  # モデルを読む前に補正ファイルの必須性と対応IDを検査。
     # model_dir: 重み・前処理器・指標が同じ学習runとして保存されたディレクトリ。
     # 重みと入力次元・隠れ層幅・Dropoutを持つ保存済みモデル情報。
     checkpoint = torch.load(model_dir / "model.pt", map_location="cpu", weights_only=True)
@@ -484,6 +502,7 @@ def predict_historical_race(
     historical_records: pd.DataFrame,
     race_id: str,
     model_dir: Path,
+    *, calibration_method: str = "none",
 ) -> tuple[pd.DataFrame, Path, dict[str, object]]:
     """
     過去の指定レースを、対象レースより前の履歴だけで特徴量生成して予想し、
@@ -574,7 +593,7 @@ def predict_historical_race(
         "popularity",
     ]
     result = target[result_columns].copy()
-    result["top3_probability"] = probability
+    result = attach_probabilities(result, probability, model_dir, metrics, calibration_method)
     result["expected_value_index"] = (
         result["top3_probability"]
         * pd.to_numeric(result["odds"], errors="coerce")
@@ -683,6 +702,7 @@ def predict_historical_race(
         f"historical_prediction_{race_id}.parquet"
     )
     result.to_parquet(output_path, index=False)
+    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()))
     result.to_csv(
         output_dir / f"historical_prediction_{race_id}.csv",
         index=False,
@@ -711,7 +731,7 @@ def infer_race(
     upcoming_records: pd.DataFrame,
     race_id: str,
     model_dir: Path,
-    *, feature_database: Path | None = None,
+    *, feature_database: Path | None = None, calibration_method: str = "none",
 ) -> tuple[pd.DataFrame, dict]:
     """Run the shared inference path without persisting predictions or DB records."""
     # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
@@ -734,7 +754,7 @@ def infer_race(
     result = target[
         ["race_id", "race_date", "course_name", "race_number", "race_name", "horse_number", "frame_number", "horse_id", "horse_name", "jockey_name", "odds", "popularity"]
     ].copy()
-    result["top3_probability"] = probability
+    result = attach_probabilities(result, probability, model_dir, metrics, calibration_method)
     result["expected_value_index"] = result["top3_probability"] * pd.to_numeric(result["odds"], errors="coerce")
     result = result.sort_values("top3_probability", ascending=False).reset_index(drop=True)
     result.insert(0, "prediction_rank", np.arange(1, len(result) + 1))
@@ -748,12 +768,14 @@ def predict_race(
     upcoming_records: pd.DataFrame,
     race_id: str,
     model_dir: Path,
+    *, calibration_method: str = "none",
 ) -> tuple[pd.DataFrame, Path]:
     # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
     # upcoming_records: 予想対象の出馬表。結果がまだ分からない行として扱う。
     # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
     # model_dir: 重み・前処理器・指標が同じ学習runとして保存されたディレクトリ。
-    result, metrics = infer_race(historical_records, upcoming_records, race_id, model_dir)
+    result, metrics = infer_race(historical_records, upcoming_records, race_id, model_dir,
+                                 calibration_method=calibration_method)
 
     # 予想実行のID。出力ファイル群と予想履歴をまとめて識別する。
     prediction_run_id = f"pred_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
@@ -761,6 +783,7 @@ def predict_race(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"prediction_{race_id}.parquet"
     result.to_parquet(output_path, index=False)
+    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()))
     result.to_csv(output_dir / f"prediction_{race_id}.csv", index=False, encoding="utf-8-sig")
     save_prediction_run(
         {
@@ -781,6 +804,7 @@ def predict_race_date(
     upcoming_records: pd.DataFrame,
     race_date: object,
     model_dir: Path,
+    *, calibration_method: str = "none",
 ) -> tuple[pd.DataFrame, Path]:
     """Predict every cached race on one date in a single inference run."""
 
@@ -820,7 +844,7 @@ def predict_race_date(
         "popularity",
     ]
     result = featured[result_columns].copy()
-    result["top3_probability"] = probability
+    result = attach_probabilities(result, probability, model_dir, metrics, calibration_method)
     result["expected_value_index"] = (
         result["top3_probability"]
         * pd.to_numeric(result["odds"], errors="coerce")
@@ -846,6 +870,7 @@ def predict_race_date(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"predictions_{requested_date:%Y-%m-%d}.parquet"
     result.to_parquet(output_path, index=False)
+    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()))
     result.to_csv(
         output_dir / f"predictions_{requested_date:%Y-%m-%d}.csv",
         index=False,

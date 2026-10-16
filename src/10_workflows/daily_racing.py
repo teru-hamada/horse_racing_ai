@@ -30,6 +30,7 @@ withdrawals_without_exposure = _import_module('src.50_result_comparison.predicti
 prepare_publication = _import_module('src.60_publication.publish_predictions').prepare_publication
 check_meeting_day = _import_module('src.20_scrapers_html_collection.race_calendar').check_meeting_day
 build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
+calibration_comparison = _import_module('src.50_result_comparison.calibration_comparison')
 
 # 日本標準時（UTC+9）。日付判定と公開ページの時刻表示を統一する。
 JST = timezone(timedelta(hours=9))
@@ -50,6 +51,9 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     source_hashes = {p.name: sha256(p) for p in sources}
     for source in sources:
         shutil.copy2(source, output / source.name)
+    # 結果を見る前の比較用上位3点を固定し、結果照合後に選び直さない。
+    calibration_hashes = calibration_comparison.snapshot_inputs(site / 'predictions', str(day), output / 'inputs')
+    actual_results = {}
     predictions = pd.read_csv(output / sources[0].name, dtype={"race_id": str, "horse_id": str})
     bets = pd.read_csv(output / sources[1].name, dtype={"race_id": str, "selection": str})
     if predictions.empty or not pd.to_datetime(predictions.race_date).dt.date.eq(day).all():
@@ -84,6 +88,7 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
         # 着順だけで精算完了としない。少なくとも単勝の公式払戻があることを確認する。
         if not any(key.startswith("win:") for key in payouts):
             raise ValueError("公式払戻金が不足しています。")
+        actual_results[str(race_id)] = actual.copy(deep=True)
         return actual
     try:
         comparison, summary = compare_prediction_date(predictions, day, fetch, bets=bets)
@@ -93,6 +98,8 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     # 推奨買い目へ的中・不的中・返還・未確認と公式払戻額を付けた表。
     judged = compare_recommended_bets(bets, summary["official_payouts"], summary["official_refunds"])
     judged.to_csv(output / "bets_results.csv", index=False, encoding="utf-8-sig")
+    calibration_returns = calibration_comparison.settle_saved_comparisons(
+        output / 'inputs', str(day), predictions, actual_results, output / 'calibration')
     # 照合対象と精算結果がすべて揃い、公開可能と判断できるかのフラグ。
     complete = summary["failed_races"] == 0 and summary["compared_races"] == len(ids)
     complete = complete and not judged.bet_result.eq("未確認").any()
@@ -101,13 +108,15 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     if judged.bet_result.eq("未確認").any():
         logger.warning("払戻・返還を確認できない買い目が %s 点あります。", int(judged.bet_result.eq("未確認").sum()))
     result = {"status": "ok" if complete else "incomplete", "race_date": str(day),
-              "source_hashes": source_hashes, "summary": summary}
+              "source_hashes": source_hashes, "summary": summary,
+              "calibration_source_hashes": calibration_hashes, "calibration_returns": calibration_returns}
     (output / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 
 
 # 開催判定を含めタスク単位で例外を記録する。開催なしは正常扱いだが取得失敗はerrorになる。
-def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: bool) -> dict:
+def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: bool,
+              *, calibration_method: str = "none") -> dict:
     # bundle: runtime.zipとmanifestなどがある配布用バンドルのディレクトリ。
     output.mkdir(parents=True, exist_ok=False)
     logger = logging.getLogger(f"daily.{output}")
@@ -115,7 +124,8 @@ def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: 
     handlers = [logging.StreamHandler(), logging.FileHandler(output / "daily.log", encoding="utf-8")]
     for handler in handlers:
         logger.addHandler(handler)
-    report = {"race_date": str(day), "status": "running", "tasks": {}}
+    report = {"race_date": str(day), "status": "running", "tasks": {},
+              "calibration_method": calibration_method}
     tasks = [("prediction", day)] + ([("comparison", day - timedelta(days=1))] if with_previous else [])
     try:
         for name, target in tasks:
@@ -124,7 +134,8 @@ def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: 
                 if not meeting:
                     result = {"status": "no_races", "race_date": str(target)}
                 elif name == "prediction":
-                    result = run_date(bundle, output / "prediction", target)
+                    result = run_date(bundle, output / "prediction", target,
+                                      **({"calibration_method": calibration_method} if calibration_method != "none" else {}))
                 else:
                     result = compare_previous(target, site, output / "comparison", logger)
                 report["tasks"][name] = {"status": result["status"], "race_date": str(target)}
@@ -184,11 +195,19 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
             for name, digest in comparison_report["source_hashes"].items():
                 if name not in {f"{day}.csv", f"{day}_bets.csv"} or sha256(site / "predictions" / name) != digest:
                     raise ValueError("前日予想が照合開始後に変更されました。再実行してください。")
+            if 'calibration_source_hashes' in comparison_report:
+                calibration_comparison.validate_snapshot(site / 'predictions', day,
+                                                          comparison_report['calibration_source_hashes'])
             predictions = pd.read_csv(root / f"{day}.csv", dtype={"race_id": str, "horse_id": str})
             bets = pd.read_csv(root / f"{day}_bets.csv", dtype={"race_id": str, "selection": str})
             comparison = pd.read_csv(root / "comparison.csv", dtype={"race_id": str, "horse_id": str})
             build_prediction_site(predictions, day, predictions.model_run_id.iloc[0], staged,
-                                  comparison=comparison, comparison_summary=comparison_report["summary"], bet_recommendations=bets)
+                                  comparison=comparison, comparison_summary=comparison_report["summary"], bet_recommendations=bets,
+                                  calibration_returns=comparison_report.get('calibration_returns'))
+            # 比較用精算も公開CSVとして残す。予想・推奨買い目の元ファイルは変更しない。
+            if (root / 'calibration').exists():
+                target = staged / 'predictions/calibration' / day
+                shutil.copytree(root / 'calibration', target, dirs_exist_ok=True)
             for source, target in (("comparison.csv", f"{day}_comparison.csv"), ("bets_results.csv", f"{day}_bets_results.csv")):
                 shutil.copy2(root / source, staged / "predictions" / target)
         pattern = '<p class="meta">生成日時: [^<]*</p>'.encode("utf-8")
@@ -213,6 +232,7 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
 # 日次実行と公開準備を切り替える。通常実行の終了コードは成功0、不足2、失敗1。
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--calibration-method", choices=["none", "class_weight", "sigmoid"], default="none")
     parser.add_argument("--race-date", type=date.fromisoformat)
     parser.add_argument("--with-previous", action="store_true")
     parser.add_argument("--prepare-publication", action="store_true")
@@ -236,7 +256,8 @@ def main():
         return 0
     if args.output.exists():
         parser.error("出力先は新しいフォルダを指定してください。")
-    report = run_daily(args.race_date or japan_today(), args.bundle, args.site, args.output, args.with_previous)
+    report = run_daily(args.race_date or japan_today(), args.bundle, args.site, args.output, args.with_previous,
+                       calibration_method=args.calibration_method)
     return {"ok": 0, "incomplete": 2, "error": 1}[report["status"]]
 
 

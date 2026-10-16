@@ -118,3 +118,38 @@ def test_replay_comparison_detects_changes(tmp_path):
     predictions["top3_probability"] = 0.6
     predictions.to_csv(output / "predictions.csv", index=False)
     assert compare_results(output, reference)["status"] == "error"
+
+
+def test_calibration_bundle_round_trip_and_bound_identity(tmp_path, source):
+    calibration = _import_module('src.40_ai_modeling.common.calibration')
+    _, model = source
+    calibration.ProbabilityCalibration('model_new', 'sigmoid', {'slope': 1., 'intercept': -1.}).save(model / 'calibration.json')
+    manifest = bundle.export_bundle(tmp_path / 'bundle')
+    assert manifest['format'] == 2
+    assert 'model/calibration.json' in manifest['files']
+    bundle.unpack_bundle(tmp_path / 'bundle', tmp_path / 'work')
+    saved = calibration.ProbabilityCalibration.load(tmp_path / 'work/model/calibration.json')
+    assert saved.model_run_id == 'model_new'
+    calibration.ProbabilityCalibration('wrong_model').save(model / 'calibration.json')
+    with pytest.raises(ValueError, match='mismatch'):
+        bundle.export_bundle(tmp_path / 'wrong')
+
+
+def test_calibration_payload_hash_checked_independently(tmp_path, source):
+    import zipfile
+    calibration = _import_module('src.40_ai_modeling.common.calibration')
+    _, model = source
+    calibration.ProbabilityCalibration('model_new').save(model / 'calibration.json')
+    root = tmp_path / 'bundle'
+    bundle.export_bundle(root)
+    with zipfile.ZipFile(root / 'runtime.zip') as archive:
+        content = {name: archive.read(name) for name in archive.namelist()}
+    content['model/calibration.json'] += b' '
+    with zipfile.ZipFile(root / 'runtime.zip', 'w') as archive:
+        for name, data in content.items():
+            archive.writestr(name, data)
+    manifest = json.loads((root / 'manifest.json').read_text())
+    manifest['archive_sha256'] = bundle.sha256(root / 'runtime.zip')
+    (root / 'manifest.json').write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='Payload hash mismatch: model/calibration.json'):
+        bundle.unpack_bundle(root, tmp_path / 'work')

@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from .html_acquisition import run_probe
+save_comparison_outputs = _import_module('src.40_ai_modeling.common.calibration').save_comparison_outputs
 # 実行環境を固定・確認するライブラリ名の一覧。
 PACKAGES = _import_module('src.40_ai_modeling.prediction_bundle').PACKAGES
 # プロジェクト既定の保存先。DBを差し替えるテストではこの参照も隔離先へ変更する。
@@ -62,6 +63,15 @@ def compare_results(output: Path, reference: Path) -> dict:
                        ("bets.csv", ["race_id", "bet_type", "selection"])):
         left, right = [pd.read_csv(path / name, dtype={"race_id": str, "horse_id": str, "selection": str})
                        for path in (output, reference)]
+        if name == 'predictions.csv':
+            # 比較保存を追加する前の成果物とも、当時存在した公開用の列で再現を照合する。
+            prefixes = ('calibration_none_', 'calibration_class_weight_', 'calibration_sigmoid_')
+            left = left.drop(columns=[c for c in left if c.startswith(prefixes) and c not in right])
+        # 旧成果物のnone再現では、新規の来歴列を除いて既存列の完全な比較を維持する。
+        if name == "predictions.csv" and "calibration_method" not in right:
+            if "calibration_method" in left and not left.calibration_method.eq("none").all():
+                raise ValueError("Legacy replay requires calibration none")
+            left = left.drop(columns=[c for c in left if c == 'raw_top3_probability' or c.startswith('calibration_')])
         try:
             pd.testing.assert_frame_equal(
                 left.sort_values(keys).reset_index(drop=True),
@@ -77,14 +87,16 @@ def compare_results(output: Path, reference: Path) -> dict:
 
 # 整合性検査→入力取得または再現→推論→オッズ照合→買い目計算の順で実行し、失敗箇所を記録する。
 def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
-                   race_id: str | None = None, replay: Path | None = None) -> dict:
+                   race_id: str | None = None, replay: Path | None = None,
+                   *, calibration_method: str = "none") -> dict:
     # bundle: runtime.zipとmanifestなどがある配布用バンドルのディレクトリ。
     # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
     # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
     # replay: 再現元の保存成果物。指定時はそこにある入力DBを使う。
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
-    report = {"status": "error", "race_date": str(race_date), "race_id": race_id}
+    report = {"status": "error", "race_date": str(race_date), "race_id": race_id,
+              "calibration_method": calibration_method}
     report.update(prediction_status="skipped", odds_match_status="skipped", betting_status="skipped")
     logger = logging.getLogger(f"prediction_smoke.{output}")
     logger.setLevel(logging.INFO)
@@ -117,6 +129,8 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
         # 保存済み入力での再現モード。元成果物の整合性確認や結果比較を行う。
         if replay is not None:
             original = json.loads((replay / "prediction_report.json").read_text(encoding="utf-8"))
+            if original.get("calibration_method", "none") != calibration_method:
+                raise ValueError("Replay calibration method mismatch")
             if original["status"] != "ok" or original["bundle_sha256"] != manifest["archive_sha256"]:
                 raise ValueError("再現元が正常終了していないか、実行用パッケージが異なります。")
             race_date = date.fromisoformat(original["race_date"])
@@ -155,7 +169,9 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
         model = import_module("src.40_ai_modeling.tasks.top3.model")
         report["prediction_status"] = "error"
         predictions, metrics = model.infer_race(history, card, race_id, output / "work/model",
-                                                feature_database=output / "work/features.duckdb")
+                                                feature_database=output / "work/features.duckdb",
+                                                calibration_method=calibration_method)
+        report["calibration_id"] = predictions.calibration_id.iloc[0]
         # 展開したモデルと実際に読み込んだモデルのrun IDが一致することを確認する。
         if metrics["model_run_id"] != report["model_id"]:
             raise ValueError("使用モデルIDが一致しません。")
@@ -182,6 +198,7 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
             if not np.isfinite(numeric).all() or not bets.estimated_probability.between(0, 1).all() or not bets.odds_used.gt(0).all():
                 raise ValueError("買い目計算結果が不正です。")
         bets.to_csv(output / "bets.csv", index=False, encoding="utf-8-sig")
+        report["calibration_comparison"] = save_comparison_outputs(predictions, output, odds)
         report["betting_status"] = "ok"
         build_prediction_site(predictions, race_date, report["model_id"], output / "preview", bet_recommendations=bets)
         report.update(prediction_rows=len(predictions), matched_win_runners=len(joined), bet_rows=len(bets),
@@ -221,6 +238,7 @@ def main(argv=None):
     parser.add_argument("--race-date", type=date.fromisoformat)
     parser.add_argument("--race-id")
     parser.add_argument("--replay", type=Path, help="artifact directory; uses saved inputs without network")
+    parser.add_argument("--calibration-method", choices=["none", "class_weight", "sigmoid"], default="none")
     args = parser.parse_args(argv)
     if args.output.exists():
         parser.error("出力先には新しいフォルダを指定してください。")
@@ -232,7 +250,8 @@ def main(argv=None):
             parser.error("race-idと開催年・開催番号が不正です。")
     elif args.race_date or args.race_id:
         parser.error("replayでは対象日とrace-idを再現元から読み込みます。")
-    result = run_prediction(args.bundle, args.output, args.race_date, args.race_id, args.replay)
+    result = run_prediction(args.bundle, args.output, args.race_date, args.race_id, args.replay,
+                            **({"calibration_method": args.calibration_method} if args.calibration_method != "none" else {}))
     return {"ok": 0, "incomplete": 2, "error": 1}[result["status"]]
 
 
