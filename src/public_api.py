@@ -194,3 +194,4 @@ fetch_jravan_weather = _weather_forecast.fetch_jravan_weather
 parse_jravan_forecast = _weather_forecast.parse_jravan_forecast
 weather_to_track_condition = _weather_forecast.weather_to_track_condition
 calculate_bet_recommendations = _betting.calculate_bet_recommendations
+load_saved_purchase_plan = import_module('src.00_common.purchase_plan').load_saved_plan

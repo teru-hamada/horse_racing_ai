@@ -76,6 +76,57 @@ def test_preserves_other_dates_and_identical_results_do_not_change_files(tmp_pat
     assert snapshot == {str(p.relative_to(site)): p.read_bytes() for p in site.rglob("*") if p.is_file()}
 
 
+def test_audit_archive_is_published_and_old_snapshots_are_preserved(tmp_path, results):
+    root = results / 'calibration/archives'
+    root.mkdir(parents=True)
+    (root / 'first.zip').write_bytes(b'first snapshot')
+    site = tmp_path / 'docs'
+    prepare_publication(results, site)
+    published = site / 'predictions/calibration/2026-09-19/archives'
+    assert (published / 'first.zip').read_bytes() == b'first snapshot'
+    (root / 'first.zip').unlink()
+    (root / 'second.zip').write_bytes(b'second snapshot')
+    prepare_publication(results, site)
+    assert (published / 'first.zip').read_bytes() == b'first snapshot'
+    assert (published / 'second.zip').read_bytes() == b'second snapshot'
+
+
+def test_publication_uses_frozen_plan_and_keeps_candidates_separate(tmp_path, results):
+    purchase = _import_module('src.00_common.purchase_plan')
+    candidates = pd.DataFrame([{
+        'race_id': '202606040510', 'bet_type': 'win', 'selection': str(i), 'bet_type_label': '単勝',
+        'estimated_probability': .5, 'odds_used': 3., 'recovery_rate_percent': 150.,
+        'recommendation_score': float(i), 'bet_type_reliability': 1., 'expected_profit_per_100': 50.,
+    } for i in range(1, 5)])
+    frozen = purchase.select_plan(candidates)
+    frozen['stake_yen'] = 200
+    frozen.to_csv(results / 'recommended_bets.csv', index=False)
+    candidates.loc[0, 'recommendation_score'] = 99999.
+    candidates.to_csv(results / 'bets.csv', index=False)
+    report_path = results / 'date_report.json'
+    report = json.loads(report_path.read_text(encoding='utf-8'))
+    report['races'][0]['bet_rows'] = 4
+    report['purchase_plan_version'] = 1
+    report_path.write_text(json.dumps(report), encoding='utf-8')
+    site = tmp_path / 'docs'
+    prepare_publication(results, site)
+    published = pd.read_csv(site / 'predictions/2026-09-19_bets.csv')
+    assert published.selection.tolist() == [4, 3, 2]
+    assert published.stake_yen.tolist() == [200, 200, 200]
+    assert len(pd.read_csv(site / 'predictions/2026-09-19_candidates.csv')) == 4
+    assert '<th>購入額</th>' in (site / 'predictions/2026-09-19.html').read_text(encoding='utf-8')
+
+
+def test_missing_modern_purchase_plan_stops_publication(tmp_path, results):
+    report_path = results / 'date_report.json'
+    report = json.loads(report_path.read_text(encoding='utf-8'))
+    report['purchase_plan_version'] = 1
+    report_path.write_text(json.dumps(report), encoding='utf-8')
+    with pytest.raises(ValueError, match='Missing saved purchase plan'):
+        prepare_publication(results, tmp_path / 'docs')
+    assert not (tmp_path / 'docs').exists()
+
+
 # 前日照合が失敗しても当日予想の成功分は反映し、既存の前日結果は保持する。
 @pytest.mark.parametrize("comparison_status", ["error", "incomplete"])
 def test_successful_prediction_publishes_despite_failed_comparison(tmp_path, results, comparison_status):

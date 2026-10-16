@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import re
+import json
+import hashlib
 from datetime import date
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from bs4 import BeautifulSoup
 ODDS_COLUMNS = [
     "race_id", "race_date", "bet_type", "selection_1", "selection_2",
     "selection_3", "odds_min", "odds_max", "source_html",
+    "fetched_at", "source_url", "source_cname", "source_sha256",
 ]
 
 
@@ -136,7 +139,18 @@ def parse_odds_html(path: Path, race_date: date) -> pd.DataFrame:
                 )
                 if item:
                     rows.append(item)
-    return pd.DataFrame(rows, columns=ODDS_COLUMNS)
+    result = pd.DataFrame(rows, columns=ODDS_COLUMNS)
+    sidecar = path.with_suffix(".metadata.json")
+    if sidecar.exists():
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        if metadata.get("source_sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
+            raise ValueError("Odds HTML metadata hash mismatch")
+        timestamp = pd.Timestamp(metadata["fetched_at"]) if metadata.get("fetched_at") else None
+        if timestamp is not None and timestamp.tzinfo is None:
+            raise ValueError("Odds fetched_at requires timezone")
+        for column in ("fetched_at", "source_url", "source_cname", "source_sha256"):
+            result[column] = metadata.get(column)
+    return result
 
 
 # 対象ディレクトリのHTMLを走査し、解析できた券種の行をまとめてDB登録用の表へ返す。

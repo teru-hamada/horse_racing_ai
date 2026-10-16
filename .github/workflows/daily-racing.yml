@@ -169,8 +169,8 @@ jobs:
           path: |
             data/daily_racing/
             !data/daily_racing/**/work/**
-          # Artifactの保存期間を指定する。3日間保存する。
-          retention-days: 3
+          # 診断情報は90日保持する。監査ZIPは別途docsへコピーし、Git履歴に永続化する。
+          retention-days: 90
       # １０．Commit and push changed predictions：公開用ファイルに変更があれば、デフォルトブランチへコミット・pushする。
       - name: Commit and push changed predictions
         # ジョブ内でのIDを指定することで、後続の処理からコミット結果を参照できる。

@@ -106,6 +106,51 @@ def prior_site(tmp_path, monkeypatch):
     return site
 
 
+def test_legacy_candidates_settle_only_displayed_tickets(tmp_path, prior_site):
+    import logging
+    source = prior_site / 'predictions/2026-09-19_bets.csv'
+    template = pd.read_csv(source).iloc[0].to_dict()
+    candidates = pd.DataFrame([{**template, 'selection': str(i), 'recommendation_score': 500 - index}
+                               for index, i in enumerate([2, 3, 4, 1])])
+    candidates.to_csv(source, index=False)
+    # 唯一の的中候補1は4位。HTMLに載らない候補を精算・回収率へ混ぜない。
+    result = daily.compare_previous(date(2026, 9, 19), prior_site, tmp_path / 'comparison', logging.getLogger())
+    judged = pd.read_csv(tmp_path / 'comparison/bets_results.csv')
+    assert judged.selection.tolist() == [2, 3, 4]
+    assert result['summary']['bet_returns']['purchase'] == 300
+    assert result['summary']['bet_returns']['payout'] == 0
+    assert result['summary']['bet_returns']['recovery_rate'] == 0
+
+
+def test_frozen_primary_stake_is_used_by_daily_settlement(tmp_path, prior_site):
+    import logging
+    purchase = _import_module('src.00_common.purchase_plan')
+    source = prior_site / 'predictions/2026-09-19_bets.csv'
+    frozen = purchase.select_plan(pd.read_csv(source, dtype={'selection': str, 'race_id': str}))
+    frozen['stake_yen'] = 300
+    frozen.to_csv(source, index=False)
+    result = daily.compare_previous(date(2026, 9, 19), prior_site, tmp_path / 'comparison', logging.getLogger())
+    assert result['summary']['bet_returns']['purchase'] == 300
+    assert result['summary']['bet_returns']['payout'] == 900
+    assert result['summary']['bet_returns']['recovery_rate'] == 300
+
+
+def test_changed_resolved_plan_blocks_result_publication(tmp_path, prior_site):
+    import logging
+    output = tmp_path / 'run'
+    output.mkdir()
+    daily.compare_previous(date(2026, 9, 19), prior_site, output / 'comparison', logging.getLogger())
+    (output / 'daily_report.json').write_text(json.dumps({
+        'status': 'ok', 'tasks': {'prediction': {'status': 'no_races'},
+        'comparison': {'status': 'ok', 'race_date': '2026-09-19'}}}), encoding='utf-8')
+    source = output / 'comparison/purchase_plan.csv'
+    source.write_bytes(source.read_bytes() + b'\n')
+    before = {str(p): p.read_bytes() for p in prior_site.rglob('*') if p.is_file()}
+    with pytest.raises(ValueError, match='purchase plan changed'):
+        daily.prepare_daily_publication(output, prior_site)
+    assert before == {str(p): p.read_bytes() for p in prior_site.rglob('*') if p.is_file()}
+
+
 # 公開済み予想を再計算せずに照合し、元CSVを保ったまま比較結果だけを追加できることを確認する。
 @pytest.mark.parametrize("prediction_status", ["no_races", "incomplete", "error"])
 def test_previous_results_update_without_repredicting_and_preserve_original(tmp_path, prior_site, prediction_status):

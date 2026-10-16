@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+from importlib import import_module
 
 import numpy as np
 import pandas as pd
@@ -58,6 +59,16 @@ def prepare_publication(results: Path, site: Path) -> list[str]:
         if not np.isfinite(values).all() or not bets.estimated_probability.between(0, 1).all() or not bets.odds_used.gt(0).all():
             raise ValueError("公開する買い目の数値が不正です。")
 
+    purchase = import_module('src.00_common.purchase_plan')
+    plan_path = results / 'recommended_bets.csv'
+    if report.get('purchase_plan_version') and not plan_path.exists():
+        raise ValueError('Missing saved purchase plan')
+    selected = (purchase.adopt_saved_plan(pd.read_csv(plan_path, dtype={'race_id': str, 'selection': str}))
+                if plan_path.exists() else purchase.resolve_plan(bets))
+    candidate_keys = set(map(tuple, bets[['race_id', 'bet_type', 'selection']].astype(str).to_numpy()))
+    if not set(map(tuple, selected[['race_id', 'bet_type', 'selection']].astype(str).to_numpy())) <= candidate_keys:
+        raise ValueError('Purchase tickets are absent from candidates')
+
     # Prepare the complete site elsewhere first; failures leave published files alone.
     changed = []
     with tempfile.TemporaryDirectory() as temporary:
@@ -67,18 +78,20 @@ def prepare_publication(results: Path, site: Path) -> list[str]:
             shutil.copytree(site, staged)
         else:
             staged.mkdir()
-        build_prediction_site(predictions, day, predictions.model_run_id.iloc[0], staged, bet_recommendations=bets)
+        build_prediction_site(predictions, day, predictions.model_run_id.iloc[0], staged, bet_recommendations=selected)
         export = staged / "predictions"
         predictions.to_csv(export / f"{day}.csv", index=False, encoding="utf-8-sig", lineterminator="\n")
-        bets.to_csv(export / f"{day}_bets.csv", index=False, encoding="utf-8-sig", lineterminator="\n")
+        selected.to_csv(export / f"{day}_bets.csv", index=False, encoding="utf-8-sig", lineterminator="\n")
+        bets.to_csv(export / f"{day}_candidates.csv", index=False, encoding="utf-8-sig", lineterminator="\n")
         names = [".nojekyll", "index.html", f"predictions/{day}.html",
-                 f"predictions/{day}.csv", f"predictions/{day}_bets.csv"]
+                 f"predictions/{day}.csv", f"predictions/{day}_bets.csv", f"predictions/{day}_candidates.csv"]
         # 方式別比較はデータとして永続化し、公開HTMLの表示方式とは独立させる。
         comparison_root = results / 'calibration'
         if comparison_root.exists():
             for source in comparison_root.rglob('*'):
                 relative = source.relative_to(comparison_root)
-                if not source.is_file() or source.name == 'odds.csv' or source.suffix not in {'.csv', '.json'}:
+                # 大きい全候補ログとオッズはZIP内に保存し、Git上の重複を避ける。
+                if not source.is_file() or source.name in {'odds.csv', 'audit_odds.csv', 'decisions.csv'} or source.suffix not in {'.csv', '.json', '.zip'}:
                     continue
                 name = f'predictions/calibration/{day}/{relative.as_posix()}'
                 target = staged / name

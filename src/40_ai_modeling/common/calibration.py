@@ -223,10 +223,17 @@ def comparison_predictions(predictions):
         yield method, frame.sort_values(['race_id', 'prediction_rank'], kind='stable').reset_index(drop=True)
 
 
-def save_comparison_outputs(predictions, output: Path, odds=None):
+def save_comparison_outputs(predictions, output: Path, odds=None, *, save_primary_plan=False):
     """方式別の予想と買い目を同じ取得オッズで保存する。追加通信はしない。"""
     from importlib import import_module
     betting = import_module('src.40_ai_modeling.betting')
+    audit = import_module('src.40_ai_modeling.common.decision_audit')
+    root = Path(output) / 'calibration'
+    root.mkdir(parents=True, exist_ok=True)
+    context = audit.start_snapshot(root, odds) if odds is not None else None
+    if context is not None:
+        all_odds, context['audit_odds_sha256'] = audit.audit_odds(odds, output, root)
+        (root / 'snapshot.json').write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding='utf-8')
     status = {}
     for method in METHODS:
         prefix = f'calibration_{method}'
@@ -241,13 +248,16 @@ def save_comparison_outputs(predictions, output: Path, odds=None):
         frame.to_parquet(directory / 'predictions.parquet', index=False)
         if odds is not None:
             # 候補を再計算するので、公開方式から除外された買い目も方式ごとに評価できる。
+            audit.save_decisions(directory, frame, all_odds, context, method)
             bets = betting.calculate_bet_recommendations(frame, odds, best_only=False)
             bets['calibration_method'] = method
             bets['calibration_id'] = frame.calibration_id.iloc[0]
             bets.to_csv(directory / 'bets.csv', index=False, encoding='utf-8-sig')
-            selected = bets.sort_values(['recommendation_score', 'recovery_rate_percent'], ascending=False,
-                                        kind='stable').groupby('race_id', sort=False).head(3)
+            selected = import_module('src.00_common.purchase_plan').select_plan(bets)
             selected.to_csv(directory / 'recommended_bets.csv', index=False, encoding='utf-8-sig')
+            # モデルAPI経由の保存でも公開方式の購入対象をルートに確定して残す。
+            if save_primary_plan and 'calibration_method' in predictions and predictions.calibration_method.eq(method).all():
+                selected.to_csv(Path(output) / 'recommended_bets.csv', index=False, encoding='utf-8-sig')
             status[method]['bet_rows'] = len(bets)
             status[method]['recommended_rows'] = len(selected)
             status[method]['odds_status'] = 'ok' if not odds.empty else 'missing'
@@ -255,9 +265,9 @@ def save_comparison_outputs(predictions, output: Path, odds=None):
             status[method]['betting_status'] = 'odds_not_supplied'
     root = Path(output) / 'calibration'
     root.mkdir(parents=True, exist_ok=True)
-    if odds is not None:
-        odds.to_csv(root / 'odds.csv', index=False, encoding='utf-8-sig')
     (root / 'status.json').write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
+    if context is not None:
+        audit.archive_snapshot(root, output, context)
     return status
 
 
@@ -267,6 +277,12 @@ def aggregate_comparison_outputs(output: Path, race_directories):
     directories = list(race_directories)
     if not directories or not any((d / 'calibration/status.json').exists() for d in directories):
         return  # 旧成果物や比較出力のないテスト入力にも対応する。
+    import shutil
+    archives = Path(output) / 'calibration' / 'archives'
+    for source_dir in directories:
+        for source in (source_dir / 'calibration' / 'archives').glob('*.zip'):
+            archives.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, archives / source.name)
     status = {}
     for method in METHODS:
         sources = [d / 'calibration' / method for d in directories]
@@ -278,7 +294,9 @@ def aggregate_comparison_outputs(output: Path, race_directories):
             continue
         target = Path(output) / 'calibration' / method
         target.mkdir(parents=True, exist_ok=True)
-        for name in ('predictions.csv', 'bets.csv', 'recommended_bets.csv'):
+        for name in ('predictions.csv', 'bets.csv', 'recommended_bets.csv', 'decisions.csv'):
+            if not all((d / name).exists() for d in sources):
+                continue
             frames = [pd.read_csv(d / name, dtype={'race_id': str, 'horse_id': str, 'selection': str}) for d in sources]
             pd.concat(frames, ignore_index=True).to_csv(target / name, index=False, encoding='utf-8-sig')
     target = Path(output) / 'calibration'

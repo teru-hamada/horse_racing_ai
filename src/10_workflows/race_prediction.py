@@ -59,8 +59,11 @@ def validate_predictions(card: pd.DataFrame, result: pd.DataFrame) -> None:
 def compare_results(output: Path, reference: Path) -> dict:
     # 生成時と現在、または再現元と今回の違いを項目名ごとに保持する。
     differences = {}
-    for name, keys in (("predictions.csv", ["race_id", "horse_id", "horse_number"]),
-                       ("bets.csv", ["race_id", "bet_type", "selection"])):
+    files = [("predictions.csv", ["race_id", "horse_id", "horse_number"]),
+             ("bets.csv", ["race_id", "bet_type", "selection"])]
+    if (reference / 'recommended_bets.csv').exists():
+        files.append(('recommended_bets.csv', ['race_id', 'bet_type', 'selection']))
+    for name, keys in files:
         left, right = [pd.read_csv(path / name, dtype={"race_id": str, "horse_id": str, "selection": str})
                        for path in (output, reference)]
         if name == 'predictions.csv':
@@ -141,6 +144,11 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
             if sha256(source) != original["input_database_sha256"]:
                 raise ValueError("再現用DBのハッシュが一致しません。")
             shutil.copy2(source, output / "fetch/smoke.duckdb")
+            # 再現時も、取消等の登録前候補と実際の取得情報を監査記録に引き継ぐ。
+            if (replay / 'fetch/odds.csv').exists():
+                shutil.copy2(replay / 'fetch/odds.csv', output / 'fetch/odds.csv')
+            if (replay / 'fetch/odds').exists():
+                shutil.copytree(replay / 'fetch/odds', output / 'fetch/odds')
         else:
             probe = run_probe(race_date, race_id, output / "fetch", verify_db=True)
             report["fetch_status"] = probe["status"]
@@ -198,9 +206,13 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
             if not np.isfinite(numeric).all() or not bets.estimated_probability.between(0, 1).all() or not bets.odds_used.gt(0).all():
                 raise ValueError("買い目計算結果が不正です。")
         bets.to_csv(output / "bets.csv", index=False, encoding="utf-8-sig")
+        selected = import_module('src.00_common.purchase_plan').select_plan(bets)
+        selected.to_csv(output / 'recommended_bets.csv', index=False, encoding='utf-8-sig')
+        report['purchase_plan_version'] = 1
+        report['recommended_rows'] = len(selected)
         report["calibration_comparison"] = save_comparison_outputs(predictions, output, odds)
         report["betting_status"] = "ok"
-        build_prediction_site(predictions, race_date, report["model_id"], output / "preview", bet_recommendations=bets)
+        build_prediction_site(predictions, race_date, report["model_id"], output / "preview", bet_recommendations=selected)
         report.update(prediction_rows=len(predictions), matched_win_runners=len(joined), bet_rows=len(bets),
                       bet_note="推奨条件を満たす買い目なし" if bets.empty else "計算成功", status="ok")
         # 保存済み入力での再現モード。元成果物の整合性確認や結果比較を行う。

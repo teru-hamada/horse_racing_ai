@@ -58,6 +58,8 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     bets = pd.read_csv(output / sources[1].name, dtype={"race_id": str, "selection": str})
     if predictions.empty or not pd.to_datetime(predictions.race_date).dt.date.eq(day).all():
         raise ValueError("前日予想の開催日またはデータが不正です。")
+    bets = _import_module('src.00_common.purchase_plan').resolve_plan(bets)
+    bets.to_csv(output / 'purchase_plan.csv', index=False, encoding='utf-8-sig')
     collector = DateCollector(logger, output / "discovery")
     try:
         ids = set(collector.race_ids_for_date(day, str(day.year), "upcoming", force=True))
@@ -97,6 +99,8 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     comparison.to_csv(output / "comparison.csv", index=False, encoding="utf-8-sig")
     # 推奨買い目へ的中・不的中・返還・未確認と公式払戻額を付けた表。
     judged = compare_recommended_bets(bets, summary["official_payouts"], summary["official_refunds"])
+    purchase_summary = _import_module('src.00_common.purchase_plan').return_summary(judged)
+    summary['bet_returns'] = purchase_summary
     judged.to_csv(output / "bets_results.csv", index=False, encoding="utf-8-sig")
     calibration_returns = calibration_comparison.settle_saved_comparisons(
         output / 'inputs', str(day), predictions, actual_results, output / 'calibration')
@@ -109,6 +113,7 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
         logger.warning("払戻・返還を確認できない買い目が %s 点あります。", int(judged.bet_result.eq("未確認").sum()))
     result = {"status": "ok" if complete else "incomplete", "race_date": str(day),
               "source_hashes": source_hashes, "summary": summary,
+              "purchase_plan_sha256": sha256(output / "purchase_plan.csv"),
               "calibration_source_hashes": calibration_hashes, "calibration_returns": calibration_returns}
     (output / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
@@ -200,6 +205,12 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
                                                           comparison_report['calibration_source_hashes'])
             predictions = pd.read_csv(root / f"{day}.csv", dtype={"race_id": str, "horse_id": str})
             bets = pd.read_csv(root / f"{day}_bets.csv", dtype={"race_id": str, "selection": str})
+            if 'purchase_plan_sha256' in comparison_report:
+                plan_path = root / 'purchase_plan.csv'
+                if not plan_path.exists() or sha256(plan_path) != comparison_report['purchase_plan_sha256']:
+                    raise ValueError('Saved purchase plan changed after settlement')
+                bets = _import_module('src.00_common.purchase_plan').validate_plan(
+                    pd.read_csv(plan_path, dtype={'race_id': str, 'selection': str}))
             comparison = pd.read_csv(root / "comparison.csv", dtype={"race_id": str, "horse_id": str})
             build_prediction_site(predictions, day, predictions.model_run_id.iloc[0], staged,
                                   comparison=comparison, comparison_summary=comparison_report["summary"], bet_recommendations=bets,

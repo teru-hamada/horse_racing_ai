@@ -46,6 +46,7 @@ ODDS_COLUMNS = [
     "race_id", "race_date", "bet_type", "selection_1", "selection_2",
     "selection_3", "odds_min", "odds_max", "source_html",
     "collection_run_id", "registered_at",
+    "fetched_at", "source_url", "source_cname", "source_sha256",
 ]
 
 
@@ -161,6 +162,9 @@ def connect(database: Path | None = None) -> duckdb.DuckDBPyConnection:
     database.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(database))
     con.execute(SCHEMA_SQL)
+    # 既存DBも、登録日時とは別に元HTMLの取得情報を保持できるよう移行する。
+    for column in ("fetched_at", "source_url", "source_cname", "source_sha256"):
+        con.execute(f"ALTER TABLE race_odds ADD COLUMN IF NOT EXISTS {column} VARCHAR")
     return con
 
 

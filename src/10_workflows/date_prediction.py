@@ -85,7 +85,7 @@ def run_date(bundle: Path, output: Path, race_date: date, *, calibration_method:
     handlers = [logging.FileHandler(output / "date.log", encoding="utf-8"), logging.StreamHandler()]
     for handler in handlers:
         logger.addHandler(handler)
-    predictions, bets = [], []
+    predictions, bets, purchase_plans = [], [], []
     save_progress(output, report)
     try:
         collector = DateCollector(logger, output / "discovery")
@@ -112,6 +112,12 @@ def run_date(bundle: Path, output: Path, race_date: date, *, calibration_method:
                 if result["status"] == "ok":
                     race_predictions = pd.read_csv(directory / "predictions.csv", dtype={"race_id": str, "horse_id": str})
                     race_bets = pd.read_csv(directory / "bets.csv", dtype={"race_id": str, "selection": str})
+                    plan_path = directory / 'recommended_bets.csv'
+                    if not plan_path.exists() and result.get('purchase_plan_version'):
+                        raise ValueError('Missing saved purchase plan')
+                    plan = pd.read_csv(plan_path, dtype={'race_id': str, 'selection': str}) if plan_path.exists() else race_bets
+                    purchase = _import_module('src.00_common.purchase_plan')
+                    purchase_plans.append(purchase.adopt_saved_plan(plan) if plan_path.exists() else purchase.resolve_plan(plan))
                     predictions.append(race_predictions)
                     bets.append(race_bets)
             # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
@@ -130,8 +136,11 @@ def run_date(bundle: Path, output: Path, race_date: date, *, calibration_method:
                 raise ValueError("レース間で使用モデルが異なります。")
             combined.to_csv(output / "predictions.csv", index=False, encoding="utf-8-sig")
             combined_bets.to_csv(output / "bets.csv", index=False, encoding="utf-8-sig")
+            combined_plan = pd.concat(purchase_plans, ignore_index=True)
+            combined_plan.to_csv(output / 'recommended_bets.csv', index=False, encoding='utf-8-sig')
+            report['purchase_plan_version'] = 1
             aggregate_comparison_outputs(output, [output / 'races' / row['race_id'] for row in report['races'] if row['status'] == 'ok'])
-            build_prediction_site(combined, race_date, combined.model_run_id.iloc[0], output / "preview", bet_recommendations=combined_bets)
+            build_prediction_site(combined, race_date, combined.model_run_id.iloc[0], output / "preview", bet_recommendations=combined_plan)
     # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
     except Exception as exc:
         report.update(status="error", error=str(exc))

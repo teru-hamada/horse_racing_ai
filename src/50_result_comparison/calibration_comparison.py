@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from importlib import import_module
 import json
 from pathlib import Path
 
@@ -74,6 +75,7 @@ def settle_saved_comparisons(snapshot: Path, day: str, public_predictions, actua
                 continue
             predictions = pd.read_csv(directory / 'predictions.csv', dtype={'race_id': str, 'horse_id': str})
             bets = pd.read_csv(directory / 'recommended_bets.csv', dtype={'race_id': str, 'selection': str})
+            bets = import_module('src.00_common.purchase_plan').adopt_saved_plan(bets)
             identity = ['race_id', 'horse_id', 'horse_number']
             if (predictions.empty or predictions.duplicated(identity).any()
                     or set(map(tuple, predictions[identity].astype(str).to_numpy())) !=
@@ -114,14 +116,15 @@ def settle_saved_comparisons(snapshot: Path, day: str, public_predictions, actua
             total = len(judged)
             known = judged.bet_result.ne('未確認')
             settled = int(known.sum())
-            payout = float(pd.to_numeric(judged.loc[known, 'payout_per_100']).sum())
+            totals = import_module('src.00_common.purchase_plan').return_summary(judged)
+            payout = totals['payout']
             complete = settled == total and not failures
             result = {'status': 'no_bets' if total == 0 else ('completed' if complete else 'pending'),
                       'total_bets': total, 'settled_bets': settled,
                       'hit_bets': int(judged.bet_result.eq('的中').sum()),
                       'refund_bets': int(judged.bet_result.eq('返還').sum()),
-                      'purchase': total * 100, 'payout': payout,
-                      'recovery_rate': payout / total if total and complete else None,
+                      'purchase': totals['purchase'], 'payout': payout,
+                      'recovery_rate': totals['recovery_rate'] if complete else None,
                       'missing_races': failures}
             target = output / method
             target.mkdir(parents=True, exist_ok=True)

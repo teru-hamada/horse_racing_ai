@@ -702,7 +702,7 @@ def predict_historical_race(
         f"historical_prediction_{race_id}.parquet"
     )
     result.to_parquet(output_path, index=False)
-    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()))
+    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()), save_primary_plan=True)
     result.to_csv(
         output_dir / f"historical_prediction_{race_id}.csv",
         index=False,
@@ -783,7 +783,7 @@ def predict_race(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"prediction_{race_id}.parquet"
     result.to_parquet(output_path, index=False)
-    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()))
+    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()), save_primary_plan=True)
     result.to_csv(output_dir / f"prediction_{race_id}.csv", index=False, encoding="utf-8-sig")
     save_prediction_run(
         {
@@ -870,7 +870,7 @@ def predict_race_date(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"predictions_{requested_date:%Y-%m-%d}.parquet"
     result.to_parquet(output_path, index=False)
-    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()))
+    save_comparison_outputs(result, output_dir, _storage.load_race_odds(result.race_id.astype(str).unique().tolist()), save_primary_plan=True)
     result.to_csv(
         output_dir / f"predictions_{requested_date:%Y-%m-%d}.csv",
         index=False,

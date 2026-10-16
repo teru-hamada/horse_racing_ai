@@ -50,58 +50,23 @@ def _number(value: object, digits: int = 2) -> str:
 
 # 一つのレースで画面へ掲載する買い目を選び、表示分の精算と同じ集合を使う。
 def _displayed_bets(bets: pd.DataFrame) -> pd.DataFrame:
-    # 買い目がない場合も列を保った空表を返し、表示・精算側で同じ形式を扱えるようにする。
-    if bets.empty:
-        return bets.copy()
-    return (
-        bets.sort_values(
-            ["recommendation_score", "recovery_rate_percent"],
-            ascending=False,
-            kind="stable",
-        )
-        .groupby("race_id", sort=False)
-        .head(3)
-        .copy()
-    )
+    return _import_module('src.00_common.purchase_plan').resolve_plan(bets)
 
 
-# 画面に表示する買い目を各100円で購入した場合の成績を計算し、返還金も払戻合計へ含める。
+
+# 保存した購入金額で精算し、返還金も払戻合計へ含める。
 def _bet_return_summary(
     bets: pd.DataFrame,
     official_payouts: dict[str, dict[str, int]],
     official_refunds: dict[str, dict[str, list[int]]] | None = None,
 ) -> dict[str, object]:
-    """Settle displayed 100-yen bets with JRA's official payout amounts."""
+    """保存済み購入対象の金額に基づく回収率を共通処理で集計する。"""
     # official_payouts: レース・券種・組合せをキーとする公式の100円当たり払戻金。
     # official_refunds: 馬番・枠番・同枠組合せに関する公式返還情報。
     displayed = _displayed_bets(bets)
-    # 掲載する買い目の総数。各100円購入の合計金額の基準。
-    total_bets = len(displayed)
-    # 公式情報で精算を確認できた買い目数。未確認は含めない。
-    settled_bets = 0
-    # 的中した買い目数。返還された買い目はここへ数えない。
-    hit_bets = 0
-    # 掲載買い目の公式払戻と返還金の合計（円）。
-    payout = 0.0
+    judged = compare_recommended_bets(displayed, official_payouts, official_refunds)
+    return _import_module('src.00_common.purchase_plan').return_summary(judged)
 
-    for bet in compare_recommended_bets(displayed, official_payouts, official_refunds).itertuples():
-        # 公式精算ができていない買い目は、確定払戻や的中の集計へ加えない。
-        if bet.bet_result == "未確認":
-            continue
-        settled_bets += 1
-        # 的中件数は公式払戻で的中と判定された買い目だけを数え、返還を混ぜない。
-        if bet.bet_result == "的中":
-            hit_bets += 1
-        payout += float(bet.payout_per_100)
-
-    return {
-        "total_bets": total_bets,
-        "settled_bets": settled_bets,
-        "hit_bets": hit_bets,
-        "purchase": total_bets * 100,
-        "payout": payout,
-        "recovery_rate": payout / (total_bets * 100) * 100 if total_bets else 0.0,
-    }
 
 
 # 本文を共通のHTML枠とスタイルで包み、日別ページとして表示できる形にする。
@@ -211,7 +176,7 @@ def _calibration_return_block(returns: dict | None) -> str:
                      f'{label}【検証中】: {_text(text)}</span>')
     return ('<section class="comparison-summary calibration-verification">'
             '<strong>補正方式の回収率（検証中）</strong>' + ''.join(items)
-            + '<span>予想時に保存した各レース上位3点を各100円購入した場合。JRA公式払戻金・返還で精算。</span></section>')
+            + '<span>予想時に保存した購入対象・購入金額を、JRA公式払戻金・返還で精算。</span></section>')
 
 
 def build_prediction_site(
@@ -312,7 +277,7 @@ def build_prediction_site(
             if race_bets.empty:
                 bet_block = (
                     '<section class="bets"><h3>AIおすすめ買い目 上位3つ</h3>'
-                    '<p class="bets-note">対応するJRAオッズがないため算出できません。</p></section>'
+                    '<p class="bets-note">購入対象なし（見送り）。</p></section>'
                 )
             else:
                 race_bets = compare_recommended_bets(
@@ -330,8 +295,9 @@ def build_prediction_site(
                     f"<td>{float(bet.bet_type_reliability):.0%}</td>"
                     f"<td>{float(bet.recommendation_score):.1f}</td>"
                     f"<td>{float(bet.expected_profit_per_100):+.0f}円</td>"
+                    f"<td>{int(bet.stake_yen):,}円</td>"
                     + (
-                        f'<td>{_number(bet.payout_per_100, 0)}円</td>'
+                        f'<td>{_number(bet.payout_yen, 0)}円</td>'
                         if has_comparison else ""
                     )
                     + "</tr>"
@@ -344,8 +310,8 @@ def build_prediction_site(
                     + '<th>券種</th><th>買い目</th>'
                     '<th>推定的中確率</th><th>使用オッズ</th>'
                     '<th>推定回収率</th><th>券種適合度</th><th>おすすめスコア</th>'
-                    '<th>100円当たり期待損益</th>'
-                    + ('<th>100円当たり払戻金</th>' if has_comparison else '')
+                    '<th>100円当たり期待損益</th><th>購入額</th>'
+                    + ('<th>払戻金</th>' if has_comparison else '')
                     +
                     f'</tr></thead><tbody>{bet_rows}</tbody></table>'
                     '<p class="bets-note">おすすめスコア＝推定回収率×券種適合度。'
@@ -397,7 +363,7 @@ def build_prediction_site(
                 )
             else:
                 bet_return_text = (
-                    f'<span>おすすめ買い目を各100円購入: '
+                    f'<span>保存済みおすすめ買い目を購入: '
                     f'{returns["total_bets"]} 点・購入 {returns["purchase"]:,}円・'
                     f'的中 {returns["hit_bets"]} 点・払戻 {returns["payout"]:,.0f}円・'
                     f'回収率 {returns["recovery_rate"]:.1f}%（JRA公式払戻金）</span>'

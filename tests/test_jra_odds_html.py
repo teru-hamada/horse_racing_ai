@@ -74,6 +74,45 @@ def test_collect_date_saves_only_target_race_odds(tmp_path):
     assert "umaren" in quinella.read_text(encoding="utf-8")
 
 
+def test_http_fetch_time_and_hash_survive_cache_reuse(tmp_path):
+    import json
+    from hashlib import sha256
+    import pandas as pd
+
+    collector = JraOddsHtmlCollector(LoggerStub(), interval_seconds=0)
+    entry = "doAction('/JRADB/accessO.html', 'pw15orl00062026040520260919/A1')"
+    venue = "doAction('/JRADB/accessO.html', 'pw151ouS306202604050120260919Z/FF')"
+
+    class Response:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            pass
+
+    pages = {collector.ENTRY_CNAME: entry, 'pw15orl00062026040520260919/A1': venue,
+             'pw151ouS306202604050120260919Z/FF': '<html>odds</html>'}
+    requests = []
+
+    def post(url, *, data, **kwargs):
+        requests.append(data['cname'])
+        return Response(pages[data['cname']])
+
+    collector.session.post = post
+    assert collector.collect_date(date(2026, 9, 19), ['202606040501'], tmp_path) == 1
+    path = tmp_path / '202606040501_win_place.html'
+    sidecar = path.with_suffix('.metadata.json')
+    saved = sidecar.read_bytes()
+    metadata = json.loads(saved)
+    assert pd.Timestamp(metadata['fetched_at']).tzinfo is not None
+    assert metadata['source_sha256'] == sha256(path.read_bytes()).hexdigest()
+    assert metadata['source_url'] == collector.URL
+    requests.clear()
+    assert collector.collect_date(date(2026, 9, 19), ['202606040501'], tmp_path) == 1
+    assert sidecar.read_bytes() == saved
+    assert 'pw151ouS306202604050120260919Z/FF' not in requests
+
+
 # 探索と取得の各段階で、呼出側へ想定した進捗率が通知されることを確認する。
 def test_collect_date_reports_odds_progress(tmp_path):
     collector = JraOddsHtmlCollector(LoggerStub(), interval_seconds=0)

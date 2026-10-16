@@ -35,6 +35,7 @@ from src.public_api import (
     prediction_date_status,
     compare_prediction_date,
     compare_recommended_bets,
+    load_saved_purchase_plan,
     RESULT_STATUS_LABELS,
     predict_historical_race,
     predict_race_date,
@@ -3035,16 +3036,8 @@ elif page == "レース予想":
                                 selected_prediction_date,
                                 model_path,
                             )
-                        # 今回予想したレースの券種別オッズを取得し、公開用の買い目計算に使用する。
-                        site_odds = load_race_odds(
-                            race_ids=result["race_id"].astype(str).unique().tolist()
-                        )
-                        # 公開HTMLに載せる買い目を算出する。best_only=Falseで最良候補以外も取得する。
-                        site_bet_recommendations = calculate_bet_recommendations(
-                            result,
-                            site_odds,
-                            best_only=False,
-                        )
+                        # 予想時に固定した購入対象を使い、再取得オッズで選び直さない。
+                        site_bet_recommendations = load_saved_purchase_plan(output_path)
                         page_path = None
                         try:
                             # 予想結果と買い目から公開用の静的HTMLを生成し、生成先を受け取る。
@@ -3166,25 +3159,20 @@ elif page == "レース予想":
                             hide_index=True,
                         )
 
-                    registered_odds = load_race_odds(
-                        race_ids=result["race_id"].astype(str).unique().tolist()
-                    )
-                    recommendations = calculate_bet_recommendations(
-                        result,
-                        registered_odds,
-                        best_only=False,
-                    )
-                    recommendations = (
-                        recommendations.groupby("race_id", sort=False)
-                        .head(3)
-                        .reset_index(drop=True)
-                    )
+                    purchase_plan_available = True
+                    try:
+                        recommendations = load_saved_purchase_plan(
+                            latest_prediction['output_path'],
+                            str(result.calibration_method.iloc[0]) if 'calibration_method' in result else 'none')
+                    except FileNotFoundError:
+                        purchase_plan_available = False
+                        recommendations = pd.DataFrame(columns=['race_id', 'bet_type', 'selection'])
                     st.subheader("レース別 AIおすすめ買い目 上位3つ（参考）")
                     # 表示対象のデータが空なら未登録・対象なしを案内し、空の選択肢や集計を避ける。
                     if recommendations.empty:
                         st.info(
-                            "この予想日に対応するJRAオッズがDBに登録されていないため、"
-                            "期待値を算出できません。"
+                            "購入対象なし（見送り）。" if purchase_plan_available else
+                            "保存済みの購入対象がありません。現在のオッズで買い目を作り直さず、結果照合を保留しています。"
                         )
                     else:
                         recommendation_display = recommendations.copy()
@@ -3227,6 +3215,7 @@ elif page == "レース予想":
                                     "recovery_rate_percent", "expected_profit_per_100",
                                     "bet_type_reliability", "recommendation_score",
                                     "probability_method",
+                                    "stake_yen",
                                 ]
                             ].rename(
                                 columns={
@@ -3242,6 +3231,7 @@ elif page == "レース予想":
                                     "bet_type_reliability": "券種適合度",
                                     "recommendation_score": "おすすめスコア",
                                     "probability_method": "確率算出方法",
+                                    "stake_yen": "購入額（円）",
                                 }
                             ),
                             use_container_width=True,
@@ -3261,6 +3251,7 @@ elif page == "レース予想":
                         "この日の全レースを確定結果と比較",
                         type="secondary",
                         key=f"compare_prediction_date_{selected_prediction_date}_{model_id}",
+                        disabled=not purchase_plan_available,
                     ):
                         logger = new_logger()
                         try:
@@ -3280,6 +3271,7 @@ elif page == "レース予想":
                                             force=True,
                                         )
                                     ),
+                                    bets=recommendations,
                                 )
                             comparison_page_path = None
                             try:
@@ -3351,12 +3343,12 @@ elif page == "レース予想":
                                     "bet_result",
                                     "course_name", "race_number", "race_name",
                                     "bet_type_label", "selection",
-                                    "payout_per_100",
+                                    "stake_yen", "payout_yen",
                                 ]].rename(columns={
                                     "course_name": "競馬場", "race_number": "R",
                                     "race_name": "レース名", "bet_type_label": "券種",
                                     "selection": "買い目", "bet_result": "的中結果",
-                                    "payout_per_100": "100円当たり払戻金（円）",
+                                    "stake_yen": "購入額（円）", "payout_yen": "払戻金（円）",
                                 }),
                                 use_container_width=True,
                                 hide_index=True,

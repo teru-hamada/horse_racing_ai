@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date
+from importlib import import_module
 
 import pandas as pd
 
@@ -113,6 +114,16 @@ def compare_recommended_bets(
         payouts.append(race_payouts.get(key, 0))
     result["bet_result"] = judgments
     result["payout_per_100"] = pd.array(payouts, dtype="Int64")
+    plan = import_module('src.00_common.purchase_plan')
+    if set(plan.PLAN_COLUMNS) & set(result):
+        result = plan.validate_plan(result)
+    elif 'stake_yen' not in result:
+        result['stake_yen'] = plan.STAKE
+    stakes = pd.to_numeric(result.stake_yen, errors='coerce')
+    if not (stakes.gt(0) & stakes.mod(100).eq(0)).all():
+        raise ValueError('Invalid settlement stake')
+    result['payout_yen'] = result.payout_per_100 * stakes / 100
+    result['profit_yen'] = result.payout_yen - stakes
     return result
 
 

@@ -86,7 +86,7 @@ def test_static_prediction_site_includes_top_three_bets(tmp_path):
     }])
     bets = pd.DataFrame([
         {
-            "race_id": "r1", "bet_type_label": "複勝", "selection": str(rank),
+            "race_id": "r1", "bet_type": "place", "bet_type_label": "複勝", "selection": str(rank),
             "estimated_probability": 0.7 - rank / 10,
             "odds_used": 2.0 + rank, "recovery_rate_percent": 200 - rank * 10,
             "bet_type_reliability": 1.0,
@@ -215,7 +215,7 @@ def test_result_comparison_includes_return_for_displayed_100_yen_bets(tmp_path):
     )
     html = page.read_text(encoding="utf-8")
 
-    assert "おすすめ買い目を各100円購入" in html
+    assert "保存済みおすすめ買い目を購入" in html
     assert "3 点・購入 300円" in html
     assert "的中 2 点・払戻 850円" in html
     assert "回収率 283.3%（JRA公式払戻金）" in html

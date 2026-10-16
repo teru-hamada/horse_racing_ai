@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import re
+import json
+import hashlib
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -101,6 +103,7 @@ class JraOddsHtmlCollector:
             },
             timeout=self.timeout,
         )
+        self._last_fetched_at = datetime.now(timezone.utc).isoformat()
         response.raise_for_status()
         response.encoding = "cp932"
         html = response.text
@@ -189,6 +192,12 @@ class JraOddsHtmlCollector:
                 try:
                     html = self._post(cname)
                     self._write_utf8(path, html)
+                    # キャッシュ再利用時は更新せず、実際のHTTP取得時刻を保持する。
+                    metadata = {"fetched_at": getattr(self, "_last_fetched_at", None),
+                                "source_url": self.URL, "source_cname": cname,
+                                "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                    path.with_suffix(".metadata.json").write_text(
+                        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
                     saved_count += 1
                     self.logger.info(
                         f"JRAオッズHTML保存: race_id={race_id}, "
