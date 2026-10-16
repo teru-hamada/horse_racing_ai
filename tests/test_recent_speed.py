@@ -1,3 +1,6 @@
+# 検証対象：過去の有効な速度指数だけで直近統計と時間減衰統計を作ることを確認する。
+# 対象走自身の指数が混ざらず、履歴なしの馬は欠損値と件数ゼロになることを検証する。
+#
 import math
 
 import pandas as pd
@@ -5,6 +8,7 @@ import pandas as pd
 from src.public_api import FeatureContext, RecentSpeedGenerator
 
 
+# 検証に必要な入力表の組を作り、保存前後の照合へ渡す。
 def _frames():
     targets = pd.DataFrame([
         {"race_id": f"r{i}", "horse_id": "h1", "race_date": f"2026-01-{i:02d}"}
@@ -15,6 +19,7 @@ def _frames():
     return targets, performance
 
 
+# 過去の指数から直近平均・最大・標準偏差・件数を求め、同日以降の値を含めない。
 def test_recent_speed_aggregates_only_prior_indexes():
     targets, performance = _frames()
     result = RecentSpeedGenerator().transform(
@@ -31,6 +36,7 @@ def test_recent_speed_aggregates_only_prior_indexes():
     assert 4.9 < row["recent_speed_effective_count"] < 5.0
 
 
+# 対象レース自身の速度指数を変えても、事前の近走速度特徴量は変わらない。
 def test_current_race_speed_index_does_not_affect_its_features():
     targets, performance = _frames()
     context = FeatureContext("recent_speed", "1.0.0", {})
@@ -44,6 +50,7 @@ def test_current_race_speed_index_does_not_affect_its_features():
     )
 
 
+# 指数履歴がない馬は直近値がNaNで、有効件数がゼロになる。
 def test_horse_without_speed_history_has_zero_counts():
     targets, performance = _frames()
     new_target = pd.DataFrame([{

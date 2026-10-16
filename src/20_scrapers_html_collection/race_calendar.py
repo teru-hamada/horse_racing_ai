@@ -1,3 +1,6 @@
+# JRA開催カレンダーから指定日が開催日かどうかを判定する。
+# 対象年月のカレンダーが正しく揃っていることを確認し、取得・解析エラーを非開催と混同しない。
+#
 """Fail-closed meeting-day detection from a complete monthly calendar."""
 from calendar import monthrange
 from datetime import date
@@ -8,6 +11,7 @@ from bs4 import BeautifulSoup
 from .date_collector import DateCollector
 
 
+# 対象年月の妥当性を検査してから開催印を読む。読めないカレンダーを非開催として返さない。
 def parse_meeting_day(html: str, target: date) -> bool:
     soup = BeautifulSoup(html, "lxml")
     year = soup.select_one("#cal_select_year option[selected]")
@@ -42,6 +46,7 @@ def parse_meeting_day(html: str, target: date) -> bool:
     return days[target.day]
 
 
+# 公開カレンダーを保存して開催判定する。通信や解析の例外は呼出側のエラー処理へ伝える。
 def check_meeting_day(target: date, output, logger) -> bool:
     collector = DateCollector(logger, output)
     try:

@@ -1,3 +1,6 @@
+# 検証対象：天気と馬場の対応、対象日の正午に近い時刻の選択、日別予報への代替を確認する。
+# 偽のHTTPセッションで競馬場別URLと応答解析を検証し、実際の予報APIには接続しない。
+#
 from __future__ import annotations
 
 from datetime import date
@@ -11,6 +14,7 @@ from src.public_api import (
 )
 
 
+# 天気カテゴリごとの既定馬場状態が、対応表どおりになることを確認する。
 @pytest.mark.parametrize(
     ("weather", "track_condition"),
     [
@@ -26,6 +30,7 @@ def test_weather_to_track_condition_mapping(weather, track_condition):
     assert weather_to_track_condition(weather) == track_condition
 
 
+# 別日の予報を除き、対象日の時刻別予報で正午に最も近い情報を選ぶ。
 def test_forecast_uses_target_date_hour_nearest_noon():
     payload = {"wxdata": [{
         "srf": [
@@ -46,6 +51,7 @@ def test_forecast_uses_target_date_hour_nearest_noon():
     }
 
 
+# 対象日の時刻別予報が使えない場合、同日の日別予報へ切り替える。
 def test_forecast_falls_back_to_target_date_daily_data():
     payload = {"wxdata": [{
         "srf": [],
@@ -59,21 +65,28 @@ def test_forecast_falls_back_to_target_date_daily_data():
     assert result["forecast_type"] == "daily"
 
 
+# 競馬場に対応する公開予報URLを利用し、取得した天気と馬場推定を返す。
 def test_fetch_uses_jravan_venue_forecast_url():
+    # HTTP応答の代替。本文やJSONなど、テスト対象が参照する属性・メソッドを提供する。
     class Response:
+        # 偽HTTP応答の状態検査。実装したエラー条件だけをテスト対象へ通知する。
         def raise_for_status(self):
             return None
 
+        # 偽HTTP応答のJSON本文を返し、API解析へ決められた入力を与える。
         def json(self):
             return {"wxdata": [{
                 "srf": [{"date": "2026-09-06T12:00:00+09:00", "wx": 400}],
                 "mrf": [],
             }]}
 
+    # HTTPセッションの代替実装。実通信を行わず、用意した応答を返す。
     class Session:
+        # テスト用の入力・応答・呼出履歴を初期化し、ケースごとに独立した状態を用意する。
         def __init__(self):
             self.url = None
 
+        # GET要求を実通信の代わりに受け、用意した応答を返す。
         def get(self, url, **kwargs):
             self.url = url
             return Response()

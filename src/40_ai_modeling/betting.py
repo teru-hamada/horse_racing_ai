@@ -1,3 +1,7 @@
+# モデルの3着内確率とJRAオッズを予想後に結合し、券種ごとの買い目候補を評価する。
+# 複勝以外の確率には着順の近似を含むため、券種別の信頼度と最低確率で候補を絞る。
+# 期待回収率・100円当たり期待損益は予測確率からの計算値で、確定払戻の精算とは別に扱う。
+#
 from __future__ import annotations
 
 from itertools import permutations
@@ -6,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 
+# 内部の券種識別子から画面表示用の日本語名への対応。
 BET_TYPE_LABELS = {
     "win": "単勝", "place": "複勝", "bracket_quinella": "枠連", "quinella": "馬連",
     "wide": "ワイド", "exacta": "馬単", "trio": "3連複",
@@ -25,6 +30,7 @@ BET_TYPE_RELIABILITY = {
     "trifecta": 0.40,
 }
 
+# 極端に低確率の候補を除く、券種ごとの推定的中確率の下限。
 MIN_HIT_PROBABILITY = {
     "place": 0.25,
     "win": 0.10,
@@ -35,12 +41,17 @@ MIN_HIT_PROBABILITY = {
     "trio": 0.02,
     "trifecta": 0.01,
 }
+# 候補に残す期待回収率の下限（%）。実際の回収を保証する値ではない。
 MIN_RECOVERY_RATE_PERCENT = 110.0
+# 推奨順位で優先する券種。モデル出力との対応を重視する。
 PRIMARY_BET_TYPES = {"place", "wide"}
 
 
+# 選ばれた馬の重みを残りの重みで順に割り、指定着順の同時確率を近似する。
 def _ordered_probability(order: tuple[int, ...], weights: dict[int, float]) -> float:
+    # まだ着順に選ばれていない馬の重み合計。選択のたびに減らす。
     remaining = 1.0
+    # 指定順序の確率を積み上げる値。各段階の条件付き確率を掛け合わせる。
     probability = 1.0
     for horse in order:
         weight = weights.get(horse, 0.0)
@@ -51,6 +62,7 @@ def _ordered_probability(order: tuple[int, ...], weights: dict[int, float]) -> f
     return float(probability)
 
 
+# 券種の順序条件に応じて順列を合算する。複勝はモデルの3着内確率を直接使う。
 def _estimated_probability(
     bet_type: str,
     selections: tuple[int, ...],
@@ -87,6 +99,7 @@ def _estimated_probability(
     return 0.0, "対象外"
 
 
+# 予測確率とオッズから期待値を算出し、最低確率・回収率・券種別信頼度で推奨候補を選ぶ。
 def calculate_bet_recommendations(
     predictions: pd.DataFrame,
     odds: pd.DataFrame,
@@ -94,23 +107,29 @@ def calculate_bet_recommendations(
     best_only: bool = True,
 ) -> pd.DataFrame:
     """予測後にだけオッズを結合し、100円当たりの期待値を計算する。"""
+    # best_only: 推奨候補を絞り込むか、条件に合う候補一覧を返すかの指定。
     columns = [
         "race_id", "course_name", "race_number", "race_name", "bet_type",
         "bet_type_label", "selection", "estimated_probability", "odds_used",
         "recovery_rate_percent", "bet_type_reliability", "recommendation_score",
         "expected_profit_per_100", "probability_method", "is_primary_bet_type",
     ]
+    # 予想またはオッズがなければ期待値を計算せず、既定列を持つ空の候補表を返す。
     if predictions.empty or odds.empty:
         return pd.DataFrame(columns=columns)
     rows: list[dict[str, object]] = []
     supported = set(BET_TYPE_LABELS)
+    # レース単位で処理し、別レースの馬番や払戻金を混ぜない。
     for race_id, race_predictions in predictions.groupby("race_id", sort=False):
+        # 現在のレースに対応し、計算対象の券種だけを残したJRAオッズ。
         race_odds = odds[
             odds["race_id"].astype(str).eq(str(race_id))
             & odds["bet_type"].isin(supported)
         ]
+        # このレースのオッズがなければ、別レースの番号やオッズを流用せず次のレースへ進む。
         if race_odds.empty:
             continue
+        # 馬番からモデルの3着内確率を引く対応表。
         probability_by_horse = {
             int(row.horse_number): float(row.top3_probability)
             for row in race_predictions.itertuples()
@@ -119,6 +138,7 @@ def calculate_bet_recommendations(
         total = sum(max(value, 0.0) for value in probability_by_horse.values())
         if total <= 0:
             continue
+        # モデルの3着内確率を正規化した着順近似用の重み。市場オッズから作る値ではない。
         weights = {
             horse: max(value, 0.0) / total
             for horse, value in probability_by_horse.items()
@@ -155,6 +175,7 @@ def calculate_bet_recommendations(
                 probability, method = _estimated_probability(
                     str(odd.bet_type), selections, weights, probability_by_horse
                 )
+            # 期待値計算に採用したオッズ。上下限のある券種では選択規則を適用した値。
             odds_used = float(odd.odds_min) if pd.notna(odd.odds_min) else np.nan
             if not np.isfinite(odds_used) or odds_used <= 0:
                 continue

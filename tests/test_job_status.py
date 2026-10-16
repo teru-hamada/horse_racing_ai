@@ -1,3 +1,6 @@
+# 検証対象：公開履歴の日本時間表示、再実行単位の結果・件数対応、秘密情報の非公開を確認する。
+# APIやartifactの取得失敗を空履歴・ゼロ件と誤解せず、不明として扱うことを検証する。
+#
 from importlib import import_module as _import_module
 from datetime import datetime, timezone
 from io import BytesIO
@@ -14,6 +17,7 @@ result_label = _import_module('src.60_publication.job_status').result_label
 module = _import_module('src.60_publication.job_status')
 
 
+# 実行ID・試行回数・公開用属性は出力し、認証トークンはHTMLにもJSにも含めない。
 def test_public_page_includes_script_and_run_attempt_without_token(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
     monkeypatch.setenv("DEFAULT_BRANCH", 'main"<branch>')
@@ -29,6 +33,7 @@ def test_public_page_includes_script_and_run_attempt_without_token(tmp_path, mon
     assert "DO_NOT_PUBLISH_TOKEN" not in page + script
 
 
+# 予想ジョブの成功だけで配信を含む全体を成功と表示せず、配信中の状態を示す。
 @pytest.mark.parametrize("result,label", [("success", "成功"), ("failure", "失敗"),
                                          ("skipped", "スキップ")])
 def test_current_prediction_result_does_not_claim_final_success(result, label):
@@ -43,6 +48,7 @@ def test_current_prediction_result_does_not_claim_final_success(result, label):
     assert "prediction_result" not in runs[1]
 
 
+# run_idが同じでも試行回数が違う履歴には、今回の予想結果を上書きしない。
 def test_current_result_does_not_overwrite_previous_attempt():
     runs = [{"id": 42, "run_attempt": 1, "status": "completed", "conclusion": "failure"}]
     module.annotate_current_run(runs, "42", "2", "success")
@@ -51,6 +57,7 @@ def test_current_result_does_not_overwrite_previous_attempt():
         module.annotate_current_run(runs, "42", "1", "unknown")
 
 
+# 実行中・完了・失敗などのAPI状態を、定義した日本語ラベルへ対応付ける。
 @pytest.mark.parametrize("status,conclusion,label", [
     ("completed", "success", "成功"), ("completed", "failure", "失敗"),
     ("completed", "timed_out", "失敗"), ("completed", "cancelled", "中止"),
@@ -60,6 +67,7 @@ def test_result(status, conclusion, label):
     assert result_label({"status": status, "conclusion": conclusion}) == label
 
 
+# 保存版の状況と更新日時を日本時間で示し、秘密情報・例外詳細や重複リンクを公開しない。
 def test_snapshot_has_jst_and_no_error_details(tmp_path):
     now = datetime(2026, 9, 20, 18, tzinfo=timezone.utc)
     runs = [{"run_started_at": "2026-09-20T18:00:00Z", "event": "schedule",
@@ -88,7 +96,9 @@ def test_snapshot_has_jst_and_no_error_details(tmp_path):
     assert "実行記録はありません" in render_status([], now)
 
 
+# API取得失敗を履歴ゼロ件として成功させず、失敗として呼出元へ伝える。
 def test_api_failure_does_not_become_empty_history(monkeypatch):
+    # 対象の失敗経路へ進ませるため、呼び出されたら意図的に例外を発生させる。
     def fail(*args, **kwargs):
         raise OSError("API unavailable")
     monkeypatch.setattr("src.60_publication.job_status.urlopen", fail)
@@ -96,6 +106,7 @@ def test_api_failure_does_not_become_empty_history(monkeypatch):
         fetch_runs("owner/repo", "main", "token")
 
 
+# 最新7件だけを表示し、未取得件数の記号と確認済みゼロ件を区別する。
 def test_status_only_displays_seven_runs_and_preserves_unknown_counts():
     runs = [{"run_started_at": f"2026-09-{day:02d}T18:00:00Z", "status": "completed",
              "conclusion": "success", "predicted_races": 12, "compared_races": 10}
@@ -110,6 +121,7 @@ def test_status_only_displays_seven_runs_and_preserves_unknown_counts():
     assert "最新7件" in page
 
 
+# 検出件数や出走馬数ではなく、実際に完了した予想・照合のレース件数を集計する。
 def test_counts_use_completed_predictions_and_comparisons(tmp_path):
     (tmp_path / "prediction").mkdir()
     (tmp_path / "comparison").mkdir()
@@ -125,6 +137,7 @@ def test_counts_use_completed_predictions_and_comparisons(tmp_path):
     assert module.collect_counts(tmp_path) == {"predicted_races": 2, "compared_races": 10}
 
 
+# 元レポートがない場合など、件数を判断できない状態をゼロとみなさない。
 @pytest.mark.parametrize("report,expected", [
     (None, {"predicted_races": None, "compared_races": None}),
     ({"status": "ok", "tasks": {"prediction": {"status": "no_races"}}},
@@ -140,6 +153,7 @@ def test_unavailable_counts_are_not_assumed_zero(tmp_path, report, expected):
     assert module.collect_counts(tmp_path) == expected
 
 
+# 今回の試行のartifactを選び、リダイレクト先へ認証ヘッダーを引き継がず件数だけ取り出す。
 def test_artifact_counts_use_current_attempt_and_expose_only_counts(monkeypatch):
     buffer = BytesIO()
     with ZipFile(buffer, "w") as archive:
@@ -147,6 +161,7 @@ def test_artifact_counts_use_current_attempt_and_expose_only_counts(monkeypatch)
             "predicted_races": 12, "compared_races": 10, "error": "SECRET",
         }))
     calls = []
+    # 外部取得を代替し、テストで指定した公式結果または取得失敗を返す。
     def fetch(request, **kwargs):
         calls.append(request)
         if request.full_url.endswith("/50/zip"):
@@ -165,6 +180,7 @@ def test_artifact_counts_use_current_attempt_and_expose_only_counts(monkeypatch)
     assert redirected.get_header("Authorization") is None
 
 
+# 欠落・期限切れ・別試行のartifactから件数を流用せず、不明のまま返す。
 @pytest.mark.parametrize("artifacts", [[], [
     {"name": "daily-racing-counts-42-1", "id": 50, "expired": False},
 ], [{"name": "daily-racing-counts-42-2", "id": 50, "expired": True}]])
@@ -173,10 +189,12 @@ def test_missing_expired_or_previous_attempt_counts_are_unknown(monkeypatch, art
     assert module.fetch_counts("owner/repo", {"id": 42, "run_attempt": 2}, "token") == {}
 
 
+# 対象の最新7実行だけで件数を取得し、一件のartifact不足で履歴全体を失わない。
 def test_fetch_limits_counts_to_seven_eligible_runs_and_survives_missing_artifacts(monkeypatch):
     runs = [{"id": n, "event": "push" if n == 10 else "schedule"} for n in range(10, 0, -1)]
     monkeypatch.setattr(module, "urlopen", lambda *a, **kw: BytesIO(json.dumps({"workflow_runs": runs}).encode()))
     calls = []
+    # artifactからの件数取得を代替し、不明と確認済み件数を切り替える。
     def counts(repo, run, token):
         calls.append(run["id"])
         if run["id"] == 9:

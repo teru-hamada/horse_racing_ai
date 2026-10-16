@@ -1,3 +1,6 @@
+# 検証対象：元DBから独立したスキーマと、特徴量の版ごとの保存・置換・削除を確認する。
+# 出走単位の速度指数と予想用特徴量が別テーブルへ保存されることも検証する。
+#
 from __future__ import annotations
 
 from datetime import datetime
@@ -16,6 +19,7 @@ from src.public_api import (
 )
 
 
+# 保存APIが要求する管理列と検証用の特徴量列を持つ表を作る。
 def _feature_frame(version: str, score: float) -> pd.DataFrame:
     return pd.DataFrame([{
         "race_id": "r1",
@@ -30,7 +34,9 @@ def _feature_frame(version: str, score: float) -> pd.DataFrame:
     }])
 
 
+# 新しい特徴量DBに、特徴量用の3テーブルだけが作成されることを確認する。
 def test_feature_store_has_independent_schema(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     with connect_feature_store(feature_db) as connection:
         tables = {
@@ -45,7 +51,9 @@ def test_feature_store_has_independent_schema(tmp_path):
     assert feature_db.exists()
 
 
+# 同じセットの複数版を独立して読み出し、一方の削除で他方が消えないことを確認する。
 def test_feature_versions_can_coexist_and_one_can_be_cleared(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     save_features(_feature_frame("1", 1.0), feature_db)
     save_features(_feature_frame("2", 2.0), feature_db)
@@ -57,7 +65,9 @@ def test_feature_versions_can_coexist_and_one_can_be_cleared(tmp_path):
     assert len(load_features("baseline", "2", feature_db)) == 1
 
 
+# 生成runの版とパラメーターが、JSON設定情報として履歴へ保存されることを確認する。
 def test_feature_run_configuration_is_recorded(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     save_feature_run({
         "feature_run_id": "run-1",
@@ -75,7 +85,9 @@ def test_feature_run_configuration_is_recorded(tmp_path):
     assert '"half_life_days": 180' in row[1]
 
 
+# 版全体の置換では今回存在しない古いキーも削除され、最新の行だけが残る。
 def test_replace_features_removes_stale_rows_for_same_version(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     original = pd.concat([
         _feature_frame("1", 1.0),
@@ -90,7 +102,9 @@ def test_replace_features_removes_stale_rows_for_same_version(tmp_path):
     assert loaded["sample_score"].iloc[0] == 3.0
 
 
+# 1走単位の速度指数が専用表へ入り、予想用特徴量の表には混ざらない。
 def test_performance_features_are_stored_separately(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     frame = pd.DataFrame([{
         "race_id": "r1",

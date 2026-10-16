@@ -1,3 +1,6 @@
+# 検証対象：任意の特徴量セットの結合、欠損フラグ、目的変数の入力除外、列名衝突の拒否を確認する。
+# 明示した日付境界で学習・検証・テストへ分割されることを検証する。
+#
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -12,6 +15,7 @@ from src.public_api import (
 )
 
 
+# テストで結合対象に使う、小さなID・日付・正解ラベルの表を用意する。
 def _base() -> pd.DataFrame:
     return pd.DataFrame([
         {"race_id": "r1", "horse_id": "h1", "race_date": "2026-01-01", "target_top3": 1},
@@ -20,6 +24,7 @@ def _base() -> pd.DataFrame:
     ])
 
 
+# セット名・版・生成runなどの管理列を持つ特徴量表を作り、保存・結合の検証へ渡す。
 def _features(name: str, column: str, values: list[float]) -> pd.DataFrame:
     base = _base().iloc[:len(values)]
     return pd.DataFrame({
@@ -35,11 +40,14 @@ def _features(name: str, column: str, values: list[float]) -> pd.DataFrame:
     })
 
 
+# 鮮度を固定でfreshにする代替チェッカー。対象のテストでは結合ロジックだけを検証する。
 def _fresh(**kwargs):
     return {"status": "fresh"}
 
 
+# 異なるセットを左結合し、欠損フラグを付けながら正解列を入力Xから除外する。
 def test_builder_joins_arbitrary_feature_sets_without_target_leakage(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     save_features(_features("baseline", "prior_starts", [0.0, 1.0, 0.0]), feature_db)
     save_features(_features("jockey_index", "jockey_score", [70.0, 80.0]), feature_db)
@@ -64,7 +72,9 @@ def test_builder_joins_arbitrary_feature_sets_without_target_leakage(tmp_path):
     assert result.manifest["feature_sets"][1]["identifier"] == "jockey_index:1.0.0"
 
 
+# 別セットの同名特徴量を、曖昧な列名のまま結合せず例外にする。
 def test_builder_rejects_colliding_feature_column_names(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     save_features(_features("one", "shared_score", [1.0, 2.0, 3.0]), feature_db)
     save_features(_features("two", "shared_score", [4.0, 5.0, 6.0]), feature_db)
@@ -79,7 +89,9 @@ def test_builder_rejects_colliding_feature_column_names(tmp_path):
         ))
 
 
+# 指定した検証開始日・テスト開始日に従い、各日が一つの区分へ入る。
 def test_builder_splits_on_explicit_date_boundaries(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     save_features(_features("baseline", "prior_starts", [0.0, 1.0, 0.0]), feature_db)
     builder = TrainingDatasetBuilder(
@@ -91,6 +103,7 @@ def test_builder_splits_on_explicit_date_boundaries(tmp_path):
         validation_start_date=date(2026, 2, 1),
         test_start_date=date(2026, 3, 1),
     )
+    # 学習表と選択特徴量・結合レポート・構成記録をひとまとめにした結果。
     dataset = builder.build(_base(), config)
 
     splits = builder.split_by_date(dataset, config)

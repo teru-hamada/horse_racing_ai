@@ -1,3 +1,8 @@
+# netkeibaの開催一覧・出馬表・結果・血統を扱う共通実装。
+# HTML取得と保存済みHTMLの解析を分離し、キャッシュを利用して再取得を減らす。
+# サイト固有の表・リンク・文字列表現を、保存層で扱えるレース単位／出走馬単位の値へ変換する。
+# 取得先の構造変更に対応する際は、正規の列名と位置による補完の両方を確認する。
+#
 from __future__ import annotations
 
 import json
@@ -17,8 +22,10 @@ from .config import PATHS
 from .logging_utils import AppLogger
 
 
+# 中央競馬の競馬場名。ダミーデータなどで使う名称の一覧。
 COURSES = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"]
 
+# レースIDに含まれる場コードと、表示する競馬場名の対応。
 JRA_COURSE_CODE_MAP = {
     "01": "札幌",
     "02": "函館",
@@ -36,9 +43,11 @@ JRA_COURSE_CODE_MAP = {
 # 01:札幌 02:函館 03:福島 04:新潟 05:東京
 # 06:中山 07:中京 08:京都 09:阪神 10:小倉
 JRA_COURSE_CODES = {f"{number:02d}" for number in range(1, 11)}
+# netkeibaのページ要求間隔（秒）。連続アクセスを抑える共通値。
 PAGE_REQUEST_INTERVAL_SECONDS = 2.0
 
 
+# 多段列名を文字列へまとめ、空白やUnnamedを整理して表の列候補を照合しやすくする。
 def _flatten_columns(columns: pd.Index) -> list[str]:
     """
     pandasで取得した表の列名を平坦化し、列名中の空白を除去する。
@@ -70,6 +79,7 @@ def _flatten_columns(columns: pd.Index) -> list[str]:
     return flattened
 
 
+# 列名候補を優先順に照合する。サイト側の表記の揺れを吸収するため部分一致を使う。
 def _first_column(df: pd.DataFrame, candidates: Iterable[str]) -> str | None:
     for candidate in candidates:
         for col in df.columns:
@@ -78,6 +88,7 @@ def _first_column(df: pd.DataFrame, candidates: Iterable[str]) -> str | None:
     return None
 
 
+# 桁区切りを除き、文字列中の数値部分を取り出す。数値が読めない場合はNoneとする。
 def _to_float(value: object) -> float | None:
     if value is None or pd.isna(value):
         return None
@@ -86,6 +97,7 @@ def _to_float(value: object) -> float | None:
     return float(match.group()) if match else None
 
 
+# 先頭の数字だけを順位として読む。取消など数字で始まらない表示から順位を推測しない。
 def _finish_position(value: object) -> float | None:
     if value is None or pd.isna(value):
         return None
@@ -94,11 +106,13 @@ def _finish_position(value: object) -> float | None:
     return float(match.group(1)) if match else None
 
 
+# 通過順から最大4地点の整数を取り出し、不足地点はNoneで埋める。
 def _passing_positions(value: object) -> tuple[int | None, ...]:
     """通過順を左から最大4地点に分割する。"""
     if value is None or pd.isna(value):
         return (None, None, None, None)
 
+    # 着順を数値化したSeries。取消などは数値順位へ推測しない。
     positions = [
         int(position)
         for position in re.findall(r"\d+", str(value))[:4]
@@ -106,6 +120,7 @@ def _passing_positions(value: object) -> tuple[int | None, ...]:
     return tuple(positions + [None] * (4 - len(positions)))
 
 
+# 分と秒の表示を秒単位へ変換し、保存先のtime_secondsと単位をそろえる。
 def _time_to_seconds(value: object) -> float | None:
     if value is None or pd.isna(value):
         return None
@@ -116,6 +131,7 @@ def _time_to_seconds(value: object) -> float | None:
     return float(minute) * 60 + float(second)
 
 
+# 性齢の表示を性別と年齢へ分け、解析不能な値は欠損として扱う。
 def _parse_sex_age(value: object) -> tuple[str | None, int | None]:
     text = "" if value is None else str(value).strip()
     match = re.search(r"([牡牝セ騙])\s*(\d+)", text)
@@ -125,6 +141,7 @@ def _parse_sex_age(value: object) -> tuple[str | None, int | None]:
     return sex, int(match.group(2))
 
 
+# 馬体重と括弧内の増減を分ける。オッズなど他の数値抽出と混同しない。
 def _parse_body_weight(value: object) -> tuple[float | None, float | None]:
     text = "" if value is None else str(value).strip()
     match = re.search(r"(\d+)\s*\(([+-]?\d+)\)", text)
@@ -134,6 +151,7 @@ def _parse_body_weight(value: object) -> tuple[float | None, float | None]:
     return (float(plain.group(1)), None) if plain else (None, None)
 
 
+# Windowsで使えないファイル名文字を除き、人手で見られる名前を安全に作る。
 def _safe_filename_part(value: object, max_length: int = 80) -> str:
     """Windowsで使用できない文字を除去してファイル名用文字列を作る。"""
     text = "" if value is None else str(value).strip()
@@ -142,6 +160,7 @@ def _safe_filename_part(value: object, max_length: int = 80) -> str:
     return text[:max_length] or "レース名不明"
 
 
+# HTTPセッション、HTMLキャッシュ、サイト固有の解析をまとめた共通基底クラス。
 class NetkeibaCommon:
     """Small, cache-friendly scraper for netkeiba race-list, card and result pages.
 
@@ -169,10 +188,15 @@ class NetkeibaCommon:
         "https://race.netkeiba.com/api/api_get_jra_odds.html"
     )
 
+    # タイムアウト・取得間隔・ロガーとHTTPセッションを設定し、診断用の内部状態を初期化する。
     def __init__(self, logger: AppLogger, interval_seconds: float = 2.0, timeout: int = 30) -> None:
+        # 取得や解析の経過・警告・例外を通知するロガー。
         self.logger = logger
+        # 取得先への連続アクセスを避けるための要求間隔（秒）。
         self.interval_seconds = max(interval_seconds, 0.5)
+        # 一回のHTTP要求に対する待機上限秒数。
         self.timeout = timeout
+        # 再利用するHTTPセッション。テストでは偽セッションへ差し替える。
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -195,14 +219,18 @@ class NetkeibaCommon:
             dict[str, str | None],
         ] = {}
 
+    # 過去結果と未開催出馬表で、参照するHTMLの基準保存先を切り替える。
     @staticmethod
     def _html_root(dataset_type: str) -> Path:
+        # 過去結果と出馬表で、取得URLや列配置・必須情報が異なるため処理を切り替える。
         if dataset_type == "historical":
             return PATHS.historical_html
+        # 未開催レースでは、静的な出馬表の補完や明示された取消状態を処理する。
         if dataset_type == "upcoming":
             return PATHS.upcoming_html
         raise ValueError(f"Unsupported dataset_type: {dataset_type}")
 
+    # データ種別・年・HTMLの種類・識別子で保存先を分け、異なるページの上書きを防ぐ。
     def _cache_path(
         self,
         dataset_type: str,
@@ -218,6 +246,7 @@ class NetkeibaCommon:
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"{key}.html"
 
+    # HTMLのmeta宣言を保存実体と同じUTF-8へそろえ、古い宣言による再解釈を避ける。
     @staticmethod
     def _normalize_html_charset(html: str) -> str:
         """
@@ -239,6 +268,7 @@ class NetkeibaCommon:
         )
         return html
 
+    # 保存バイト列だけでなくHTML内の宣言もUTF-8へそろえ、後でブラウザで開いたときの文字化けを防ぐ。
     def _write_utf8_html(
         self,
         cache_path: Path,
@@ -253,6 +283,7 @@ class NetkeibaCommon:
         )
         return normalized
 
+    # 一部の馬だけのオッズで取得済みと判断せず、出走馬ごとの単勝と人気の補完状況を確認する。
     @staticmethod
     def _has_embedded_win_odds(html: str) -> bool:
         """全出走馬の単勝オッズ・人気がHTMLへ入っているか確認する。"""
@@ -278,6 +309,7 @@ class NetkeibaCommon:
                 return False
         return True
 
+    # 出馬表の対象要素へAPI値を埋め込む。取消などの明示状態はオッズで上書きしない。
     @staticmethod
     def _embed_win_odds(
         html: str,
@@ -311,6 +343,7 @@ class NetkeibaCommon:
             embedded_count += 1
 
         if embedded_count:
+            # 結合成功の行数を数える一時列。特徴量自体がNaNでもキーが一致したかを区別できる。
             marker = soup.new_string(
                 "\nnetkeiba-odds-embedded: "
                 f"{official_datetime or datetime.now().isoformat()}\n",
@@ -320,6 +353,7 @@ class NetkeibaCommon:
                 soup.body.insert(0, marker)
         return str(soup), embedded_count
 
+    # 静的HTMLだけでは不足するオッズを補い、後のDB作成を保存済みHTMLだけで完結できるようにする。
     def _enrich_upcoming_html_with_odds(
         self,
         html: str,
@@ -333,6 +367,8 @@ class NetkeibaCommon:
         既に全頭分が埋め込まれている場合は、再取得指定時を除いて
         APIへアクセスしない。
         """
+        # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
+        # force: キャッシュを使わず新規取得するかを指定する。
         if self._has_embedded_win_odds(html) and not force:
             self.logger.info(
                 f"{race_id}: 保存HTMLのオッズ・人気を再利用"
@@ -412,6 +448,7 @@ class NetkeibaCommon:
         finally:
             time.sleep(self.interval_seconds)
 
+    # 他の年別保存先にある同一ページを探し、血統など重複取得できるデータの通信を減らす。
     def _find_existing_html(
         self,
         cache_path: Path,
@@ -456,6 +493,7 @@ class NetkeibaCommon:
             key=lambda path: path.stat().st_mtime,
         )
 
+    # 名称付与によってファイル名が変わった場合も、ID接頭辞から既存キャッシュを解決する。
     @staticmethod
     def _resolve_race_cache_path(cache_path: Path) -> Path:
         """IDだけの仮パスから、名称付与後の既存HTMLを解決する。"""
@@ -468,7 +506,10 @@ class NetkeibaCommon:
         )
         return candidates[0] if candidates else cache_path
 
+    # 現在のキャッシュ→既存保存分の再利用→HTTP取得の順に試す。forceではキャッシュを使わず取得する。
+    # 取得先・文字コード・キャッシュ利用を診断へ残し、通信後はアクセス間隔を空ける。
     def _download(self, url: str, cache_path: Path, force: bool = False) -> str:
+        # force: キャッシュを使わず新規取得するかを指定する。
         self.current_url = url
         self.last_url = url
         if url not in self.requested_urls:
@@ -526,8 +567,10 @@ class NetkeibaCommon:
             )
             return html
 
+        # 強制取得が要求されていない場合だけ、別の保存先にあるキャッシュも探す。
         if not force:
             existing_cache = self._find_existing_html(cache_path)
+            # 再利用できるHTMLを発見したら今回の出力先へコピーし、新規要求は送らない。
             if existing_cache is not None:
                 cache_path.parent.mkdir(
                     parents=True,
@@ -592,6 +635,7 @@ class NetkeibaCommon:
         time.sleep(self.interval_seconds)
         return html
 
+    # ページ内の12桁の数字を無条件に採用せず、対象日の中央競馬のレース識別子へ絞る。
     @staticmethod
     def _extract_race_ids(html: str, date_text: str) -> list[str]:
         """現行・旧DB双方のHTMLから対象日の12桁レースIDを抽出する。"""
@@ -619,6 +663,7 @@ class NetkeibaCommon:
             and race_id[-2:] in {f"{number:02d}" for number in range(1, 13)}
         )
 
+    # 対象日の表示グループ識別子をHTMLから取り出し、開催一覧の遷移に使う。
     @staticmethod
     def _extract_current_group(
         html: str,
@@ -634,6 +679,7 @@ class NetkeibaCommon:
                     return current_group
         return None
 
+    # 開催日の一覧からレースIDを見つける。取得できない場合は診断を残して空一覧を返す。
     def race_ids_for_date(
         self,
         target_date: date,
@@ -642,8 +688,10 @@ class NetkeibaCommon:
         force: bool = False,
     ) -> list[str]:
         """対象日の中央競馬レースIDを取得する。"""
+        # force: キャッシュを使わず新規取得するかを指定する。
         date_text = target_date.strftime("%Y%m%d")
 
+        # 未開催レースでは、静的な出馬表の補完や明示された取消状態を処理する。
         if dataset_type == "upcoming":
             date_list_url = self.RACE_DATE_LIST_URL.format(
                 date=date_text
@@ -665,6 +713,7 @@ class NetkeibaCommon:
                 date_list_html,
                 date_text,
             )
+            # 対象日の開催グループが解決できない場合、別日の一覧へ進まず失敗させる。
             if not current_group:
                 raise ValueError(
                     f"{target_date}: current_groupを"
@@ -730,6 +779,7 @@ class NetkeibaCommon:
             )
         return race_ids
 
+    # 日付は両端を含める。レース単位の失敗を記録しながら、結果または出馬表・血統・オッズを収集する。
     def _collect_html_date_range(
         self,
         start_date: date,
@@ -739,8 +789,11 @@ class NetkeibaCommon:
         progress_callback=None,
     ) -> dict[str, int]:
         """HTMLだけを取得する。解析やDB保存は行わない。"""
+        # force: キャッシュを使わず新規取得するかを指定する。
+        # 期間が逆転した入力は、空処理として見逃さず開始前に拒否する。
         if end_date < start_date:
             raise ValueError("終了日は開始日以降にしてください。")
+        # 保存先と解析形式が決まらない種別は受け入れず、既知の二種類へ限定する。
         if dataset_type not in {"historical", "upcoming"}:
             raise ValueError(f"未対応のdataset_typeです: {dataset_type}")
 
@@ -764,6 +817,7 @@ class NetkeibaCommon:
             list_count += 1
             for race_index, race_id in enumerate(race_ids, start=1):
                 try:
+                    # 過去結果と出馬表で、取得URLや列配置・必須情報が異なるため処理を切り替える。
                     if dataset_type == "historical":
                         url = self.RESULT_FALLBACK_URL.format(race_id=race_id)
                         kind = "result"
@@ -778,6 +832,7 @@ class NetkeibaCommon:
                         cache_path,
                         force=force,
                     )
+                    # 未開催レースでは、静的な出馬表の補完や明示された取消状態を処理する。
                     if dataset_type == "upcoming":
                         cache_path = self._resolve_race_cache_path(
                             cache_path
@@ -828,6 +883,7 @@ class NetkeibaCommon:
                     self.logger.error(
                         f"{target_date} {race_id}: HTML取得失敗: {exc}"
                     )
+                # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
                 if progress_callback:
                     race_phase_weight = (
                         0.75 if dataset_type == "upcoming" else 1.0
@@ -885,6 +941,7 @@ class NetkeibaCommon:
                         f"{target_date}: JRAオッズHTMLを取得できませんでした。"
                         f"従来のレース情報のみ保持します: {exc}"
                     )
+            # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
             if progress_callback:
                 progress_callback(date_index / total_dates)
         return {
@@ -894,6 +951,7 @@ class NetkeibaCommon:
             "odds_html_count": odds_html_count,
         }
 
+    # 保存済み開催一覧から対象レースHTMLを探す。血統の追加もdownload=Falseで行い、通信を起こさない。
     def _parse_cached_date_range(
         self,
         start_date: date,
@@ -902,6 +960,7 @@ class NetkeibaCommon:
         progress_callback=None,
     ) -> pd.DataFrame:
         """保存済みHTMLだけを解析する。ネットワークアクセスは行わない。"""
+        # 期間が逆転した入力は、空処理として見逃さず開始前に拒否する。
         if end_date < start_date:
             raise ValueError("終了日は開始日以降にしてください。")
         dates = [
@@ -917,6 +976,7 @@ class NetkeibaCommon:
                 / "race_list_db" / f"{date_text}.html"
             )
             if not list_path.exists():
+                # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
                 if progress_callback:
                     progress_callback(index / len(dates))
                 continue
@@ -952,10 +1012,12 @@ class NetkeibaCommon:
                     self.logger.error(
                         f"{target_date} {race_id}: 保存HTML解析失敗: {exc}"
                     )
+            # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
             if progress_callback:
                 progress_callback(index / len(dates))
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+    # 主結果表を優先して一表ずつ解析し、壊れた払戻表などの補助表で全体が失敗するのを防ぐ。
     def _select_table(self, html: str, dataset_type: str) -> pd.DataFrame:
         # ページ全体を pd.read_html() に渡すと、古い保存HTMLに含まれる
         # 空または崩れた払戻テーブルなどで IndexError になり、正常な
@@ -1011,6 +1073,7 @@ class NetkeibaCommon:
             return pd.DataFrame()
         return best_table
 
+    # レース全体に共通する開催条件を抽出し、各出走馬の行へ同じ情報を付与できるようにする。
     def _metadata(
         self,
         soup: BeautifulSoup,
@@ -1022,6 +1085,8 @@ class NetkeibaCommon:
         レース名・馬場種別・距離などは馬柱ではなく、
         ページ上部のレース情報領域から取得する。
         """
+        # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
+        # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
         intro = soup.select_one(
             ".data_intro, .RaceData01, .RaceData02, "
             ".race_head_inner, .RaceList_NameBox"
@@ -1247,6 +1312,7 @@ class NetkeibaCommon:
             "track_condition": track_condition,
         }
 
+    # レースIDを残したまま名称などをファイル名へ付け、人手でキャッシュを確認しやすくする。
     def _rename_race_html(
         self,
         cache_path: Path,
@@ -1261,6 +1327,8 @@ class NetkeibaCommon:
         race_id_開催地_年月日_Rxx_レース名.html
         へ変更する。
         """
+        # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
+        # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
         date_text = race_date.strftime("%Y年%m月%d日")
         safe_race_name = _safe_filename_part(race_name)
         safe_course_name = _safe_filename_part(
@@ -1305,6 +1373,7 @@ class NetkeibaCommon:
         )
         return target
 
+    # 馬IDと表示名を用いて血統HTMLを識別しやすいファイル名へ変更する。
     def _rename_horse_html(
         self,
         cache_path: Path,
@@ -1340,6 +1409,7 @@ class NetkeibaCommon:
         )
         return target
 
+    # 血統表の構造から父・母・母父を読み分け、表示名とリンク先IDの両方を返す。
     @staticmethod
     def _parse_pedigree_html(
         html: str,
@@ -1386,6 +1456,7 @@ class NetkeibaCommon:
                         ] = cell
                 column_index += colspan
 
+        # 血統表の指定位置から、馬名とリンク先IDを対応付けて取り出す。
         def pedigree_value(
             row_index: int,
             column_index: int,
@@ -1428,6 +1499,7 @@ class NetkeibaCommon:
             "damsire_name": damsire_name,
         }
 
+    # 名称が付いた保存済み血統HTMLを馬IDから探し、既存キャッシュを再利用する。
     def _cached_pedigree_path(
         self,
         horse_id: str,
@@ -1453,6 +1525,7 @@ class NetkeibaCommon:
                 return candidates[0]
         return None
 
+    # 保存済み血統を優先し、downloadが許可された場合だけ不足ページを取得する。
     def _horse_pedigree(
         self,
         horse_id: str,
@@ -1463,10 +1536,12 @@ class NetkeibaCommon:
         download: bool,
         force: bool = False,
     ) -> dict[str, str | None]:
+        # force: キャッシュを使わず新規取得するかを指定する。
         cache_key = (dataset_type, horse_id)
         if cache_key in self.pedigree_cache:
             return self.pedigree_cache[cache_key]
 
+        # 通信が許可された呼出しでだけ不足する血統HTMLを取得し、ローカル再解析の経路と区別する。
         if download:
             url = self.HORSE_PEDIGREE_URL.format(
                 horse_id=horse_id
@@ -1533,6 +1608,7 @@ class NetkeibaCommon:
         self.pedigree_cache[cache_key] = pedigree
         return pedigree
 
+    # 出走馬に血統のIDと表示名を付ける。保存HTMLの再解析では追加通信をしない指定で利用する。
     def _add_pedigrees(
         self,
         frame: pd.DataFrame,
@@ -1542,6 +1618,7 @@ class NetkeibaCommon:
         download: bool,
         force: bool = False,
     ) -> pd.DataFrame:
+        # force: キャッシュを使わず新規取得するかを指定する。
         result = frame.copy()
         pedigree_columns = [
             "sire_id",
@@ -1601,6 +1678,7 @@ class NetkeibaCommon:
             )
         return result
 
+    # 馬ページへのリンクからIDと名前を取り出し、血統取得の対象を列挙する。
     @staticmethod
     def _extract_horse_links(
         soup: BeautifulSoup,
@@ -1628,6 +1706,7 @@ class NetkeibaCommon:
                 horses.append((match.group(1), horse_name))
         return horses
 
+    # 表の表示名とは別に、リンク先から馬・騎手・調教師の識別子を抽出する。
     def _extract_link_ids(self, soup: BeautifulSoup) -> tuple[list[str | None], list[str | None], list[str | None]]:
         rows = soup.select("tr.HorseList, table.RaceTable01 tr, table.race_table_01 tr")
         horse_ids: list[str | None] = []
@@ -1645,6 +1724,7 @@ class NetkeibaCommon:
             trainer_ids.append(trainer.group(1) if trainer else None)
         return horse_ids, jockey_ids, trainer_ids
 
+    # 旧結果表で列名が読めない場合だけ、既知の列位置から対応を補う。
     @staticmethod
     def _historical_positional_columns(table: pd.DataFrame) -> dict[str, str | None]:
         """
@@ -1657,6 +1737,7 @@ class NetkeibaCommon:
         """
         columns = list(map(str, table.columns))
 
+        # 既知の列位置が表の範囲内にある場合だけ列名を返し、列数の違いで添字例外を起こさない。
         def at(index: int) -> str | None:
             return columns[index] if index < len(columns) else None
 
@@ -1677,6 +1758,7 @@ class NetkeibaCommon:
             "trainer_name": at(17),
         }
 
+    # 現行出馬表の列名が不足した場合に、表の列位置を使って必要列を補う。
     @staticmethod
     def _upcoming_positional_columns(
         table: pd.DataFrame,
@@ -1689,6 +1771,7 @@ class NetkeibaCommon:
         """
         columns = list(map(str, table.columns))
 
+        # 既知の列位置が表の範囲内にある場合だけ列名を返し、列数の違いで添字例外を起こさない。
         def at(index: int) -> str | None:
             return columns[index] if index < len(columns) else None
 
@@ -1705,9 +1788,14 @@ class NetkeibaCommon:
             "popularity": at(10),
         }
 
+    # 主表・レース条件・リンクIDを統合し、一頭一行の保存用レコードへ変換する。
+    # 出馬表の取消は明示ラベルから判定し、オッズ欠損だけでは取消扱いしない。
     def _parse_page(self, html: str, race_id: str, race_date: date, dataset_type: str) -> pd.DataFrame:
+        # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
+        # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
         soup = BeautifulSoup(html, "lxml")
         table = self._select_table(html, dataset_type)
+        # 対象表を認識できない状態を正常なゼロ頭と混同しないように扱う。
         if table.empty:
             raise ValueError("出走馬テーブルを認識できません。raw_htmlを確認してください。")
 
@@ -1758,6 +1846,7 @@ class NetkeibaCommon:
                 if columns.get(key) is None and fallback_column is not None:
                     columns[key] = fallback_column
 
+        # 馬名列がなければ行を出走馬として解釈できないため、解析を止める。
         if not columns["horse_name"]:
             raise ValueError(
                 f"馬名列が見つかりません。列={list(table.columns)}"
@@ -1769,6 +1858,7 @@ class NetkeibaCommon:
             "horse_name",
             "popularity",
         ]
+        # 過去結果と出馬表で、取得URLや列配置・必須情報が異なるため処理を切り替える。
         if dataset_type == "historical":
             unresolved = [
                 key for key in required_historical
@@ -1823,6 +1913,7 @@ class NetkeibaCommon:
                     "dataset_type": dataset_type,
                 }
             )
+            # 未開催レースでは、静的な出馬表の補完や明示された取消状態を処理する。
             if dataset_type == "upcoming":
                 # Only explicit withdrawal labels count; missing odds alone do not.
                 labels = {str(value).strip() for value in row.values}

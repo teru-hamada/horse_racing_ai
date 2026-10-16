@@ -1,3 +1,7 @@
+# 指定日のレース一覧を取得し、1レース予想を順番に実行して日次成果物へ集約する。
+# 個別の失敗で残りのレースを止めず、成功した予想と全レースの診断結果を分けて保存する。
+# JSON・CSV・HTML・Actionsサマリーに各段階の状態を残し、不足の原因を追えるようにする。
+#
 """Manual date-wide orchestration with durable per-race diagnostics."""
 from __future__ import annotations
 from importlib import import_module as _import_module
@@ -21,6 +25,7 @@ DateCollector = _import_module('src.20_scrapers_html_collection.date_collector')
 build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
 
 
+# 内側の各レースがActionsサマリーへ大量出力しないよう、一時的に環境変数を外して最後に戻す。
 @contextmanager
 def race_summaries_off():
     # Avoid exceeding Actions' summary size with dozens of nested JSON reports.
@@ -32,7 +37,9 @@ def race_summaries_off():
             os.environ["GITHUB_STEP_SUMMARY"] = previous
 
 
+# 取得・DB・予想の各レポートを一行へまとめる。未実行の段階はskippedとして残す。
 def race_row(race_id, report, directory):
+    # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
     fetch_path = directory / "fetch/report.json"
     fetch = json.loads(fetch_path.read_text(encoding="utf-8")) if fetch_path.exists() else {}
     database = fetch.get("database", {})
@@ -58,12 +65,16 @@ def race_row(race_id, report, directory):
     }
 
 
+# 途中までの状態もJSONへ書き出し、後続のレースで失敗しても診断を参照できるようにする。
 def save_progress(output, report):
     (output / "date_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     pd.DataFrame(report["races"]).to_csv(output / "race_status.csv", index=False, encoding="utf-8-sig")
 
 
+# 対象日のレースを処理し、成功分をCSVとプレビューへ集約する。全レースの成否は別途保持する。
 def run_date(bundle: Path, output: Path, race_date: date):
+    # bundle: runtime.zipとmanifestなどがある配布用バンドルのディレクトリ。
+    # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     report = {"race_date": str(race_date), "status": "running", "race_ids": [], "races": []}
@@ -100,6 +111,7 @@ def run_date(bundle: Path, output: Path, race_date: date):
                     race_bets = pd.read_csv(directory / "bets.csv", dtype={"race_id": str, "selection": str})
                     predictions.append(race_predictions)
                     bets.append(race_bets)
+            # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
             except Exception as exc:
                 logger.exception("レース処理失敗: %s", race_id)
                 row = {"race_id": race_id, "status": "error", "reason": str(exc)}
@@ -116,6 +128,7 @@ def run_date(bundle: Path, output: Path, race_date: date):
             combined.to_csv(output / "predictions.csv", index=False, encoding="utf-8-sig")
             combined_bets.to_csv(output / "bets.csv", index=False, encoding="utf-8-sig")
             build_prediction_site(combined, race_date, combined.model_run_id.iloc[0], output / "preview", bet_recommendations=combined_bets)
+    # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
     except Exception as exc:
         report.update(status="error", error=str(exc))
         logger.exception("開催日テスト失敗")
@@ -148,6 +161,7 @@ def run_date(bundle: Path, output: Path, race_date: date):
     return report
 
 
+# コマンドライン引数を解析して処理を起動する入口。省略時の保存先やモードはparserで定義する。
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--race-date", type=date.fromisoformat, required=True)
@@ -160,5 +174,6 @@ def main():
     return {"ok": 0, "incomplete": 2, "error": 1}[result["status"]]
 
 
+# モジュールとしてimportしただけでは実行せず、CLIとして起動された場合だけ入口を呼ぶ。
 if __name__ == "__main__":
     raise SystemExit(main())

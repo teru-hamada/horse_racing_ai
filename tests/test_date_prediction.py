@@ -1,3 +1,6 @@
+# 検証対象：複数レースの成功・不足・失敗を集約し、成功分だけ予想成果物へ載せることを確認する。
+# レース発見の失敗やオッズ不足も、段階別の診断として保存されることを検証する。
+#
 from importlib import import_module as _import_module
 from datetime import date
 import json
@@ -8,6 +11,7 @@ import pytest
 daily = _import_module('src.10_workflows.date_prediction')
 
 
+# 複数レースの途中に失敗や不足があっても処理を続け、成功したレースだけを予想CSVへ集約する。
 @pytest.mark.parametrize("statuses,expected", [
     (["ok", "ok"], "ok"), (["incomplete", "ok"], "incomplete"),
     (["error", "ok"], "error"), ([], "incomplete"),
@@ -16,6 +20,7 @@ def test_date_continues_and_aggregates_only_success(tmp_path, monkeypatch, statu
     ids = [f"2026060405{n:02d}" for n in range(1, len(statuses) + 1)]
     monkeypatch.setattr(daily.DateCollector, "race_ids_for_date", lambda *a, **kw: ids + ids[:1])
     called = []
+    # 予想処理の代替。レースごとの成否を制御し、集約側の動作を検証する。
     def predict(bundle, output, race_date, race_id):
         called.append(race_id)
         status = statuses[ids.index(race_id)]
@@ -43,7 +48,9 @@ def test_date_continues_and_aggregates_only_success(tmp_path, monkeypatch, statu
         assert set(result.race_id) == {r for r, s in zip(ids, statuses) if s == "ok"}
 
 
+# レース一覧の取得例外を、空の正常結果ではなく原因付きerrorとして返す。
 def test_discovery_failure_is_reported(tmp_path, monkeypatch):
+    # 対象の失敗経路へ進ませるため、呼び出されたら意図的に例外を発生させる。
     def fail(*a, **kw):
         raise RuntimeError("discovery failed")
     monkeypatch.setattr(daily.DateCollector, "race_ids_for_date", fail)
@@ -52,6 +59,7 @@ def test_discovery_failure_is_reported(tmp_path, monkeypatch):
     assert "discovery failed" in result["error"]
 
 
+# オッズ不足を取得段階のincompleteとして示し、未実行の予想と不足理由も診断行へ記録する。
 def test_stage_details_include_missing_odds(tmp_path):
     (tmp_path / "fetch").mkdir()
     (tmp_path / "fetch/report.json").write_text(json.dumps({

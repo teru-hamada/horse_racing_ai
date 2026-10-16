@@ -1,3 +1,7 @@
+# Actionsへ渡す学習済みモデルと推論用DBのスナップショットを生成・検証する。
+# 成功済みtop3モデルの最新版を選び、必要なファイルがなければ古いモデルへ切り替えず失敗させる。
+# アーカイブ、依存ライブラリ一覧、各展開ファイルのSHA-256とモデルIDを確認してから利用する。
+#
 """Export/verify a versioned runtime snapshot for manual Actions predictions."""
 from __future__ import annotations
 
@@ -16,14 +20,20 @@ from pathlib import Path
 
 import duckdb
 
+# プロジェクト既定の保存先。DBを差し替えるテストではこの参照も隔離先へ変更する。
 PATHS = import_module("src.00_common.config").PATHS
+# バンドルへ収録する必須のモデル成果物。どれか一つでも欠ければ生成を止める。
 MODEL_FILES = ("model.pt", "preprocessor.joblib", "metrics.json", "manifest.json")
+# ZIPに存在してよいファイル名の集合。展開前に過不足と重複を検査する。
 MEMBERS = {"racing.duckdb", "features.duckdb", *(f"model/{name}" for name in MODEL_FILES)}
+# 実行環境を固定・確認するライブラリ名の一覧。
 PACKAGES = ("numpy", "pandas", "requests", "beautifulsoup4", "lxml", "duckdb",
             "pyarrow", "torch", "scikit-learn", "joblib")
 
 
+# 大きなZIPやDBを一度にメモリへ載せず、1 MiBずつ読み進めてSHA-256を計算する。
 def sha256(path: Path) -> str:
+    # ファイルや入力データのハッシュを順次更新するオブジェクト。全体を一度に保持しない。
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -31,12 +41,14 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+# completedかつtop3の登録だけを対象に、作成日時の新しいモデルを選択する。
 def latest_model(connection) -> dict:
     rows = connection.execute(
         "SELECT model_run_id, created_at, model_path FROM model_runs "
         "WHERE status = 'completed' AND task_name = 'top3' "
         "ORDER BY created_at DESC NULLS LAST, model_run_id DESC LIMIT 1"
     ).fetchall()
+    # 成功済みTop3モデルが一つもなければ、未学習としてバンドル生成を止める。
     if not rows:
         raise ValueError("学習成功済みのtop3モデルが登録されていません。")
     model_id, created_at, model_path = rows[0]
@@ -45,6 +57,7 @@ def latest_model(connection) -> dict:
     return {"model_id": model_id, "created_at": str(created_at), "model_path": model_path}
 
 
+# 元DBを読み取り専用で開き、必要な表とモデルを作業領域へ複製してから4つの配布ファイルへ反映する。
 def export_bundle(output: Path) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output) as temporary, ExitStack() as stack:
@@ -59,6 +72,7 @@ def export_bundle(output: Path) -> dict:
         (stage / "model").mkdir()
         for name in MODEL_FILES:
             source = model_dir / name
+            # 最新版の必須成果物が欠けた場合は、古いモデルへ自動切替せず不足を通知する。
             if not source.is_file():
                 raise FileNotFoundError(f"最新モデルの必須ファイルがありません: {source}")
             shutil.copy2(source, stage / "model" / name)
@@ -68,6 +82,7 @@ def export_bundle(output: Path) -> dict:
             raise ValueError("DBとモデルのIDが一致しません。")
         history_rows = racing.execute("SELECT count(*) FROM race_records WHERE dataset_type='historical'").fetchone()[0]
         speed_rows = features.execute("SELECT count(*) FROM performance_features WHERE performance_feature_name='speed_index' AND performance_feature_version='1.0.0'").fetchone()[0]
+        # 予想に必要な過去結果と速度指数の両方があることを確認し、欠けたバンドルを配布しない。
         if not history_rows or not speed_rows:
             raise ValueError("過去レースまたは速度指数データがありません。")
         # Export only inference inputs, avoiding unused training feature tables.
@@ -111,15 +126,20 @@ def export_bundle(output: Path) -> dict:
     return manifest
 
 
+# ZIP全体のハッシュとメンバー一覧を先に検査し、展開後も各ファイルのハッシュとモデルIDを確認する。
 def unpack_bundle(bundle: Path, output: Path) -> dict:
+    # bundle: runtime.zipとmanifestなどがある配布用バンドルのディレクトリ。
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    # 対応する形式と収録ファイル一覧を確認し、未知の構成を展開しない。
     if manifest.get("format") != 1 or set(manifest["files"]) != MEMBERS:
         raise ValueError("Unsupported bundle manifest")
     for name, key in (("runtime.zip", "archive_sha256"), ("requirements.txt", "requirements_sha256")):
+        # マニフェストと異なるZIPや依存一覧は、モデル読み込みより前に拒否する。
         if sha256(bundle / name) != manifest[key]:
             raise ValueError(f"Bundle hash mismatch: {name}")
     output.mkdir(parents=True, exist_ok=False)
     with zipfile.ZipFile(bundle / "runtime.zip") as archive:
+        # 余分なファイルや同名重複を拒否し、期待する固定メンバーだけを展開する。
         if set(archive.namelist()) != MEMBERS or len(archive.namelist()) != len(MEMBERS):
             raise ValueError("Unexpected archive members")
         for name in sorted(MEMBERS):
@@ -127,6 +147,7 @@ def unpack_bundle(bundle: Path, output: Path) -> dict:
             destination.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(name) as source, destination.open("wb") as target:
                 shutil.copyfileobj(source, target)
+            # アーカイブ全体だけでなく、展開済みの各ファイルについても内容一致を確認する。
             if sha256(destination) != manifest["files"][name]:
                 raise ValueError(f"Payload hash mismatch: {name}")
     with duckdb.connect(str(output / "racing.duckdb"), read_only=True) as con:
@@ -139,6 +160,7 @@ def unpack_bundle(bundle: Path, output: Path) -> dict:
     return manifest
 
 
+# モジュールとしてimportしただけでは実行せず、CLIとして起動された場合だけ入口を呼ぶ。
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("prediction_bundle"))

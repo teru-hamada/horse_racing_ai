@@ -1,3 +1,7 @@
+# GitHub Actionsの実行履歴と完了レース件数から、公開用のジョブ状況ページを作る。
+# 再実行回数まで一致するartifactを読み、取得できない件数はゼロとせず不明として扱う。
+# 認証情報はAPIへのアクセス時だけ使い、公開HTMLやJavaScriptへ埋め込まない。
+#
 """Build a public status snapshot from workflow metadata and race counts (stdlib only)."""
 from __future__ import annotations
 
@@ -14,13 +18,18 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zipfile import ZipFile, BadZipFile
 
+# 日本標準時（UTC+9）。日付判定と公開ページの時刻表示を統一する。
 JST = timezone(timedelta(hours=9))
+# 公開する最新の実行履歴数の上限。件数artifactの取得対象もこの範囲へ絞る。
 MAX_RUNS = 7
+# 公開してよい予想・照合の完了レース件数のキー。
 COUNT_KEYS = ("predicted_races", "compared_races")
 
 
+# 発見したレース数ではなく、レポートに記録された完了済みの予想・照合レース数を数える。
 def collect_counts(output: Path) -> dict:
     """Count completed predictions/comparisons, not discovered races or horses."""
+    # 実行出力配下のレポートJSONを読む。未生成のレポートはNoneとして件数不明と区別する。
     def read(relative):
         path = output / relative
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
@@ -29,7 +38,9 @@ def collect_counts(output: Path) -> dict:
     prediction = read("prediction/date_report.json")
     comparison = read("comparison/report.json")
     tasks = (daily or {}).get("tasks", {})
+    # レポートから確認した予想完了レース数。不明はNoneで保持する。
     predicted = sum(row.get("prediction") == "ok" for row in prediction["races"]) if prediction else None
+    # 確認できた結果照合レース数。不明と開催なしのゼロを区別する。
     compared = comparison["summary"]["compared_races"] if comparison else None
     if tasks.get("prediction", {}).get("status") == "no_races":
         predicted = 0
@@ -40,10 +51,12 @@ def collect_counts(output: Path) -> dict:
     return dict(zip(COUNT_KEYS, (predicted, compared)))
 
 
+# 確認済みの非負整数だけを件数として表示し、取得不能などはダッシュで示す。
 def count_label(value) -> str:
     return str(value) if type(value) is int and value >= 0 else "—"
 
 
+# GitHubの実行状態と結論を日本語へ変換する。未完了は成功・失敗と断定しない。
 def result_label(run: dict) -> str:
     if run.get("status") != "completed":
         return "実行中" if run.get("status") == "in_progress" else "待機中"
@@ -52,10 +65,12 @@ def result_label(run: dict) -> str:
     )
 
 
+# API情報をエスケープして日本時間の履歴表へ変換し、保存版ページのHTMLを返す。
 def render_status(runs: list[dict], now: datetime, repository: str = "", branch: str = "") -> str:
     rows = []
     for run in runs[:MAX_RUNS]:
         started = datetime.fromisoformat(run["run_started_at"].replace("Z", "+00:00"))
+        # ブラウザ更新で同じ実行と再試行を識別するdata属性。埋め込む値はエスケープする。
         attrs = f' data-run-id="{escape(str(run.get("id", "")))}" data-attempt="{escape(str(run.get("run_attempt", 1)))}"' if repository else ""
         rows.append(f"<tr{attrs}>" + "".join(f"<td>{escape(value)}</td>" for value in (
             started.astimezone(JST).strftime("%Y-%m-%d %H:%M:%S"),
@@ -69,7 +84,9 @@ def render_status(runs: list[dict], now: datetime, repository: str = "", branch:
         "<th>予想レース数</th><th>レース結果照合数</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         if rows else "<p>実行記録はありません。</p>"
     )
+    # 公開APIによる最新履歴表示を有効にするHTML断片。リポジトリ指定がない場合は空にする。
     live = ""
+    # 公開リポジトリが指定された場合だけ、ブラウザからの最新状況取得を有効にする。
     if repository:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise ValueError("Invalid public repository")
@@ -95,7 +112,9 @@ a{{color:#38d996}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:
 {live}<div class="table" id="run-history">{content}</div></body></html>'''
 
 
+# API要求のURLと認証ヘッダーを組み立てる。トークンは公開用の戻り値へ含めない。
 def api_request(url: str, token: str) -> Request:
+    # token: GitHub API認証用の値。公開HTMLやログへ書き出さない。
     request = Request(
         url,
         headers={"Accept": "application/vnd.github+json",
@@ -106,7 +125,9 @@ def api_request(url: str, token: str) -> Request:
     return request
 
 
+# run_idとrun_attemptに一致する件数artifactを読む。取得不可・期限切れなどは不明として扱う。
 def fetch_counts(repository: str, run: dict, token: str) -> dict:
+    # token: GitHub API認証用の値。公開HTMLやログへ書き出さない。
     name = f"daily-racing-counts-{run['id']}-{run.get('run_attempt', 1)}"
     query = urlencode({"name": name, "per_page": 1})
     base = f"https://api.github.com/repos/{repository}/actions/artifacts"
@@ -119,9 +140,11 @@ def fetch_counts(repository: str, run: dict, token: str) -> dict:
         return {}
     with urlopen(api_request(f"{base}/{int(artifact['id'])}/zip", token), timeout=30) as response:
         archive = response.read(65537)
+    # 件数しか含めない小さなartifactなので、想定外に大きいZIPを受け入れない。
     if len(archive) > 65536:
         raise ValueError("Race count artifact is too large")
     with ZipFile(BytesIO(archive)) as zipped:
+        # 圧縮後のサイズだけでなく展開後のJSONサイズも制限する。
         if zipped.getinfo("race_counts.json").file_size > 65536:
             raise ValueError("Race count report is too large")
         counts = json.loads(zipped.read("race_counts.json"))
@@ -129,7 +152,9 @@ def fetch_counts(repository: str, run: dict, token: str) -> dict:
             if type(counts.get(key)) is int and counts[key] >= 0}
 
 
+# 対象イベントとブランチの実行から最新7件を選び、それぞれの件数情報を補う。
 def fetch_runs(repository: str, branch: str, token: str) -> list[dict]:
+    # token: GitHub API認証用の値。公開HTMLやログへ書き出さない。
     query = urlencode({"branch": branch, "per_page": 100})
     request = api_request(
         f"https://api.github.com/repos/{repository}/actions/workflows/daily-racing.yml/runs?{query}", token)
@@ -137,6 +162,7 @@ def fetch_runs(repository: str, branch: str, token: str) -> list[dict]:
         payload = json.load(response)
     # Missing or invalid API data must not be presented as an empty run history.
     runs = payload["workflow_runs"]
+    # APIの予期しない応答形式を、実行履歴なしの正常結果として受け入れない。
     if not isinstance(runs, list):
         raise ValueError("Invalid workflow run response")
     runs = [run for run in runs if run.get("event") in {"schedule", "workflow_dispatch"}][:MAX_RUNS]
@@ -148,15 +174,18 @@ def fetch_runs(repository: str, branch: str, token: str) -> list[dict]:
     return runs
 
 
+# ジョブ状況ページと公開JSを書き込み、既存ページへ状況ページの導線を補う。
 def build_status(site: Path, runs: list[dict], now: datetime) -> None:
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     page = render_status(runs, now, repository, os.environ.get("DEFAULT_BRANCH", ""))
     site.mkdir(parents=True, exist_ok=True)
     (site / "job-status.html").write_text(page, encoding="utf-8")
+    # 公開リポジトリが指定された場合だけ、ブラウザからの最新状況取得を有効にする。
     if repository:
         (site / "job-status.js").write_text(Path(__file__).with_name("job_status.js").read_text(encoding="utf-8"), encoding="utf-8")
     # Include the navigation even for prediction pages generated before this feature.
     for path in [site / "index.html", *(site / "predictions").glob("*.html")]:
+        # 対象ファイルが未生成のケースを扱い、別のファイルを推測して読み込まない。
         if not path.exists():
             continue
         html = path.read_text(encoding="utf-8")
@@ -176,8 +205,10 @@ def build_status(site: Path, runs: list[dict], now: datetime) -> None:
         path.write_text(html, encoding="utf-8")
 
 
+# 今回と同じ実行ID・試行回数の行だけに予想ジョブの結果を付け、過去の試行を上書きしない。
 def annotate_current_run(runs: list[dict], run_id: str, attempt: str, result: str) -> None:
     """Attach the caller's job result only to this run and this retry attempt."""
+    # 呼出元から付与する予想ジョブの結果は、定義済みの状態値だけを受け入れる。
     if result not in {"success", "failure", "cancelled", "skipped"}:
         raise ValueError("Invalid prediction job result")
     for run in runs:
@@ -185,6 +216,7 @@ def annotate_current_run(runs: list[dict], run_id: str, attempt: str, result: st
             run["prediction_result"] = result
 
 
+# コマンドライン引数を解析して処理を起動する入口。省略時の保存先やモードはparserで定義する。
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--site", type=Path, default=Path("docs"))
@@ -202,5 +234,6 @@ def main() -> None:
     build_status(args.site, runs, datetime.now(JST))
 
 
+# モジュールとしてimportしただけでは実行せず、CLIとして起動された場合だけ入口を呼ぶ。
 if __name__ == "__main__":
     main()

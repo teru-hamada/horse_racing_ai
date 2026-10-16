@@ -1,3 +1,7 @@
+# JRAの公開画面をたどり、対象日のレース・券種別オッズHTMLを保存する。
+# POST遷移用の識別子からレースIDと券種を読み取り、対象外の画面を除く。
+# 保存時にはHTMLの文字コード宣言をUTF-8へ統一し、解析処理は別モジュールへ委ねる。
+#
 from __future__ import annotations
 
 import re
@@ -9,6 +13,7 @@ from typing import Iterable
 import requests
 
 
+# JRAのPOST画面遷移を管理し、レース・券種ごとのHTMLキャッシュを収集する。
 class JraOddsHtmlCollector:
     """JRAの公開オッズ画面をたどり、券種別HTMLを保存する。"""
 
@@ -35,6 +40,7 @@ class JraOddsHtmlCollector:
         re.IGNORECASE,
     )
 
+    # 取得先のルート、HTTPセッション、ログ、通信条件をインスタンスへ保持する。
     def __init__(
         self,
         logger,
@@ -42,9 +48,13 @@ class JraOddsHtmlCollector:
         timeout: int = 30,
         session: requests.Session | None = None,
     ) -> None:
+        # 取得や解析の経過・警告・例外を通知するロガー。
         self.logger = logger
+        # 取得先への連続アクセスを避けるための要求間隔（秒）。
         self.interval_seconds = max(float(interval_seconds), 0.0)
+        # 一回のHTTP要求に対する待機上限秒数。
         self.timeout = timeout
+        # 再利用するHTTPセッション。テストでは偽セッションへ差し替える。
         self.session = session or requests.Session()
         self.session.headers.update(
             {
@@ -57,10 +67,12 @@ class JraOddsHtmlCollector:
             }
         )
 
+    # JRAページのリンクやイベント属性から、POST遷移に使う画面識別子を抽出する。
     @classmethod
     def _action_cnames(cls, html: str) -> list[str]:
         return list(dict.fromkeys(cls._ACTION_PATTERN.findall(html)))
 
+    # JRAの画面識別子をレースIDと券種へ解釈する。対象形式でなければ採用しない。
     @classmethod
     def _race_id_and_bet_type(
         cls, cname: str, target_date: date
@@ -78,6 +90,7 @@ class JraOddsHtmlCollector:
         )
         return race_id, bet_type
 
+    # JRAの画面遷移パラメーターをPOSTし、診断に使える画面本文を受け取る。
     def _post(self, cname: str) -> str:
         response = self.session.post(
             self.URL,
@@ -95,6 +108,7 @@ class JraOddsHtmlCollector:
             time.sleep(self.interval_seconds)
         return html
 
+    # 保存前に文字コード宣言を統一し、ローカル解析でも表示でも同じ文字列を扱えるようにする。
     @staticmethod
     def _write_utf8(path: Path, html: str) -> None:
         html = re.sub(
@@ -106,6 +120,7 @@ class JraOddsHtmlCollector:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(html, encoding="utf-8", errors="replace")
 
+    # 対象日・レースIDへ絞って券種ごとのHTMLを保存し、取得件数と進捗を呼出元へ返す。
     def collect_date(
         self,
         target_date: date,
@@ -115,13 +130,16 @@ class JraOddsHtmlCollector:
         progress_callback=None,
     ) -> int:
         """取得可能な対象レース・券種のHTMLを一件ずつ保存する。"""
+        # force: キャッシュを使わず新規取得するかを指定する。
         target_race_ids = set(race_ids)
         if not target_race_ids:
+            # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
             if progress_callback:
                 progress_callback(1.0)
             return 0
 
         entry_html = self._post(self.ENTRY_CNAME)
+        # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
         if progress_callback:
             progress_callback(0.1)
         date_text = target_date.strftime("%Y%m%d")
@@ -134,6 +152,7 @@ class JraOddsHtmlCollector:
             self.logger.warning(
                 f"{target_date}: JRAオッズページに対象開催がありません。"
             )
+            # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
             if progress_callback:
                 progress_callback(1.0)
             return 0
@@ -146,6 +165,7 @@ class JraOddsHtmlCollector:
                 if parsed is None or parsed[0] not in target_race_ids:
                     continue
                 pages.setdefault(parsed, cname)
+            # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
             if progress_callback:
                 progress_callback(
                     0.1 + 0.2 * venue_index / len(venue_cnames)
@@ -154,6 +174,7 @@ class JraOddsHtmlCollector:
         saved_count = 0
         sorted_pages = sorted(pages.items())
         if not sorted_pages:
+            # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
             if progress_callback:
                 progress_callback(1.0)
             return 0
@@ -177,6 +198,7 @@ class JraOddsHtmlCollector:
                     self.logger.warning(
                         f"{race_id} {bet_type}: JRAオッズHTML取得失敗: {exc}"
                     )
+            # 呼出側が指定した場合だけ進捗を通知する。ジョブ実行では取消確認の契機にもなる。
             if progress_callback:
                 progress_callback(
                     0.3 + 0.7 * page_index / len(sorted_pages)

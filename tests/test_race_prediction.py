@@ -1,3 +1,6 @@
+# 検証対象：最新成功モデルの配布用バンドル生成、元DBの不変性、ハッシュ検証を確認する。
+# 古いモデルへの切替禁止、予測確率・対象馬の妥当性、再現結果の差異検出を検証する。
+#
 from importlib import import_module as _import_module
 import json
 import sys
@@ -13,6 +16,7 @@ compare_results = _import_module('src.10_workflows.race_prediction').compare_res
 validate_predictions = _import_module('src.10_workflows.race_prediction').validate_predictions
 
 
+# 成功・失敗モデルの登録DBとダミー成果物を用意するfixture。最新版の選択条件を検証する。
 @pytest.fixture
 def source(tmp_path, monkeypatch):
     paths = replace(bundle.PATHS, database=tmp_path / "source.duckdb",
@@ -37,6 +41,7 @@ def source(tmp_path, monkeypatch):
     return paths, model
 
 
+# 最新成功モデルの選択、Python版・LF改行・ハッシュ、展開後の一致、元DBの不変性を確認する。
 def test_export_latest_and_read_only_source(tmp_path, source):
     paths, _ = source
     before = [bundle.sha256(p) for p in (paths.database, paths.feature_database)]
@@ -55,6 +60,7 @@ def test_export_latest_and_read_only_source(tmp_path, source):
         assert con.execute("SELECT count(*) FROM race_records").fetchone()[0] == 1
 
 
+# 最新モデルの必須ファイルが欠けたら、旧モデルへ戻らず配布ZIPの生成を失敗させる。
 def test_missing_latest_file_does_not_fall_back(tmp_path, source):
     paths, model = source
     (model / "model.pt").unlink()
@@ -63,6 +69,7 @@ def test_missing_latest_file_does_not_fall_back(tmp_path, source):
     assert not (tmp_path / "bundle/runtime.zip").exists()
 
 
+# ZIPへバイトを追加した場合、モデルの読み込み以前にハッシュ不一致として拒否する。
 def test_tampering_rejected_before_deserialization(tmp_path, source):
     bundle.export_bundle(tmp_path / "bundle")
     with (tmp_path / "bundle/runtime.zip").open("ab") as stream:
@@ -71,6 +78,7 @@ def test_tampering_rejected_before_deserialization(tmp_path, source):
         bundle.unpack_bundle(tmp_path / "bundle", tmp_path / "work")
 
 
+# ライブラリ一覧の変更もハッシュ検査で検出し、異なる実行環境の利用を止める。
 def test_requirements_content_change_is_rejected(tmp_path, source):
     bundle.export_bundle(tmp_path / "bundle")
     with (tmp_path / "bundle/requirements.txt").open("ab") as stream:
@@ -79,6 +87,7 @@ def test_requirements_content_change_is_rejected(tmp_path, source):
         bundle.unpack_bundle(tmp_path / "bundle", tmp_path / "work")
 
 
+# NaN・無限大・負値・1超の確率を、正常な予想として受け入れない。
 @pytest.mark.parametrize("probability", [float('nan'), float('inf'), -0.1, 1.1])
 def test_invalid_probability_rejected(probability):
     card = pd.DataFrame({"race_id": ["r"], "horse_id": ["h"], "horse_number": [1]})
@@ -86,6 +95,7 @@ def test_invalid_probability_rejected(probability):
         validate_predictions(card, card.assign(top3_probability=probability))
 
 
+# 予想行の欠落や馬IDの不一致は拒否し、出馬表と一致する結果だけを通す。
 def test_missing_or_wrong_runner_rejected():
     card = pd.DataFrame({"race_id": ["r"], "horse_id": ["h"], "horse_number": [1]})
     with pytest.raises(ValueError):
@@ -95,6 +105,7 @@ def test_missing_or_wrong_runner_rejected():
     validate_predictions(card, card.assign(top3_probability=0.5))
 
 
+# 同じCSVは再現成功となり、予測確率を変更すると差異として検出される。
 def test_replay_comparison_detects_changes(tmp_path):
     reference, output = tmp_path / "reference", tmp_path / "output"
     for folder in (reference, output):

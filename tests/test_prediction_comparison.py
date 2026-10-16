@@ -1,3 +1,6 @@
+# 検証対象：着順照合、公式払戻金による精算、馬番・枠番・同枠返還の区別を確認する。
+# 不明な状態を拒否し、一部レースが失敗しても成功分と入力順序を保持することを検証する。
+#
 from __future__ import annotations
 
 from datetime import date
@@ -11,6 +14,7 @@ from src.public_api import compare_prediction_date, compare_recommended_bets
 comparison_module = import_module('src.50_result_comparison.prediction_comparison')
 
 
+# 予想にも買い目にも露出しない取消・除外馬だけを、予想一覧からの欠落として許容する。
 @pytest.mark.parametrize("kind,selection,allowed", [
     ("win", "1", {6}), ("win", "6", set()), ("trio", "1-2-6", set()),
     ("bracket_quinella", "3-4", {6}), ("bracket_quinella", "3-3", set()),
@@ -33,6 +37,7 @@ def test_unlisted_withdrawal_requires_no_prediction_or_ticket_exposure(kind, sel
             comparison_module.validated_result_status(actual, allowed)
 
 
+# 馬番返還・枠番返還・同枠のみ返還を券種と組合せに従って区別する。
 @pytest.mark.parametrize("bet_type,selection,judgment,payout", [
     ("win", "7", "返還", 100),
     ("place", "7", "返還", 100),
@@ -56,6 +61,7 @@ def test_refund_settlement_distinguishes_horse_frame_and_same_frame(bet_type, se
     assert result.iloc[0].payout_per_100 == payout
 
 
+# 取消・除外・中止を結果に残し、着順欠損のまま上位3頭の的中から除く。
 @pytest.mark.parametrize("status", ["scratched", "excluded", "did_not_finish", "disqualified"])
 def test_comparison_retains_non_finisher_status_and_does_not_count_it_as_hit(status):
     prediction = _predictions().query("race_id == 'r1'")
@@ -71,6 +77,7 @@ def test_comparison_retains_non_finisher_status_and_does_not_count_it_as_hit(sta
     assert not row.top3_hit
 
 
+# 未知の結果状態や着順と矛盾した組合せは、非完走として安易に受け入れない。
 @pytest.mark.parametrize("status,position,refunds", [
     ("unknown", None, {}), ("finished", None, {}),
     ("finished", 0, {}), ("finished", 1.5, {}),
@@ -87,6 +94,7 @@ def test_unknown_or_inconsistent_results_still_fail(status, position, refunds):
         comparison_module.validated_result_status(actual)
 
 
+# 公式払戻金で的中・不的中・未確認を判定し、元の買い目表と並び順を変更しない。
 def test_recommended_bets_use_official_payouts_and_preserve_order():
     bets = pd.DataFrame([
         {"race_id": "r1", "bet_type": kind, "selection": selection}
@@ -106,12 +114,14 @@ def test_recommended_bets_use_official_payouts_and_preserve_order():
     assert "bet_result" not in bets
 
 
+# 買い目が空でも精算結果の列を持つ空表を返し、後段が同じ形式で扱える。
 def test_empty_recommended_bets():
     result = compare_recommended_bets(pd.DataFrame(), {})
     assert result.empty
     assert {"bet_result", "payout_per_100"}.issubset(result.columns)
 
 
+# 確率・順位・対象馬を固定した予想表を用意し、公開や照合の結果を確認しやすくする。
 def _predictions() -> pd.DataFrame:
     rows = []
     for race_number, race_id in enumerate(("r1", "r2"), start=1):
@@ -129,9 +139,11 @@ def _predictions() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# 一部の結果取得が失敗しても、成功分の照合表と失敗一覧・件数を返す。
 def test_date_comparison_keeps_success_when_one_race_is_unavailable():
     calls = []
 
+    # レースIDに対応する結果を用意する代替取得関数。実通信をしない。
     def fetch_result(race_id: str, race_date: date) -> pd.DataFrame:
         calls.append((race_id, race_date))
         if race_id == "r2":

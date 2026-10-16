@@ -1,3 +1,7 @@
+# 保存済みHTMLを解析してレース・オッズを登録するバックグラウンドジョブ。
+# ジョブの状態、対象期間、進捗、ログを保持し、処理結果を収集履歴にも記録する。
+# HTMLの取得とDB作成を分けることで、保存済みデータからの再構築を可能にする。
+#
 from __future__ import annotations
 
 import threading
@@ -17,6 +21,7 @@ from .scrapers_database_creation_netkeiba import (
 AppLogger = import_module(
     "src.00_common.logging_utils"
 ).AppLogger
+# プロジェクト既定の保存先。DBを差し替えるテストではこの参照も隔離先へ変更する。
 PATHS = import_module("src.00_common.config").PATHS
 _storage = import_module("src.00_common.storage")
 save_collection_run = _storage.save_collection_run
@@ -24,30 +29,47 @@ save_race_records = _storage.save_race_records
 save_race_odds = _storage.save_race_odds
 
 
+# 保存HTMLの解析・DB作成一回分を表す。実行結果とエラーは別のフィールドに記録する。
 @dataclass
 class DatabaseCreationJob:
+    # 開始時に発行する一意なジョブID。状態照会と取消要求のキーとして使う。
     job_id: str
+    # 過去結果historicalと未開催出馬表upcomingを区別する保存・取得の種別。
     dataset_type: str
+    # 処理対象期間の開始日。Noneを許容する設定では開始側を制限しない。
     start_date: date
+    # 処理対象期間の終了日。Noneを許容する設定では終了側を制限しない。
     end_date: date
+    # 処理状態。running／cancellingから、completed・cancelled・failedなどの終了状態へ移る。
     status: str = "running"
+    # 画面に通知する完了率。0.0が開始、1.0が完了を表す。
     progress: float = 0.0
+    # 実行開始日時。default_factoryでインスタンスごとに現在時刻を取得する。
     started_at: datetime = field(default_factory=datetime.now)
+    # 終了日時。未完了はNoneで、成功・失敗・取消の終了時に設定する。
     completed_at: datetime | None = None
+    # サービスが返す件数などの結果。default_factoryによりジョブ間で辞書を共有しない。
     result: dict[str, int] = field(default_factory=dict)
+    # 失敗時に画面へ渡す例外メッセージ。正常時は空文字列。
     error: str = ""
+    # 画面から参照するログ行の一覧。インスタンスごとに独立したリストを持つ。
     logs: list[str] = field(default_factory=list)
 
 
+# ジョブ共有状態の読み書きを保護する再入可能ロック。スナップショット取得時も使用する。
 _LOCK = threading.RLock()
+# ジョブIDから状態オブジェクトを引くプロセス内の登録簿。永続化された履歴とは別物。
 _JOBS: dict[str, DatabaseCreationJob] = {}
+# ジョブIDごとの取消通知Event。要求側がsetし、処理側がis_setで確認する。
 _CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 
+# DB作成の取消を通知する専用例外。解析やDB保存の一般エラーとは区別する。
 class DatabaseCreationCancelled(Exception):
     """利用者からデータベース作成の中止が要求された。"""
 
 
+# 可変のリスト・辞書をコピーして公開用のジョブ状態を返す。内部状態への直接変更を避ける。
 def _snapshot(job: DatabaseCreationJob) -> dict[str, Any]:
     return {
         "job_id": job.job_id,
@@ -64,9 +86,11 @@ def _snapshot(job: DatabaseCreationJob) -> dict[str, Any]:
     }
 
 
+# DB作成ジョブをコピーして開始日時の降順で返す。種別が指定されれば絞り込む。
 def list_database_jobs(
     dataset_type: str | None = None,
 ) -> list[dict[str, Any]]:
+    # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
     with _LOCK:
         jobs = [
             _snapshot(job)
@@ -83,16 +107,20 @@ def list_database_jobs(
     )
 
 
+# DB作成の同時実行を防いでジョブを登録し、HTML解析・保存をワーカースレッドへ渡す。
 def start_database_job(
     dataset_type: str,
     start_date: date,
     end_date: date,
 ) -> str:
+    # 保存先と解析形式が決まらない種別は受け入れず、既知の二種類へ限定する。
     if dataset_type not in {"historical", "upcoming"}:
         raise ValueError(
             f"未対応のdataset_typeです: {dataset_type}"
         )
+    # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
     with _LOCK:
+        # 実行中だけでなく取消処理中も排他対象にし、同じDBへの生成・更新の競合を避ける。
         if any(
             job.status in {"running", "cancelling"}
             for job in _JOBS.values()
@@ -100,6 +128,7 @@ def start_database_job(
             raise RuntimeError(
                 "データベース作成がすでに実行中です。"
             )
+        # 非同期処理を特定するキー。状態照会と取消に同じ値を使用する。
         job_id = (
             f"database_{datetime.now():%Y%m%d_%H%M%S}_"
             f"{uuid.uuid4().hex[:6]}"
@@ -122,7 +151,9 @@ def start_database_job(
     return job_id
 
 
+# 実行中のDB作成へ取消要求を通知する。終了済みや未知のIDならFalseを返す。
 def cancel_database_job(job_id: str) -> bool:
+    # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
     with _LOCK:
         job = _JOBS.get(job_id)
         cancel_event = _CANCEL_EVENTS.get(job_id)
@@ -133,6 +164,7 @@ def cancel_database_job(job_id: str) -> bool:
         ):
             return False
         cancel_event.set()
+        # 要求は受け付けたが処理側の停止確認前なので、cancelledではなく取消処理中とする。
         job.status = "cancelling"
         job.logs.append(
             f"[{datetime.now():%H:%M:%S}] INFO    "
@@ -141,6 +173,7 @@ def cancel_database_job(job_id: str) -> bool:
         return True
 
 
+# ジョブの状態と結果を収集履歴の形式へ整え、実行記録として保存する。
 def _save_run(
     job: DatabaseCreationJob,
     *,
@@ -167,18 +200,24 @@ def _save_run(
     )
 
 
+# ジョブ条件を処理実装へ渡し、ログ・進捗を更新しながら成功・取消・失敗を記録する。
 def _run_job(job_id: str) -> None:
     job = _JOBS[job_id]
     cancel_event = _CANCEL_EVENTS[job_id]
 
+    # 処理側からのログ行をジョブへ転送し、画面で参照できるようにする。
     def log_callback(line: str) -> None:
+        # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
         with _LOCK:
             job.logs.append(line)
             job.logs[:] = job.logs[-300:]
 
+    # 収集・解析の進捗をジョブへ反映する。取消要求の確認にも使われる。
     def progress_callback(value: float) -> None:
+        # 取消要求はコールバック到達時に検知し、例外で安全に収集・解析ループを抜ける。
         if cancel_event.is_set():
             raise DatabaseCreationCancelled()
+        # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
         with _LOCK:
             job.progress = min(
                 max(float(value), 0.0),
@@ -199,6 +238,7 @@ def _run_job(job_id: str) -> None:
             dataset_type=job.dataset_type,
             progress_callback=progress_callback,
         )
+        # 取消要求はコールバック到達時に検知し、例外で安全に収集・解析ループを抜ける。
         if cancel_event.is_set():
             raise DatabaseCreationCancelled()
         if frame.empty:
@@ -265,6 +305,7 @@ def _run_job(job_id: str) -> None:
                         "JRAオッズDB登録なし: 対象レースに対応する"
                         "保存済みオッズHTMLがありません。"
                     )
+            # ワーカースレッドの例外を状態とログへ残し、画面側が失敗理由を確認できるようにする。
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "JRAオッズをDB登録できませんでした。"
@@ -284,15 +325,18 @@ def _run_job(job_id: str) -> None:
             row_count=row_count,
             message="取得済みHTMLからデータベース作成完了",
         )
+        # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
         with _LOCK:
             job.result = result
             job.progress = 1.0
+            # 成果物が完成したので成功を確定する。進捗と完了日時も同じ終了処理で更新する。
             job.status = "completed"
             job.completed_at = datetime.now()
         logger.info(
             f"データベース作成完了: {race_count:,}レース / "
             f"{row_count:,}頭"
         )
+    # 利用者の取消は一般エラーと分けて扱い、取消状態と終了日時を記録する。
     except DatabaseCreationCancelled:
         logger.info(
             "データベース作成を中止しました。"
@@ -306,8 +350,10 @@ def _run_job(job_id: str) -> None:
             message="データベース作成を中止",
         )
         with _LOCK:
+            # 取消例外を受けた終了。完了済み成果物を失敗扱いして作り直すことはしない。
             job.status = "cancelled"
             job.completed_at = datetime.now()
+    # ワーカースレッドの例外を状態とログへ残し、画面側が失敗理由を確認できるようにする。
     except Exception as exc:  # noqa: BLE001
         logger.exception(f"データベース作成失敗: {exc}")
         _save_run(
@@ -319,5 +365,6 @@ def _run_job(job_id: str) -> None:
         )
         with _LOCK:
             job.error = str(exc)
+            # 一般の例外で終了したことを記録する。利用者による取消とは区別する。
             job.status = "failed"
             job.completed_at = datetime.now()

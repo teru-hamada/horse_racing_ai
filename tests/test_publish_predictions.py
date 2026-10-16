@@ -1,3 +1,6 @@
+# 検証対象：公開前検証、他の日付の保持、同一結果の再反映で差分が出ないことを確認する。
+# 不整合な成果物が既存サイトを変更しないことや、成功タスクだけの反映を検証する。
+#
 from importlib import import_module as _import_module
 import json
 
@@ -7,6 +10,7 @@ import pytest
 prepare_publication = _import_module('src.60_publication.publish_predictions').prepare_publication
 
 
+# 結果取得・精算に使う固定の応答を作り、対象ケースを再現する。
 @pytest.fixture
 def results(tmp_path):
     output = tmp_path / "results"
@@ -26,6 +30,7 @@ def results(tmp_path):
     return output
 
 
+# 対象外の日付を保持し、同じ予想の再公開では生成日時だけでファイルが変わらない。
 def test_preserves_other_dates_and_identical_results_do_not_change_files(tmp_path, results):
     site = tmp_path / "docs"
     (site / "predictions").mkdir(parents=True)
@@ -42,6 +47,7 @@ def test_preserves_other_dates_and_identical_results_do_not_change_files(tmp_pat
     assert snapshot == {str(p.relative_to(site)): p.read_bytes() for p in site.rglob("*") if p.is_file()}
 
 
+# 前日照合が失敗しても当日予想の成功分は反映し、既存の前日結果は保持する。
 @pytest.mark.parametrize("comparison_status", ["error", "incomplete"])
 def test_successful_prediction_publishes_despite_failed_comparison(tmp_path, results, comparison_status):
     daily = _import_module('src.10_workflows.daily_racing')
@@ -62,6 +68,7 @@ def test_successful_prediction_publishes_despite_failed_comparison(tmp_path, res
     assert prior.read_bytes() == b"previous result must stay"
 
 
+# 取消後の有効な出走頭数を基準に公開検証し、取消前の頭数との違いで拒否しない。
 def test_publication_uses_active_runner_count_after_withdrawal(tmp_path, results):
     date_workflow = _import_module('src.10_workflows.date_prediction')
     race_dir = tmp_path / "race"
@@ -81,6 +88,7 @@ def test_publication_uses_active_runner_count_after_withdrawal(tmp_path, results
     assert prepare_publication(results, tmp_path / "docs")
 
 
+# 不足や矛盾のある成果物を反映前に拒否し、既存公開ファイルの内容を保つ。
 @pytest.mark.parametrize("problem", ["partial", "stage", "missing_race", "count", "nan_probability"])
 def test_rejects_incomplete_or_inconsistent_results_without_touching_site(tmp_path, results, problem):
     path = results / "date_report.json"

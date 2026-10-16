@@ -1,3 +1,7 @@
+# 日本時間の日付を基準に当日予想と任意の前日結果照合を実行する。
+# タスクごとに成功・不足・失敗を記録し、一方が失敗しても他方の成功分を公開可能にする。
+# 前日の予想を再計算せず、公開済みCSVを公式結果で精算する。公開準備時には元CSVのハッシュも再確認する。
+#
 """Scheduled predictions and previous-day settlement; publish each successful task."""
 from __future__ import annotations
 from importlib import import_module as _import_module
@@ -27,18 +31,22 @@ prepare_publication = _import_module('src.60_publication.publish_predictions').p
 check_meeting_day = _import_module('src.20_scrapers_html_collection.race_calendar').check_meeting_day
 build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
 
+# 日本標準時（UTC+9）。日付判定と公開ページの時刻表示を統一する。
 JST = timezone(timedelta(hours=9))
 
 
+# UTCの実行時刻を日本時間へ変換してから日付を決める。年末や深夜も同じ規則で扱う。
 def japan_today(now=None):
     return (now or datetime.now(timezone.utc)).astimezone(JST).date()
 
 
+# 前日CSVを固定して結果照合する。再予想せず、公式払戻・返還まで確認できた場合だけokとする。
 def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     output.mkdir(parents=True, exist_ok=False)
     sources = [site / "predictions" / f"{day}.csv", site / "predictions" / f"{day}_bets.csv"]
     if any(not p.is_file() for p in sources):
         raise ValueError("前日の公開済み予想CSVまたは買い目CSVがありません。")
+    # 照合開始時点の公開済み予想・買い目CSVの指紋。公開前に同じ入力のままか再確認する。
     source_hashes = {p.name: sha256(p) for p in sources}
     for source in sources:
         shutil.copy2(source, output / source.name)
@@ -54,12 +62,17 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     if not ids or ids != set(predictions.race_id):
         raise ValueError("前日開催一覧と公開済み予想のレースが一致しません。")
     fetcher = JraResultFetcher(logger, output_root=output / "jra")
+    # 公式結果を取得し、保存済み予想との馬番対応と払戻情報を検査してから照合側へ返す。
     def fetch(race_id, race_date):
+        # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
+        # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
         actual = fetcher.fetch_result_for_comparison(race_id, race_date, force=True)
         expected = predictions[predictions.race_id.eq(race_id)]
         allowed = withdrawals_without_exposure(actual, expected, bets[bets.race_id.eq(race_id)])
         statuses = validated_result_status(actual, allowed)
+        # 公式確定結果に含まれる馬番の集合。
         actual_numbers = set(actual.horse_number)
+        # 保存済み予想に含まれる馬番の集合。
         expected_numbers = set(expected.horse_number)
         withdrawn = set(actual.loc[statuses.isin({"scratched", "excluded"}), "horse_number"])
         # Results retain horses already withdrawn before prediction. Only those
@@ -68,6 +81,7 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
                 or not (actual_numbers - expected_numbers) <= withdrawn):
             raise ValueError("確定結果と予想の馬番が一致しません。")
         payouts = actual.attrs.get("official_payouts", {})
+        # 着順だけで精算完了としない。少なくとも単勝の公式払戻があることを確認する。
         if not any(key.startswith("win:") for key in payouts):
             raise ValueError("公式払戻金が不足しています。")
         return actual
@@ -76,8 +90,10 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     finally:
         fetcher.session.close()
     comparison.to_csv(output / "comparison.csv", index=False, encoding="utf-8-sig")
+    # 推奨買い目へ的中・不的中・返還・未確認と公式払戻額を付けた表。
     judged = compare_recommended_bets(bets, summary["official_payouts"], summary["official_refunds"])
     judged.to_csv(output / "bets_results.csv", index=False, encoding="utf-8-sig")
+    # 照合対象と精算結果がすべて揃い、公開可能と判断できるかのフラグ。
     complete = summary["failed_races"] == 0 and summary["compared_races"] == len(ids)
     complete = complete and not judged.bet_result.eq("未確認").any()
     for failure in summary["failures"]:
@@ -90,7 +106,9 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     return result
 
 
+# 開催判定を含めタスク単位で例外を記録する。開催なしは正常扱いだが取得失敗はerrorになる。
 def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: bool) -> dict:
+    # bundle: runtime.zipとmanifestなどがある配布用バンドルのディレクトリ。
     output.mkdir(parents=True, exist_ok=False)
     logger = logging.getLogger(f"daily.{output}")
     logger.setLevel(logging.INFO)
@@ -112,6 +130,7 @@ def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: 
                 report["tasks"][name] = {"status": result["status"], "race_date": str(target)}
                 if result.get("error"):
                     report["tasks"][name]["error"] = result["error"]
+            # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
             except Exception as exc:
                 logger.exception("%s %s の処理失敗", name, target)
                 report["tasks"][name] = {"status": "error", "race_date": str(target), "error": str(exc)}
@@ -134,8 +153,10 @@ def run_daily(day: date, bundle: Path, site: Path, output: Path, with_previous: 
     return report
 
 
+# 一時サイトで検証・ページ作成を終えてから差分を反映する。照合元CSVの変更は反映前に拒否する。
 def prepare_daily_publication(output: Path, site: Path) -> bool:
     report = json.loads((output / "daily_report.json").read_text(encoding="utf-8"))
+    # 日次処理がまだ終了していなければ、途中の成果物を公開へ回さない。
     if report["status"] not in {"ok", "incomplete", "error"}:
         raise ValueError("日次処理が終了していないため公開を停止します。")
     # Decide from individual task results, including reports from older runs.
@@ -144,6 +165,7 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
             raise ValueError("公開できる成功済みの処理がありません。")
         return False
     with tempfile.TemporaryDirectory() as temporary:
+        # 公開ファイルを検証・生成する一時ディレクトリ。既存サイトを先に変更しないために使う。
         staged = Path(temporary) / "docs"
         shutil.copytree(site, staged)
         if report["tasks"]["prediction"]["status"] == "ok":
@@ -151,7 +173,9 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
         task = report["tasks"].get("comparison", {})
         if task.get("status") == "ok":
             root = output / "comparison"
+            # 前日照合の状態と元CSVのハッシュ・集計を持つレポート。
             comparison_report = json.loads((root / "report.json").read_text(encoding="utf-8"))
+            # 日次集計だけでなく照合成果物自身の成功も確認し、不完全な精算の公開を防ぐ。
             if comparison_report["status"] != "ok":
                 raise ValueError("前日照合が未合格です。")
             day = date.fromisoformat(task["race_date"]).isoformat()
@@ -169,6 +193,7 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
                 shutil.copy2(root / source, staged / "predictions" / target)
         pattern = '<p class="meta">生成日時: [^<]*</p>'.encode("utf-8")
         for source in staged.rglob("*"):
+            # 最新版の必須成果物が欠けた場合は、古いモデルへ自動切替せず不足を通知する。
             if not source.is_file():
                 continue
             target = site / source.relative_to(staged)
@@ -185,6 +210,7 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
     return True
 
 
+# 日次実行と公開準備を切り替える。通常実行の終了コードは成功0、不足2、失敗1。
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--race-date", type=date.fromisoformat)
@@ -198,6 +224,7 @@ def main():
         try:
             required = prepare_daily_publication(args.output, args.site)
             publication = {"status": "ok", "publication_required": required}
+        # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
         except Exception as exc:
             publication = {"status": "error", "error": str(exc)}
             (args.output / "publication_report.json").write_text(json.dumps(publication, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -213,5 +240,6 @@ def main():
     return {"ok": 0, "incomplete": 2, "error": 1}[report["status"]]
 
 
+# モジュールとしてimportしただけでは実行せず、CLIとして起動された場合だけ入口を呼ぶ。
 if __name__ == "__main__":
     raise SystemExit(main())

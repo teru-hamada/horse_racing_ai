@@ -1,3 +1,7 @@
+# レース、JRAオッズ、収集・学習・予想の実行履歴をracing.duckdbへ保存する。
+# 列順・型を正規化してから登録し、再登録時には対象キーの既存データを置き換える。
+# 特徴量の保存先features.duckdbとは別の責務を持つ。database引数があるAPIは検証用DBへ切り替えられる。
+#
 from __future__ import annotations
 
 import json
@@ -9,9 +13,11 @@ from typing import Any
 import duckdb
 import pandas as pd
 
+# プロジェクト既定の保存先。DBを差し替えるテストではこの参照も隔離先へ変更する。
 PATHS = import_module("src.00_common.config").PATHS
 
 
+# レース表の保存列と順序。正規化とINSERTの列指定で同じ定義を使う。
 RACE_RECORD_COLUMNS = [
     "race_id", "race_date", "course_name", "race_number", "race_name",
     "surface", "distance", "weather", "track_condition", "horse_id",
@@ -26,6 +32,7 @@ RACE_RECORD_COLUMNS = [
     "dataset_type", "collection_run_id", "collected_at",
 ]
 
+# モデル登録表の保存列。タスク・版・評価指標・成果物パスをそろえる。
 MODEL_RUN_COLUMNS = [
     "model_run_id", "created_at", "status", "target",
     "train_rows", "validation_rows", "test_rows", "best_epoch",
@@ -34,6 +41,7 @@ MODEL_RUN_COLUMNS = [
     "feature_version",
 ]
 
+# 券種別オッズの保存列。選択番号とオッズ上下限、収集情報を含む。
 ODDS_COLUMNS = [
     "race_id", "race_date", "bet_type", "selection_1", "selection_2",
     "selection_3", "odds_min", "odds_max", "source_html",
@@ -41,6 +49,7 @@ ODDS_COLUMNS = [
 ]
 
 
+# 接続時に実行するテーブル作成SQL。既存テーブルは作り直さない。
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS collection_runs (
     run_id VARCHAR PRIMARY KEY,
@@ -145,7 +154,9 @@ CREATE TABLE IF NOT EXISTS race_odds (
 """
 
 
+# 指定先の親ディレクトリとスキーマを作成して接続する。読み取り専用の接続ではない。
 def connect(database: Path | None = None) -> duckdb.DuckDBPyConnection:
+    # database: 読み書き対象のDBパス。テストでは専用DBへ切り替える。
     database = database if database is not None else PATHS.database
     database.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(database))
@@ -153,10 +164,12 @@ def connect(database: Path | None = None) -> duckdb.DuckDBPyConnection:
     return con
 
 
+# 保存先と同じ列名を持つ空DataFrameを返し、データなしでも列構成を安定させる。
 def empty_race_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=RACE_RECORD_COLUMNS)
 
 
+# 不足列は欠損で補い、余分な列を除いて保存列順へ並べる。不正な数値・日付は欠損へ変換する。
 def normalize_race_frame(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     for col in RACE_RECORD_COLUMNS:
@@ -181,6 +194,7 @@ def normalize_race_frame(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+# 同じrun_idの収集履歴を置き換え、実行状態や件数を最新の内容に更新する。
 def save_collection_run(metadata: dict[str, Any]) -> None:
     row = pd.DataFrame([metadata])
     with connect() as con:
@@ -190,12 +204,14 @@ def save_collection_run(metadata: dict[str, Any]) -> None:
         con.unregister("run_row")
 
 
+# 同じレース・馬・データ種別の行を削除して再登録する。別のデータ種別の行は保持する。
 def save_race_records(
     df: pd.DataFrame,
     run_id: str,
     dataset_type: str,
     *, database: Path | None = None,
 ) -> None:
+    # database: 読み書き対象のDBパス。テストでは専用DBへ切り替える。
     if df.empty:
         raise ValueError("保存対象のレースデータが0件です。")
 
@@ -223,7 +239,9 @@ def save_race_records(
         con.unregister("incoming")
 
 
+# 任意のデータ種別で絞り込み、日付・レースID・馬番の順にレース行を読み出す。
 def load_records(dataset_type: str | None = None, *, database: Path | None = None) -> pd.DataFrame:
+    # database: 読み書き対象のDBパス。テストでは専用DBへ切り替える。
     with connect(database) as con:
         if dataset_type:
             return con.execute(
@@ -233,7 +251,9 @@ def load_records(dataset_type: str | None = None, *, database: Path | None = Non
         return con.execute("SELECT * FROM race_records ORDER BY race_date, race_id, horse_number").df()
 
 
+# 入力に含まれるレースの既存オッズを全券種まとめて置換するため、対象レースの一式を渡す。
 def save_race_odds(df: pd.DataFrame, run_id: str, *, database: Path | None = None) -> None:
+    # database: 読み書き対象のDBパス。テストでは専用DBへ切り替える。
     if df.empty:
         return
     normalized = df.copy()
@@ -264,12 +284,16 @@ def save_race_odds(df: pd.DataFrame, run_id: str, *, database: Path | None = Non
         con.unregister("incoming_odds")
 
 
+# race_idsの指定を優先し、なければrace_date、両方なければ全件を読み出す。
 def load_race_odds(
     race_ids: list[str] | None = None,
     race_date: Any | None = None,
     *, database: Path | None = None,
 ) -> pd.DataFrame:
+    # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
+    # database: 読み書き対象のDBパス。テストでは専用DBへ切り替える。
     with connect(database) as con:
+        # レースIDが指定された場合は、開催日指定より優先してその集合に絞る。
         if race_ids:
             placeholders = ", ".join("?" for _ in race_ids)
             return con.execute(
@@ -277,6 +301,7 @@ def load_race_odds(
                 "ORDER BY race_id, bet_type, selection_1, selection_2, selection_3",
                 [str(value) for value in race_ids],
             ).df()
+        # ID指定がないとき、日付が渡されていれば対象日のオッズだけを読み出す。
         if race_date is not None:
             return con.execute(
                 "SELECT * FROM race_odds WHERE race_date = ? "
@@ -288,6 +313,7 @@ def load_race_odds(
         ).df()
 
 
+# 指定種別・期間の行数とレース数をDBで集計する。頭数とレース数を区別する。
 def race_record_summary(
     dataset_type: str,
     start_date: Any,
@@ -311,6 +337,7 @@ def race_record_summary(
     }
 
 
+# 指定種別のレースに存在する開催年の集合を返し、画面の期間選択などに使う。
 def race_record_years(
     dataset_type: str,
 ) -> set[int]:
@@ -327,11 +354,13 @@ def race_record_years(
     return {int(row[0]) for row in rows}
 
 
+# 収集実行履歴を開始日時の降順で読み出す。
 def collection_runs() -> pd.DataFrame:
     with connect() as con:
         return con.execute("SELECT * FROM collection_runs ORDER BY started_at DESC").df()
 
 
+# 既知のモデル登録列へそろえ、同じ実行IDの登録を置き換える。未指定項目はNoneになる。
 def save_model_run(metadata: dict[str, Any]) -> None:
     normalized = {
         column: metadata.get(column)
@@ -349,11 +378,13 @@ def save_model_run(metadata: dict[str, Any]) -> None:
         con.unregister("model_row")
 
 
+# モデル登録履歴を作成日時の降順で読み出し、画面で最新モデルから選べるようにする。
 def model_runs() -> pd.DataFrame:
     with connect() as con:
         return con.execute("SELECT * FROM model_runs ORDER BY created_at DESC").df()
 
 
+# 予想実行IDに対応する履歴を置き換え、使用モデルと出力先を保存する。
 def save_prediction_run(metadata: dict[str, Any]) -> None:
     row = pd.DataFrame([metadata])
     with connect() as con:
@@ -366,6 +397,7 @@ def save_prediction_run(metadata: dict[str, Any]) -> None:
         con.unregister("prediction_row")
 
 
+# ダッシュボードに使う過去・出馬表の行数、レース数、完了モデル数、最新日を集計する。
 def dashboard_summary() -> dict[str, Any]:
     with connect() as con:
         history_rows = con.execute(
@@ -386,5 +418,6 @@ def dashboard_summary() -> dict[str, Any]:
     }
 
 
+# 日本語をそのままUTF-8で出力する。日時など標準JSON外の値は文字列へ変換する。
 def json_dump(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")

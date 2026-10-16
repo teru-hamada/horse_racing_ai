@@ -1,3 +1,7 @@
+# 出走履歴から累積成績や前走からの日数を作る共通特徴量処理。
+# 馬ごとに時系列順へ並べ、shiftで当該行の結果を集計対象から外す。
+# 特徴量DBを使う現行Top3のセット構築とは別に、履歴ベースの共通APIを提供する。
+#
 from __future__ import annotations
 
 from typing import Callable
@@ -5,30 +9,36 @@ from typing import Callable
 import pandas as pd
 
 
+# 履歴ベースの共通処理が宣言する数値入力列。現行の動的セット構成とは区別する。
 NUMERIC_FEATURES = [
     "race_number", "distance", "horse_number", "frame_number", "age",
     "carried_weight", "odds", "popularity", "prior_starts",
     "prior_win_rate", "prior_top3_rate", "prior_avg_finish", "prior_avg_odds",
     "days_since_last_race",
 ]
+# カテゴリとして扱う属性やIDの一覧。数値の大小として学習しない列。
 CATEGORICAL_FEATURES = [
     "course_name", "surface", "weather", "track_condition", "sex",
     "jockey_id", "trainer_id", "sire_id", "dam_id", "damsire_id",
 ]
+# 共通特徴量の数値列とカテゴリ列を連結した入力定義。
 MODEL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
 
+# 馬ごとの並びを固定し、当該行より前の着順・オッズから累積成績を計算する。
 def add_historical_features(
     records: pd.DataFrame,
     log: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
     if records.empty:
+        # ログの受取先がある場合だけ診断を通知し、計算本体をUI実装へ依存させない。
         if log:
             log("特徴量生成対象データが0行です。")
         return records.copy()
 
     df = records.copy()
 
+    # ログの受取先がある場合だけ診断を通知し、計算本体をUI実装へ依存させない。
     if log:
         log(
             f"特徴量生成開始: {len(df):,}行 / "
@@ -36,6 +46,7 @@ def add_historical_features(
         )
         log("入力列: " + ", ".join(map(str, df.columns)))
 
+        # 列ごとの欠損数。前処理で学習行が不足した原因をログで確認する。
         missing_counts = df.isna().sum().sort_values(ascending=False)
         for column, count in missing_counts.items():
             if int(count) > 0:
@@ -57,6 +68,7 @@ def add_historical_features(
         column for column in required_columns
         if column not in df.columns
     ]
+    # 必須列不足は入力の構造エラー。欠損補完で隠さず、足りない列名を明示する。
     if missing_required:
         raise ValueError(
             "特徴量生成に必要な列がありません: "
@@ -80,6 +92,7 @@ def add_historical_features(
         errors="coerce",
     )
 
+    # ログの受取先がある場合だけ診断を通知し、計算本体をUI実装へ依存させない。
     if log:
         race_date_failed = int(
             original_race_date.notna().sum()
@@ -173,6 +186,7 @@ def add_historical_features(
     }
     df = df.fillna(fill_values)
 
+    # ログの受取先がある場合だけ診断を通知し、計算本体をUI実装へ依存させない。
     if log:
         log(
             f"特徴量生成完了: {len(df):,}行 / "
@@ -185,6 +199,7 @@ def add_historical_features(
     )
 
 
+# 特徴量生成後に着順が欠損した行を除き、除外件数をログへ残す。
 def build_historical_training_base(
     records: pd.DataFrame,
     log: Callable[[str], None] | None = None,
@@ -196,6 +211,7 @@ def build_historical_training_base(
         featured["finish_position"].notna().sum()
     )
 
+    # ログの受取先がある場合だけ診断を通知し、計算本体をUI実装へ依存させない。
     if log:
         log(
             f"着順フィルタ前: {before_filter:,}行 / "
@@ -207,6 +223,7 @@ def build_historical_training_base(
         featured["finish_position"].notna()
     ].copy()
 
+    # ログの受取先がある場合だけ診断を通知し、計算本体をUI実装へ依存させない。
     if log:
         log(
             f"着順フィルタ後: {len(featured):,}行"
@@ -223,6 +240,7 @@ def build_historical_training_base(
     ).reset_index(drop=True)
 
 
+# 過去と未開催の行を連結して履歴特徴量を作り、最後に未開催の行だけを取り出す。
 def build_prediction_frame(historical: pd.DataFrame, upcoming: pd.DataFrame) -> pd.DataFrame:
     historical = historical.copy()
     upcoming = upcoming.copy()

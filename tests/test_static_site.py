@@ -1,3 +1,6 @@
+# 検証対象：予想HTMLのエスケープ、日別一覧、買い目上位表示、結果比較の表示を確認する。
+# 画面掲載分の100円単位精算、返還と的中の区別、再起動後の既存ファイル検出を検証する。
+#
 from __future__ import annotations
 
 import pandas as pd
@@ -10,6 +13,7 @@ from src.public_api import (
 )
 
 
+# レース名などのHTMLをエスケープし、確率表示と日付別一覧リンクを生成する。
 def test_static_prediction_site_escapes_content_and_updates_index(tmp_path):
     predictions = pd.DataFrame([
         {
@@ -47,6 +51,7 @@ def test_static_prediction_site_escapes_content_and_updates_index(tmp_path):
     assert "predictions/2026-08-29.html" in index
 
 
+# 重賞レースの見出しに専用クラスを付け、対応する表示スタイルを用意する。
 def test_graded_race_title_gets_gold_style_class(tmp_path):
     predictions = pd.DataFrame([{
         "race_id": "graded",
@@ -71,6 +76,7 @@ def test_graded_race_title_gets_gold_style_class(tmp_path):
     assert ".race.graded>summary{color:var(--gold)}" in html
 
 
+# 買い目は上位3件だけを表示し、確率と100円当たり期待損益を分かる列で示す。
 def test_static_prediction_site_includes_top_three_bets(tmp_path):
     predictions = pd.DataFrame([{
         "race_id": "r1", "race_number": 1, "race_name": "未勝利",
@@ -103,6 +109,7 @@ def test_static_prediction_site_includes_top_three_bets(tmp_path):
     assert "<td>4</td>" not in html
 
 
+# 結果比較の進捗・的中頭数・実着順と、取得できなかったレースの理由を表示する。
 def test_static_prediction_site_includes_result_comparison(tmp_path):
     predictions = pd.DataFrame([
         {
@@ -154,6 +161,7 @@ def test_static_prediction_site_includes_result_comparison(tmp_path):
     assert "race-2 (結果未確定)" in html
 
 
+# 掲載された3買い目の購入・払戻・回収率を、公式の100円当たり払戻金で計算する。
 def test_result_comparison_includes_return_for_displayed_100_yen_bets(tmp_path):
     predictions = pd.DataFrame([
         {
@@ -219,6 +227,7 @@ def test_result_comparison_includes_return_for_displayed_100_yen_bets(tmp_path):
     assert "5-4-6" not in html
 
 
+# 保存済み予想ファイルと公開HTMLから、メモリに依存せず日別の予想・照合状態を復元する。
 def test_prediction_date_status_survives_application_restart(tmp_path):
     predictions_dir = tmp_path / "data" / "predictions"
     site_dir = tmp_path / "docs"
@@ -263,6 +272,7 @@ def test_prediction_date_status_survives_application_restart(tmp_path):
     assert latest_prediction_file("invalid", predictions_dir) is None
 
 
+# 返還金を回収額へ含めても的中件数へ加えず、除外状態と返還をページに表示する。
 def test_refunds_are_displayed_and_included_in_recovery_without_counting_as_hits(tmp_path):
     predictions = pd.DataFrame([{
         "race_id": "r1", "race_number": 4, "race_name": "新馬", "course_name": "阪神",

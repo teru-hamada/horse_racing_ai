@@ -1,3 +1,6 @@
+# 検証対象：保存HTMLからDB、特徴量、学習、予想、結果照合、公開までの接続を通して確認する。
+# 通信を禁止し一時ディレクトリへ保存先を差し替えることで、本番のDBやモデルを変更せず検証する。
+#
 from __future__ import annotations
 
 import hashlib
@@ -31,9 +34,11 @@ from src.public_api import (
 )
 
 
+# テスト対象リポジトリの基準。実行時の作業フォルダーに依存させない。
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+# 本番側の保護対象ファイルのハッシュを集め、テスト前後で変更がないことを比較する。
 def _file_fingerprints(*roots: Path) -> dict[str, str]:
     """Capture protected artifacts so the test can prove they were untouched."""
 
@@ -51,10 +56,12 @@ def _file_fingerprints(*roots: Path) -> dict[str, str]:
     return fingerprints
 
 
+# HTTP要求が発生したら即座に失敗させ、E2Eが通信なしで完結することを保証する。
 def _offline_request(*args, **kwargs):
     raise AssertionError("E2Eテスト中の外部ネットワークアクセスは禁止されています")
 
 
+# 保存済みの実例HTMLを一つ選んで共通パーサーへ渡し、以降のE2E入力を得る。
 def _parse_one_saved_result_html(log_dir: Path) -> pd.DataFrame:
     candidates = sorted(
         (PROJECT_ROOT / "data" / "raw_html" / "historical").glob(
@@ -76,6 +83,7 @@ def _parse_one_saved_result_html(log_dir: Path) -> pd.DataFrame:
     return parsed
 
 
+# 解析した一つの実例を複数開催日へ展開し、時系列分割と最低学習件数の条件を満たす。
 def _minimum_training_history(parsed: pd.DataFrame, race_count: int = 48) -> pd.DataFrame:
     """Expand one real parsed field into the minimum chronological training set."""
 
@@ -93,26 +101,32 @@ def _minimum_training_history(parsed: pd.DataFrame, race_count: int = 48) -> pd.
     return history
 
 
+# 通信禁止・保存先隔離の条件で、HTML解析から学習・予想・結果照合まで実処理を接続して確認する。
 @pytest.mark.e2e
 def test_saved_html_to_prediction_comparison_is_offline_and_isolated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    # テスト前の本番ファイル群のハッシュ。最後に不変性を確認する。
     protected_before = _file_fingerprints(
         PROJECT_ROOT / "data" / "racing.duckdb",
         PROJECT_ROOT / "data" / "features.duckdb",
         PROJECT_ROOT / "models",
     )
+    # 一時ディレクトリ配下の保存先一式。E2EのDB・モデル・ログを本番から分ける。
     isolated_paths = get_paths(tmp_path / "isolated_app")
 
     storage = import_module("src.00_common.storage")
     feature_storage = import_module("src.40_ai_modeling.feature_engineering.storage")
     freshness = import_module("src.40_ai_modeling.feature_engineering.freshness")
     top3_model = import_module("src.40_ai_modeling.tasks.top3.model")
+    # 各モジュールがimport時に保持したPATHSも個別に置き換える。
+    # 一か所だけ差し替えると、特徴量やモデルの保存が本番側に残る可能性がある。
     monkeypatch.setattr(storage, "PATHS", isolated_paths)
     monkeypatch.setattr(feature_storage, "PATHS", isolated_paths)
     monkeypatch.setattr(freshness, "PATHS", isolated_paths)
     monkeypatch.setattr(top3_model, "PATHS", isolated_paths)
+    # HTTPの共通入口を塞ぐことで、下位処理の意図しない通信もテスト失敗として検出する。
     monkeypatch.setattr(requests.sessions.Session, "request", _offline_request)
 
     parsed = _parse_one_saved_result_html(isolated_paths.logs)
@@ -124,7 +138,10 @@ def test_saved_html_to_prediction_comparison_is_offline_and_isolated(
     history = load_records("historical")
     assert len(history) >= 500
 
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = isolated_paths.feature_database
+    # 実サービスを順番に実行し、生成→保存→次段での読出しという依存も含めて検証する。
+    # とくにrecent_speedは、この後に生成するspeed_indexの保存済みrunを必要とする。
     assert generate_recent_form_features(
         RecentFormRunConfig(), feature_database=feature_db
     )["status"] == "completed"

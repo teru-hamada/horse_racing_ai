@@ -1,3 +1,6 @@
+# 検証対象：指定期間の特徴量だけを保存し、元データの指紋と完了履歴を記録することを確認する。
+# 集計には対象期間より前の履歴も使われることを、初日の過去出走数で検証する。
+#
 from __future__ import annotations
 
 from datetime import date
@@ -12,6 +15,7 @@ from src.public_api import (
 )
 
 
+# 履歴の順序や集計値を手で追える、最小限の過去走データを組み立てる。
 def _history() -> pd.DataFrame:
     rows = []
     for race_number, race_date in enumerate(
@@ -29,11 +33,13 @@ def _history() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# 対象期間の行だけ保存しつつ、それ以前の履歴を集計に使い、指紋とcompleted履歴を残す。
 def test_service_generates_requested_period_and_records_run(tmp_path, monkeypatch):
     from importlib import import_module
 
     service = import_module("src.40_ai_modeling.feature_engineering.service")
     monkeypatch.setattr(service._source_storage, "load_records", lambda _: _history())
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     config = RecentFormRunConfig(
         start_date=date(2026, 1, 2),

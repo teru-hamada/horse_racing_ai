@@ -1,3 +1,7 @@
+# アプリから利用する公開APIを一か所に集約する。
+# 数字で始まるパッケージ名は通常のimport文で書けないため、import_moduleで解決する。
+# ここでは実装を複製せず、収集・保存・特徴量・学習・公開の関数や型を再公開する。
+#
 """用途別パッケージを通常のimport文から利用する窓口。"""
 
 from importlib import import_module
@@ -63,10 +67,12 @@ NetkeibaDatabaseCreator = _database_scraper.NetkeibaDatabaseCreator
 JraResultFetcher = _jra_results.JraResultFetcher
 generate_demo_records = _demo_data.generate_demo_records
 AppLogger = _logging.AppLogger
+# プロジェクト既定の保存先。DBを差し替えるテストではこの参照も隔離先へ変更する。
 PATHS = _config.PATHS
 AppPaths = _config.AppPaths
 get_paths = _config.get_paths
 
+# レース表の保存列と順序。正規化とINSERTの列指定で同じ定義を使う。
 RACE_RECORD_COLUMNS = _storage.RACE_RECORD_COLUMNS
 connect = _storage.connect
 empty_race_frame = _storage.empty_race_frame
@@ -85,8 +91,11 @@ save_prediction_run = _storage.save_prediction_run
 dashboard_summary = _storage.dashboard_summary
 json_dump = _storage.json_dump
 
+# 履歴ベースの共通処理が宣言する数値入力列。現行の動的セット構成とは区別する。
 NUMERIC_FEATURES = _features.NUMERIC_FEATURES
+# カテゴリとして扱う属性やIDの一覧。数値の大小として学習しない列。
 CATEGORICAL_FEATURES = _features.CATEGORICAL_FEATURES
+# 共通特徴量の数値列とカテゴリ列を連結した入力定義。
 MODEL_FEATURES = _features.MODEL_FEATURES
 add_historical_features = _features.add_historical_features
 build_training_frame = _top3_target.build_training_frame
@@ -101,6 +110,7 @@ train_task = _modeling.train_task
 predict_task = _modeling.predict_task
 predict_historical_task = _modeling.predict_historical_task
 predict_date_task = _modeling.predict_date_task
+# タスク名から実装メタデータへの対応。ここへの登録とサービス側の実装分岐を合わせる。
 MODEL_TASKS = _model_registry.MODEL_TASKS
 get_model_task = _model_registry.get_task
 
@@ -178,6 +188,7 @@ compare_prediction_with_finish = (
 )
 compare_prediction_date = _prediction_comparison.compare_prediction_date
 compare_recommended_bets = _prediction_comparison.compare_recommended_bets
+# 完走・取消・除外・中止などの内部状態と日本語表示の対応。
 RESULT_STATUS_LABELS = _prediction_comparison.RESULT_STATUS_LABELS
 fetch_jravan_weather = _weather_forecast.fetch_jravan_weather
 parse_jravan_forecast = _weather_forecast.parse_jravan_forecast

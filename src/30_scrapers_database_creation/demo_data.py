@@ -1,3 +1,6 @@
+# 画面確認やテスト向けに、乱数シードを指定できるサンプルのレースデータを生成する。
+# 実際に取得したレース結果ではないため、収集・予測精度の評価用データとは区別する。
+#
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -6,11 +9,13 @@ import numpy as np
 import pandas as pd
 
 
+# 中央競馬の競馬場名。ダミーデータなどで使う名称の一覧。
 COURSES = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"]
 SURFACES = ["芝", "ダート"]
 DISTANCES = [1200, 1400, 1600, 1800, 2000, 2200, 2400]
 
 
+# 乱数シードを固定可能なダミーの過去・未開催データを生成し、画面とテストへ渡す。
 def generate_demo_records(seed: int = 42, historical_races: int = 360, upcoming_races: int = 6) -> tuple[pd.DataFrame, pd.DataFrame]:
     rng = np.random.default_rng(seed)
     horse_count = 500
@@ -35,6 +40,7 @@ def generate_demo_records(seed: int = 42, historical_races: int = 360, upcoming_
         carried = rng.choice([51, 52, 53, 54, 55, 56, 57, 58], size=field_size)
         body = rng.normal(480, 28, field_size).round()
         body_change = rng.integers(-12, 13, field_size)
+        # 範囲制限前の指数やスコア。制限値とは別に残して極端値の有無を追えるようにする。
         raw_score = horse_skill[selected] + jockey_skill[jockeys] - 0.02 * np.abs(carried - 55) + rng.normal(0, 0.75, field_size)
         finish_order = np.argsort(-raw_score)
         finish_position = np.empty(field_size, dtype=int)

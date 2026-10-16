@@ -1,3 +1,7 @@
+# 1レースの出馬表・JRAオッズ取得を診断し、任意でDB登録まで確認する。
+# 取得に失敗した場合もログや遷移先HTMLを保存して、サイト変更やオッズ不足を調査できるようにする。
+# 予想処理の前段で用いる検査であり、ここでは学習済みモデルによる推論は実行しない。
+#
 """One-race HTML probe with optional isolated database verification."""
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ parse_odds_directory = import_module(
 ).parse_odds_directory
 
 
+# 馬番などの不足や重複を検査し、推論に渡せる出馬表かを判定する。
 def inspect_card(frame: pd.DataFrame) -> dict:
     count = len(frame)
     numbers = pd.to_numeric(frame.get("horse_number", pd.Series(dtype=float)), errors="coerce")
@@ -31,6 +36,7 @@ def inspect_card(frame: pd.DataFrame) -> dict:
     odds = pd.to_numeric(frame.get("odds", pd.Series(dtype=float)), errors="coerce")
     valid_numbers = numbers.between(1, 18) & numbers.mod(1).eq(0)
     valid_frames = frames.between(1, 8) & frames.mod(1).eq(0)
+    # 照合対象と精算結果がすべて揃い、公開可能と判断できるかのフラグ。
     complete = (
         count > 0 and int(valid_numbers.sum()) == count
         and numbers.nunique() == count and int(valid_frames.sum()) == count
@@ -44,13 +50,17 @@ def inspect_card(frame: pd.DataFrame) -> dict:
     }
 
 
+# JRAオッズの遷移途中の画面も残し、対象画面を発見できない場合の調査を支援する。
 class DiagnosticOddsCollector(JraOddsHtmlCollector):
     """Keep navigation pages too, so missing meetings can be investigated."""
+    # 通常のオッズ収集器を初期化し、診断用に遷移画面を保存できるようにする。
     def __init__(self, logger, directory: Path):
         super().__init__(logger)
+        # この収集実行専用のキャッシュ保存先。
         self.directory = directory
         self.request_count = 0
 
+    # 通常のJRA取得に加え、遷移途中のHTMLも診断用ディレクトリへ残す。
     def _post(self, cname: str) -> str:
         self.request_count += 1
         html = super()._post(cname)
@@ -58,8 +68,11 @@ class DiagnosticOddsCollector(JraOddsHtmlCollector):
         return html
 
 
+# 出馬表とJRAオッズをそれぞれ診断し、失敗時にもHTML・ログ・レポートを出力先に残す。
 def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = False) -> dict:
     # Require a fresh directory: a failed request must not reuse old HTML.
+    # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
+    # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
     output.mkdir(parents=True, exist_ok=False)
     logger = logging.getLogger(f"html_fetch_smoke.{output}")
     logger.setLevel(logging.INFO)
@@ -87,6 +100,7 @@ def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = 
             frame = collector._parse_page(html, race_id, race_date, "upcoming")
             frame.to_csv(output / "card.csv", index=False, encoding="utf-8-sig")
             report["card"] = inspect_card(frame)
+        # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
         except Exception as exc:
             logger.exception("出馬表の取得または解析に失敗")
             report["card"] = {"status": "error", "error": str(exc)}
@@ -104,6 +118,7 @@ def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = 
                 "html_files": saved, "rows": len(positive),
                 "by_bet_type": positive.groupby("bet_type").size().to_dict(),
             }
+        # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
         except Exception as exc:
             logger.exception("JRAオッズの取得または解析に失敗")
             report["jra_odds"] = {"status": "error", "error": str(exc)}
@@ -117,6 +132,7 @@ def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = 
                 try:
                     from .database_validation import verify_database
                     report["database"] = verify_database(frame, odds, race_date, race_id, output)
+                # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
                 except Exception as exc:
                     logger.exception("テスト用DBの登録または検証に失敗")
                     report["database"] = {"status": "error", "error": str(exc)}
@@ -154,6 +170,7 @@ def run_probe(race_date: date, race_id: str, output: Path, *, verify_db: bool = 
             handler.close()
 
 
+# コマンドライン引数を解析して処理を起動する入口。省略時の保存先やモードはparserで定義する。
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--race-date", required=True, type=date.fromisoformat)
@@ -175,5 +192,6 @@ def main(argv: list[str] | None = None) -> int:
     return {"ok": 0, "incomplete": 2, "error": 1}[report["status"]]
 
 
+# モジュールとしてimportしただけでは実行せず、CLIとして起動された場合だけ入口を呼ぶ。
 if __name__ == "__main__":
     raise SystemExit(main())

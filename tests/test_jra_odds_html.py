@@ -1,3 +1,6 @@
+# 検証対象：JRA画面の遷移識別子から対象レースと券種を選び、HTMLを保存する流れを確認する。
+# 通信を偽の応答に置き換え、UTF-8宣言、進捗通知、開催なしの場合の挙動を検証する。
+#
 from datetime import date
 from importlib import import_module
 
@@ -9,17 +12,22 @@ JraOddsHtmlCollector = import_module(
 ).JraOddsHtmlCollector
 
 
+# テスト中のログを記録する代替ロガー。実際のログ出力先に依存せず通知内容を検証する。
 class LoggerStub:
+    # テスト用の入力・応答・呼出履歴を初期化し、ケースごとに独立した状態を用意する。
     def __init__(self):
         self.messages = []
 
+    # 通常の処理経過をINFOレベルでファイルと任意の通知先へ送る。
     def info(self, message):
         self.messages.append(("info", message))
 
+    # 処理継続は可能だが確認が必要な状態をWARNINGとして通知する。
     def warning(self, message):
         self.messages.append(("warning", message))
 
 
+# JRA画面遷移用の識別子から、レースIDと券種を読み分ける。
 def test_extracts_jra_race_id_and_bet_type():
     parsed = JraOddsHtmlCollector._race_id_and_bet_type(
         "pw154ouS306202604050120260919Z/8B",
@@ -28,6 +36,7 @@ def test_extracts_jra_race_id_and_bet_type():
     assert parsed == ("202606040501", "quinella")
 
 
+# 対象日の対象レースだけを保存し、保存HTMLの文字コード宣言をUTF-8へそろえる。
 def test_collect_date_saves_only_target_race_odds(tmp_path):
     collector = JraOddsHtmlCollector(LoggerStub(), interval_seconds=0)
     responses = {
@@ -65,6 +74,7 @@ def test_collect_date_saves_only_target_race_odds(tmp_path):
     assert "umaren" in quinella.read_text(encoding="utf-8")
 
 
+# 探索と取得の各段階で、呼出側へ想定した進捗率が通知されることを確認する。
 def test_collect_date_reports_odds_progress(tmp_path):
     collector = JraOddsHtmlCollector(LoggerStub(), interval_seconds=0)
     responses = {
@@ -91,6 +101,7 @@ def test_collect_date_reports_odds_progress(tmp_path):
     assert progress == pytest.approx([0.1, 0.3, 1.0])
 
 
+# 開催画面がなければ警告とゼロ件を返し、架空のHTMLファイルを作らない。
 def test_collect_date_returns_zero_when_no_meeting_is_available(tmp_path):
     logger = LoggerStub()
     collector = JraOddsHtmlCollector(logger, interval_seconds=0)

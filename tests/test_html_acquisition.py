@@ -1,3 +1,6 @@
+# 検証対象：出馬表の識別情報と、出馬表取得に失敗した場合も残る診断情報を確認する。
+# ネットワークを置き換えてJRA取得の継続や、不正なCLI引数の取得前拒否を検証する。
+#
 from importlib import import_module as _import_module
 from datetime import date
 import json
@@ -8,6 +11,7 @@ import pytest
 smoke = _import_module('src.10_workflows.html_acquisition')
 
 
+# 馬番などの識別情報に不足・不正・重複があるケースを、正常な出馬表と区別する。
 @pytest.mark.parametrize("numbers,frames,status", [
     ([1, 2], [1, 2], "ok"),
     ([None, None], [None, None], "incomplete"),
@@ -20,12 +24,14 @@ def test_card_requires_valid_unique_numbers(numbers, frames, status):
     assert report["status"] == status
 
 
+# 出馬表が失敗してもJRA側の診断を継続し、ログ・JSON・サマリーを残すことを確認する。
 @pytest.mark.parametrize("card_error,odds_present,status", [
     (False, True, "ok"), (False, False, "incomplete"), (True, True, "error"),
 ])
 def test_probe_preserves_diagnostics_and_checks_jra_after_card_failure(
     tmp_path, monkeypatch, card_error, odds_present, status,
 ):
+    # 通信によるダウンロードを固定応答へ置き換え、取得先や呼出しを検査する。
     def download(self, url, cache_path, force=False):
         assert force
         if card_error:
@@ -33,6 +39,7 @@ def test_probe_preserves_diagnostics_and_checks_jra_after_card_failure(
         cache_path.write_text("<html>card</html>", encoding="utf-8")
         return "<html>card</html>"
 
+    # HTML収集の代替。取得結果や失敗を指定して呼出側の診断を検証する。
     def collect(self, race_date, race_ids, output_directory, force=False):
         assert race_ids == ["202609040701"] and force
         return int(odds_present)
@@ -58,6 +65,7 @@ def test_probe_preserves_diagnostics_and_checks_jra_after_card_failure(
     assert (output / "fetch.log").exists()
 
 
+# 不正な日付・レースIDなどをCLI解析段階で拒否し、取得処理へ進めない。
 @pytest.mark.parametrize("race_id", ["$(echo injected)", "202509040701", "202699040701"])
 def test_invalid_inputs_rejected_before_network(monkeypatch, race_id):
     monkeypatch.setattr(smoke, "run_probe", lambda *a: pytest.fail("must not fetch"))

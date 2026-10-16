@@ -1,3 +1,6 @@
+# 検証対象：券種ごとの保存HTML解析、レース単位のオッズ置換、予想後の買い目評価を確認する。
+# 複勝のモデル確率利用と、確率・回収率の閾値による候補選択を検証する。
+#
 from dataclasses import replace
 from datetime import date
 from importlib import import_module
@@ -11,6 +14,7 @@ storage = import_module("src.00_common.storage")
 betting = import_module("src.40_ai_modeling.betting")
 
 
+# 単勝の一点オッズと複勝の上下限を、券種ごとに正規化して取り出す。
 def test_parse_win_place_html(tmp_path):
     path = tmp_path / "202606040501_win_place.html"
     path.write_text(
@@ -30,6 +34,7 @@ def test_parse_win_place_html(tmp_path):
     assert result.set_index("bet_type").loc["place", "odds_max"] == 4.1
 
 
+# 組合せ式HTMLから3つの選択番号とオッズを取り出し、券種に対応した行へ変換する。
 def test_parse_combination_html(tmp_path):
     path = tmp_path / "202606040501_trio.html"
     path.write_text(
@@ -46,6 +51,7 @@ def test_parse_combination_html(tmp_path):
     assert result.odds_min == 122.8
 
 
+# 枠連を馬番の券種と区別し、選択枠番とオッズを抽出する。
 def test_parse_bracket_quinella_html(tmp_path):
     path = tmp_path / "202606040501_bracket_quinella.html"
     path.write_text(
@@ -64,6 +70,7 @@ def test_parse_bracket_quinella_html(tmp_path):
     assert result.odds_min == 8.4
 
 
+# 同じレースのオッズを再登録すると旧値が置換され、最新の収集runが残る。
 def test_save_and_replace_race_odds(tmp_path, monkeypatch):
     monkeypatch.setattr(
         storage, "PATHS", replace(storage.PATHS, database=tmp_path / "racing.duckdb")
@@ -85,6 +92,7 @@ def test_save_and_replace_race_odds(tmp_path, monkeypatch):
     assert loaded.iloc[0].collection_run_id == "run-2"
 
 
+# 複勝のモデル確率に取得済みオッズを結合し、期待回収率を計算する。
 def test_bet_recommendation_uses_odds_after_prediction():
     predictions = pd.DataFrame(
         [
@@ -110,6 +118,7 @@ def test_bet_recommendation_uses_odds_after_prediction():
     assert result.iloc[0].probability_method == "3着内確率（モデル出力）"
 
 
+# 低確率の候補を除外し、方針に従って複勝・ワイドを優先する。
 def test_bet_recommendation_filters_low_probability_and_prioritizes_place_wide():
     predictions = pd.DataFrame([
         {"race_id": "r1", "course_name": "中山", "race_number": 1,

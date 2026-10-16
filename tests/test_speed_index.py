@@ -1,3 +1,6 @@
+# 検証対象：過去の勝ち時計だけによる標準タイムと、斤量を加味した速度指数を確認する。
+# 同日の他レースを参照しないこと、極端な値の制限と生値の保持、禁止列の非出力を検証する。
+#
 from __future__ import annotations
 
 import math
@@ -7,6 +10,7 @@ import pandas as pd
 from src.public_api import FeatureContext, SpeedIndexGenerator
 
 
+# 履歴の順序や集計値を手で追える、最小限の過去走データを組み立てる。
 def _history() -> pd.DataFrame:
     rows = []
     for number in range(1, 13):
@@ -31,11 +35,13 @@ def _history() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# 生成処理の代替。外部依存を減らし、呼出元の状態管理を検証する。
 def _generate(history: pd.DataFrame) -> pd.DataFrame:
     context = FeatureContext("speed_index", "1.0.0", {})
     return SpeedIndexGenerator().transform(history, history, context)
 
 
+# 十分な過去件数がない初期状態と、基準が利用可能になった後の指数・補正値を確認する。
 def test_speed_index_uses_only_prior_standard_times():
     result = _generate(_history())
     first = result[result["race_id"].eq("r1")].iloc[0]
@@ -51,6 +57,7 @@ def test_speed_index_uses_only_prior_standard_times():
     assert not race_11["speed_index_was_clipped"].any()
 
 
+# 極端に遅い時計の指数を下限ゼロへ制限し、負の生値と制限フラグも残す。
 def test_extreme_slow_time_is_clipped_but_raw_value_is_retained():
     history = _history()
     history.loc[
@@ -68,6 +75,7 @@ def test_extreme_slow_time_is_clipped_but_raw_value_is_retained():
     assert bool(slow["speed_index_was_clipped"])
 
 
+# 同日の別レースの時計を変えても、当日の標準タイムには影響しない。
 def test_other_race_on_same_day_does_not_change_standard():
     history = _history()
     extra = history[history["race_id"].eq("r11")].copy()
@@ -84,6 +92,7 @@ def test_other_race_on_same_day_does_not_change_standard():
     assert before_standard.tolist() == after_standard.tolist()
 
 
+# 速度指数の出力へオッズ・人気・馬体重増減を含めない。
 def test_speed_index_does_not_use_market_or_body_weight_change():
     history = _history()
     history["odds"] = 1.1

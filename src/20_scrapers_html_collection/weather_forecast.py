@@ -1,3 +1,7 @@
+# JRA-VANの公開予報JSONを、モデルで利用する天気と既定の馬場状態へ変換する。
+# 対象日の正午に最も近い時刻別予報を優先し、利用できなければ同日の日別予報を用いる。
+# 天気からの馬場状態は対応表による推定であり、公式の確定馬場状態を取得する処理ではない。
+#
 from __future__ import annotations
 
 from datetime import date, datetime, time
@@ -29,6 +33,7 @@ WEATHER_TO_TRACK_CONDITION = {
 }
 
 
+# モデルへ渡す既定の馬場を天気から推定する。公式の馬場発表を確認する処理ではない。
 def weather_to_track_condition(weather: str) -> str:
     """Convert the displayed weather category to the requested default going."""
 
@@ -38,6 +43,7 @@ def weather_to_track_condition(weather: str) -> str:
         raise ValueError(f"馬場状態へ変換できない天気です: {weather}") from exc
 
 
+# 予報サービス固有の天気コードを、モデルが扱う天気カテゴリへまとめる。
 def weather_from_code(code: object) -> str | None:
     """Reduce the JRA-VAN forecast code to a model-compatible weather label."""
 
@@ -48,6 +54,7 @@ def weather_from_code(code: object) -> str | None:
     return {1: "晴", 2: "曇", 3: "雨", 4: "雪"}.get(family)
 
 
+# 予報の日時文字列を解釈し、変換できない値を選択候補から除外できるようにする。
 def _parse_datetime(value: object) -> datetime | None:
     try:
         return datetime.fromisoformat(str(value))
@@ -55,6 +62,7 @@ def _parse_datetime(value: object) -> datetime | None:
         return None
 
 
+# 対象日を厳密に合わせ、時刻別が使えなければ日別へ切り替える。選んだ予報の日時と種類も返す。
 def parse_jravan_forecast(
     payload: dict[str, Any],
     target_date: date,
@@ -100,6 +108,7 @@ def parse_jravan_forecast(
     return None
 
 
+# 競馬場に対応する公開JSONを取得して解析へ渡す。sessionを指定すればテストで通信を置き換えられる。
 def fetch_jravan_weather(
     course_name: str,
     target_date: date,
@@ -110,6 +119,7 @@ def fetch_jravan_weather(
     """Fetch the public forecast JSON used by the JRA-VAN weather page."""
 
     venue_id = VENUE_IDS.get(str(course_name))
+    # 予報URLの対応がない競馬場は、別の競馬場の天気で補わず拒否する。
     if venue_id is None:
         raise ValueError(f"JRA-VAN天気予報に対応していない競馬場です: {course_name}")
     source_url = (
@@ -128,6 +138,7 @@ def fetch_jravan_weather(
     )
     response.raise_for_status()
     parsed = parse_jravan_forecast(response.json(), target_date)
+    # 対象日に使える予報がなければ、他の日付の天気を流用しない。
     if parsed is None:
         raise ValueError(
             f"{course_name}の{target_date.isoformat()}の天気予報がありません。"

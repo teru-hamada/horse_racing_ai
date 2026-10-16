@@ -1,3 +1,6 @@
+# 検証対象：日本時間の日付、開催判定、当日予想と前日照合の独立した成功・失敗を確認する。
+# 公開元の変更検出、取消馬・除外馬・中止馬の精算、不完全な結果の公開防止を検証する。
+#
 from importlib import import_module as _import_module
 from calendar import monthrange
 from datetime import date, datetime, timezone
@@ -12,6 +15,7 @@ parse_meeting_day = _import_module('src.20_scrapers_html_collection.race_calenda
 build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
 
 
+# 指定年月の全日を含む開催カレンダーを作り、対象年月・日数の厳密な検査を確認する。
 def calendar_html(year=2026, month=9):
     cells = []
     for day in range(1, monthrange(year, month)[1] + 1):
@@ -22,6 +26,7 @@ def calendar_html(year=2026, month=9):
     return f'<select id="cal_select_year"><option value="{year}" selected>{year}</option></select><table class="Calendar_Table"><tr>'+''.join(cells)+'</tr></table>'
 
 
+# 対象年月のカレンダーを使い、開催日と非開催日を区別できることを確認する。
 def test_calendar_requires_complete_matching_month():
     html = calendar_html()
     assert parse_meeting_day(html, date(2026, 9, 19))
@@ -31,11 +36,13 @@ def test_calendar_requires_complete_matching_month():
         with pytest.raises(ValueError): parse_meeting_day(invalid, date(2026, 9, 20))
 
 
+# UTCでは前日でも日本時間では翌日となる時刻と、年をまたぐ境界を確認する。
 def test_japan_day_uses_local_date_and_year_boundary():
     assert daily.japan_today(datetime(2026, 12, 31, 18, tzinfo=timezone.utc)) == date(2027, 1, 1)
     assert daily.japan_today(datetime(2026, 9, 20, 18, tzinfo=timezone.utc)) == date(2026, 9, 21)
 
 
+# カレンダーの取得・解析失敗を開催なしへ変換せず、前日タスクは指定どおり独立して実行する。
 @pytest.mark.parametrize("today,previous,expected,publication", [
     (False, False, "ok", False),
     (False, True, "ok", True),
@@ -48,12 +55,14 @@ def test_japan_day_uses_local_date_and_year_boundary():
 ])
 def test_daily_calendar_errors_never_become_nonmeeting(tmp_path, monkeypatch, today, previous, expected, publication):
     called = []
+    # 開催日の判定結果を固定し、ワークフローの分岐を検証する。
     def meeting(day, *args):
         status = today if day.day == 21 else previous
         if status == "error": raise ValueError("calendar unavailable")
         return bool(status)
     monkeypatch.setattr(daily, "check_meeting_day", meeting)
     monkeypatch.setattr(daily, "run_date", lambda *a: {"status": "incomplete" if today == "incomplete" else "ok"})
+    # 結果照合の代替処理。呼出しや返す状態をテスト側で制御する。
     def compare(*args):
         called.append(args[0])
         return {"status": "ok"}
@@ -70,6 +79,7 @@ def test_daily_calendar_errors_never_become_nonmeeting(tmp_path, monkeypatch, to
             with pytest.raises(ValueError): daily.prepare_daily_publication(output, tmp_path / "missing_site")
 
 
+# 前日の予想と買い目を持つ一時サイトを準備し、結果取得も固定応答へ差し替えるfixture。
 @pytest.fixture
 def prior_site(tmp_path, monkeypatch):
     site = tmp_path / "docs"
@@ -87,6 +97,7 @@ def prior_site(tmp_path, monkeypatch):
                    "is_primary_bet_type": False, "bet_type_reliability": 1.0}]).to_csv(site / "predictions/2026-09-19_bets.csv", index=False)
     build_prediction_site(prediction, "2026-09-19", "m", site)
     monkeypatch.setattr(daily.DateCollector, "race_ids_for_date", lambda *a, **kw: [row["race_id"]])
+    # 外部取得を代替し、テストで指定した公式結果または取得失敗を返す。
     def fetch(*args, **kwargs):
         actual = pd.DataFrame([{"horse_id": None, "horse_number": 1, "finish_position": 1}])
         actual.attrs["official_payouts"] = {"win:1": 300}
@@ -95,6 +106,7 @@ def prior_site(tmp_path, monkeypatch):
     return site
 
 
+# 公開済み予想を再計算せずに照合し、元CSVを保ったまま比較結果だけを追加できることを確認する。
 @pytest.mark.parametrize("prediction_status", ["no_races", "incomplete", "error"])
 def test_previous_results_update_without_repredicting_and_preserve_original(tmp_path, prior_site, prediction_status):
     import logging
@@ -117,6 +129,7 @@ def test_previous_results_update_without_repredicting_and_preserve_original(tmp_
     assert snapshot == {p.name:p.read_bytes() for p in prior_site.rglob('*') if p.is_file()}
 
 
+# 結果の着順が不足したレースは照合完了とせず、公開可能な成功へ数えない。
 def test_result_missing_finish_stops_publication(tmp_path, monkeypatch, prior_site):
     import logging
     monkeypatch.setattr(daily.JraResultFetcher, "fetch_result_for_comparison", lambda *a, **kw:
@@ -126,12 +139,14 @@ def test_result_missing_finish_stops_publication(tmp_path, monkeypatch, prior_si
     assert result["summary"]["failed_races"] == 1
 
 
+# 前日予想のファイルがない場合に、不完全な精算を開始せず明示的に失敗することを確認する。
 def test_missing_prior_prediction_is_error(tmp_path):
     import logging
     with pytest.raises(ValueError, match="CSV"):
         daily.compare_previous(date(2026, 9, 19), tmp_path, tmp_path / "comparison", logging.getLogger())
 
 
+# 着順があっても公式払戻金が不足していれば、照合を完了扱いにしない。
 def test_missing_payout_stops_comparison(tmp_path, monkeypatch, prior_site):
     import logging
     monkeypatch.setattr(daily.JraResultFetcher, "fetch_result_for_comparison", lambda *a, **kw:
@@ -140,6 +155,7 @@ def test_missing_payout_stops_comparison(tmp_path, monkeypatch, prior_site):
     assert result["status"] == "incomplete"
 
 
+# 照合開始後に元CSVが変わった場合、予想と照合の両方について既存サイトを変更しない。
 def test_changed_previous_inputs_prevent_both_publications(tmp_path, monkeypatch, prior_site):
     import logging
     output = tmp_path / "run"
@@ -147,6 +163,7 @@ def test_changed_previous_inputs_prevent_both_publications(tmp_path, monkeypatch
     daily.compare_previous(date(2026, 9, 19), prior_site, output / "comparison", logging.getLogger())
     (output / "daily_report.json").write_text(json.dumps({"status": "ok", "publication_required": True,
         "tasks": {"prediction": {"status": "ok"}, "comparison": {"status": "ok", "race_date": "2026-09-19"}}}), encoding="utf-8")
+    # 当日予想の代替成果物を用意し、公開準備の成否を検証する。
     def prepare_today(source, staged):
         (staged / "predictions/today.html").write_bytes(b"new prediction")
     monkeypatch.setattr(daily, "prepare_publication", prepare_today)
@@ -158,6 +175,7 @@ def test_changed_previous_inputs_prevent_both_publications(tmp_path, monkeypatch
     assert before == {p.name:p.read_bytes() for p in prior_site.rglob('*') if p.is_file()}
 
 
+# 実例HTMLの除外・中止を保持して日次精算を完了し、公開ページにも状態を表示する。
 def test_real_excluded_and_stopped_races_complete_daily_run_and_publication(tmp_path, monkeypatch):
     """Replay the two failed races using their published predictions and JRA HTML."""
     repo = Path(__file__).resolve().parents[1]
@@ -170,6 +188,7 @@ def test_real_excluded_and_stopped_races_complete_daily_run_and_publication(tmp_
                             dtype={"race_id": str, "horse_id": str, "selection": str})
         frame[frame.race_id.isin(ids)].to_csv(site / "predictions" / name, index=False)
     parser = _import_module('src.20_scrapers_html_collection.jra_results').parse_jra_result_html
+    # 外部取得を代替し、テストで指定した公式結果または取得失敗を返す。
     def fetch(self, race_id, *args, **kwargs):
         return parser(repo / "tests/fixtures/jra" / f"{race_id}.html", race_id)
     monkeypatch.setattr(daily.JraResultFetcher, "fetch_result_for_comparison", fetch)
@@ -184,6 +203,7 @@ def test_real_excluded_and_stopped_races_complete_daily_run_and_publication(tmp_
     assert report["summary"]["failed_races"] == 0
     comparison = pd.read_csv(output / "comparison/comparison.csv", dtype={"race_id": str})
     assert set(comparison.result_status) == {"finished", "excluded", "did_not_finish"}
+    # 推奨買い目へ的中・不的中・返還・未確認と公式払戻額を付けた表。
     judged = pd.read_csv(output / "comparison/bets_results.csv")
     assert not judged.bet_result.eq("未確認").any()
     assert daily.prepare_daily_publication(output, site)
@@ -193,6 +213,7 @@ def test_real_excluded_and_stopped_races_complete_daily_run_and_publication(tmp_
     assert 'data-comparison-status="completed"' in html
 
 
+# 予想前の取消と予想後の取消を分け、公式返還情報が必要な買い目は返還まで確認する。
 @pytest.mark.parametrize("withdrawn_before_prediction", [False, True])
 @pytest.mark.parametrize("refund_listed", [False, True])
 def test_daily_settles_withdrawals_before_and_after_prediction(tmp_path, monkeypatch, prior_site, withdrawn_before_prediction, refund_listed):
@@ -210,6 +231,7 @@ def test_daily_settles_withdrawals_before_and_after_prediction(tmp_path, monkeyp
         bets = pd.read_csv(bets_path, dtype={"race_id": str, "selection": str})
         bets.loc[0, "selection"] = "6"
         bets.to_csv(bets_path, index=False)
+    # 外部取得を代替し、テストで指定した公式結果または取得失敗を返す。
     def fetch(*args, **kwargs):
         actual = pd.DataFrame([
             {"horse_id": None, "horse_number": 1, "finish_position": 1, "result_status": "finished"},
@@ -226,13 +248,16 @@ def test_daily_settles_withdrawals_before_and_after_prediction(tmp_path, monkeyp
         assert report["summary"]["failed_races"] == 1
         return
     assert report["status"] == "ok"
+    # 推奨買い目へ的中・不的中・返還・未確認と公式払戻額を付けた表。
     judged = pd.read_csv(output / "bets_results.csv")
     assert judged.iloc[0].bet_result == ("的中" if withdrawn_before_prediction else "返還")
     assert judged.iloc[0].payout_per_100 == (300 if withdrawn_before_prediction else 100)
 
 
+# 取消ではない出走馬が予想に欠けていれば、対象馬不一致として照合を止める。
 def test_unpredicted_active_horse_still_blocks_comparison(tmp_path, monkeypatch, prior_site):
     import logging
+    # 外部取得を代替し、テストで指定した公式結果または取得失敗を返す。
     def fetch(*args, **kwargs):
         actual = pd.DataFrame([
             {"horse_id": None, "horse_number": 1, "finish_position": 1},

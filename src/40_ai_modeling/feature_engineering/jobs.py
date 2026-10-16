@@ -1,3 +1,7 @@
+# 近走成績の生成をバックグラウンドジョブとして実行する。
+# ジョブIDごとに進捗・ログ・結果・例外を管理し、画面から状態照会や取消要求を受け付ける。
+# ジョブ情報はプロセス内のメモリで管理するため、アプリを再起動すると引き継がれない。
+#
 from __future__ import annotations
 
 import threading
@@ -13,24 +17,38 @@ from .service import (
 )
 
 
+# 近走成績の生成条件と進捗・結果を保持する、プロセス内のジョブ状態。
 @dataclass
 class FeatureGenerationJob:
+    # 開始時に発行する一意なジョブID。状態照会と取消要求のキーとして使う。
     job_id: str
+    # 今回の実行条件。ジョブ側が保持し、生成サービスへそのまま渡す。
     config: RecentFormRunConfig
+    # 処理状態。running／cancellingから、completed・cancelled・failedなどの終了状態へ移る。
     status: str = "running"
+    # 画面に通知する完了率。0.0が開始、1.0が完了を表す。
     progress: float = 0.0
+    # 実行開始日時。default_factoryでインスタンスごとに現在時刻を取得する。
     started_at: datetime = field(default_factory=datetime.now)
+    # 終了日時。未完了はNoneで、成功・失敗・取消の終了時に設定する。
     completed_at: datetime | None = None
+    # サービスが返す件数などの結果。default_factoryによりジョブ間で辞書を共有しない。
     result: dict[str, object] = field(default_factory=dict)
+    # 失敗時に画面へ渡す例外メッセージ。正常時は空文字列。
     error: str = ""
+    # 画面から参照するログ行の一覧。インスタンスごとに独立したリストを持つ。
     logs: list[str] = field(default_factory=list)
 
 
+# ジョブ共有状態の読み書きを保護する再入可能ロック。スナップショット取得時も使用する。
 _LOCK = threading.RLock()
+# ジョブIDから状態オブジェクトを引くプロセス内の登録簿。永続化された履歴とは別物。
 _JOBS: dict[str, FeatureGenerationJob] = {}
+# ジョブIDごとの取消通知Event。要求側がsetし、処理側がis_setで確認する。
 _CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 
+# 画面へ渡すジョブ情報をコピーし、内部の同期用オブジェクトを公開状態から分離する。
 def _snapshot(job: FeatureGenerationJob) -> dict[str, Any]:
     return {
         "job_id": job.job_id,
@@ -45,16 +63,22 @@ def _snapshot(job: FeatureGenerationJob) -> dict[str, Any]:
     }
 
 
+# 近走成績生成の状態をコピーし、最新ジョブから返す。共有状態はロック中に読む。
 def list_feature_generation_jobs() -> list[dict[str, Any]]:
+    # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
     with _LOCK:
         jobs = [_snapshot(job) for job in _JOBS.values()]
     return sorted(jobs, key=lambda item: item["started_at"], reverse=True)
 
 
+# 近走成績ジョブを一つだけ登録し、進捗・ログ・取消を扱うワーカーを起動する。
 def start_feature_generation_job(config: RecentFormRunConfig) -> str:
+    # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
     with _LOCK:
+        # 実行中だけでなく取消処理中も排他対象にし、同じDBへの生成・更新の競合を避ける。
         if any(job.status in {"running", "cancelling"} for job in _JOBS.values()):
             raise RuntimeError("Feature generation is already running")
+        # 非同期処理を特定するキー。状態照会と取消に同じ値を使用する。
         job_id = f"feature_job_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
         _JOBS[job_id] = FeatureGenerationJob(job_id=job_id, config=config)
         _CANCEL_EVENTS[job_id] = threading.Event()
@@ -68,28 +92,37 @@ def start_feature_generation_job(config: RecentFormRunConfig) -> str:
     return job_id
 
 
+# 近走成績ジョブの取消フラグを立て、サービスが要求を検知できるようにする。
 def cancel_feature_generation_job(job_id: str) -> bool:
+    # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
     with _LOCK:
         job = _JOBS.get(job_id)
         event = _CANCEL_EVENTS.get(job_id)
+        # 未知のジョブや終了済みジョブは取消できない。状態を変更せずFalseで呼出元へ知らせる。
         if job is None or event is None or job.status not in {"running", "cancelling"}:
             return False
         event.set()
+        # 要求は受け付けたが処理側の停止確認前なので、cancelledではなく取消処理中とする。
         job.status = "cancelling"
         job.logs.append("Cancellation requested; completed features will be preserved")
         return True
 
 
+# 近走成績生成サービスへログ・進捗・取消判定を渡し、完了または例外に応じて状態を確定する。
 def _run_job(job_id: str) -> None:
     job = _JOBS[job_id]
     event = _CANCEL_EVENTS[job_id]
 
+    # バックグラウンド処理からのログ行を受け取り、共有ジョブのログ一覧へ追加する。
     def log(message: str) -> None:
+        # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
         with _LOCK:
             job.logs.append(f"[{datetime.now():%H:%M:%S}] {message}")
             job.logs[:] = job.logs[-300:]
 
+    # サービスから通知された進捗値をジョブへ反映し、表示範囲を0～1へ収める。
     def progress(value: float) -> None:
+        # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
         with _LOCK:
             job.progress = min(max(float(value), 0.0), 1.0)
 
@@ -100,17 +133,23 @@ def _run_job(job_id: str) -> None:
             progress=progress,
             is_cancelled=event.is_set,
         )
+        # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
         with _LOCK:
             job.result = result
             job.progress = 1.0
+            # 成果物が完成したので成功を確定する。進捗と完了日時も同じ終了処理で更新する。
             job.status = "completed"
             job.completed_at = datetime.now()
+    # 利用者の取消は一般エラーと分けて扱い、取消状態と終了日時を記録する。
     except FeatureGenerationCancelled:
         with _LOCK:
+            # 取消例外を受けた終了。完了済み成果物を失敗扱いして作り直すことはしない。
             job.status = "cancelled"
             job.completed_at = datetime.now()
+    # ワーカースレッドの例外を状態とログへ残し、画面側が失敗理由を確認できるようにする。
     except Exception as exc:  # noqa: BLE001
         with _LOCK:
             job.error = str(exc)
+            # 一般の例外で終了したことを記録する。利用者による取消とは区別する。
             job.status = "failed"
             job.completed_at = datetime.now()

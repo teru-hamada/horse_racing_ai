@@ -1,3 +1,6 @@
+# 検証対象：netkeiba結果表の列抽出、通過順、血統、出馬表へのオッズ補完を確認する。
+# 壊れた補助表や取消表示があっても、本来の出走情報を壊さず扱えることを検証する。
+#
 from datetime import date
 import pytest
 
@@ -14,6 +17,7 @@ _passing_positions = import_module(
 )._passing_positions
 
 
+# 出馬表の取消・除外表示を明示的なentry_statusとして保持し、馬番も残す。
 @pytest.mark.parametrize("label,status", [("取消", "scratched"), ("除外", "excluded"),
                                          ("--", "active"), ("3.2", "active")])
 def test_upcoming_explicit_withdrawal_status(tmp_path, label, status):
@@ -73,6 +77,7 @@ PEDIGREE_HTML = """
 """
 
 
+# 結果表から馬ID・着順・距離・秒換算タイム・上がり3F・通過順を抽出する。
 def test_result_parser(tmp_path):
     logger = AppLogger(tmp_path)
     scraper = NetkeibaDatabaseCreator(logger, interval_seconds=0.5)
@@ -92,11 +97,13 @@ def test_result_parser(tmp_path):
     assert row["passing_position_4"] == 1
 
 
+# 通過順が4地点より少ない場合は不足分をNoneで補い、位置の対応を保つ。
 def test_passing_positions_pads_missing_corners():
     assert _passing_positions("7-5") == (7, 5, None, None)
     assert _passing_positions(None) == (None, None, None, None)
 
 
+# 主結果と無関係な壊れた補助表があっても、正常な結果表を選んで解析できる。
 def test_result_parser_ignores_broken_auxiliary_table(tmp_path):
     html = RESULT_HTML.replace(
         "</body>",
@@ -116,6 +123,7 @@ def test_result_parser_ignores_broken_auxiliary_table(tmp_path):
     assert parsed.iloc[0]["horse_id"] == "2020100001"
 
 
+# 別APIの単勝オッズ・人気を出馬表HTMLへ補完し、保存後も静的に解析できる。
 def test_upcoming_odds_are_embedded_in_saved_html():
     html = """
     <html><body>
@@ -142,6 +150,7 @@ def test_upcoming_odds_are_embedded_in_saved_html():
     assert NetkeibaHtmlCollector._has_embedded_win_odds(enriched)
 
 
+# オッズ補完の対象外となる取消表示を、数値で上書きせず保持する。
 def test_odds_enrichment_preserves_withdrawal_labels():
     html = '<span id="odds-1_06">取消</span><span id="ninki-1_06">取消</span>'
     enriched, count = NetkeibaHtmlCollector._embed_win_odds(html, {"06": ["3.2", "0", "1"]})
@@ -149,6 +158,7 @@ def test_odds_enrichment_preserves_withdrawal_labels():
     assert enriched.count("取消") == 2
 
 
+# 血統表の父・母・母父について、表示名とリンク由来のIDを対応付ける。
 def test_pedigree_parser():
     parsed = NetkeibaDatabaseCreator._parse_pedigree_html(
         PEDIGREE_HTML
@@ -163,6 +173,7 @@ def test_pedigree_parser():
     }
 
 
+# 開催一覧HTMLから対象日の表示グループを識別し、別日のグループと取り違えない。
 def test_extract_current_group():
     html = """
     <ul>

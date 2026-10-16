@@ -1,3 +1,6 @@
+# 検証対象：出馬表条件、頭数による相対位置、レース内の斤量差、前走距離差を確認する。
+# 同日データを前走扱いしないことと、当日だけの情報を出力しないことを検証する。
+#
 from __future__ import annotations
 
 import math
@@ -7,6 +10,7 @@ import pandas as pd
 from src.public_api import FeatureContext, RaceEntryGenerator
 
 
+# 出馬表条件の計算に必要な列を持つテストデータを作る。
 def _entries() -> pd.DataFrame:
     return pd.DataFrame([
         {"race_id": "old", "horse_id": "h1", "race_date": "2025-12-01",
@@ -27,6 +31,7 @@ def _entries() -> pd.DataFrame:
     ])
 
 
+# コース・馬場・頭数、馬番の相対位置、平均との差斤量、前走距離差の具体値を確認する。
 def test_race_entry_creates_current_and_relative_conditions():
     entries = _entries()
     targets = entries.loc[entries["race_id"].eq("new"), ["race_id", "horse_id", "race_date"]]
@@ -43,6 +48,7 @@ def test_race_entry_creates_current_and_relative_conditions():
     assert h1["race_entry_distance_change_from_last"] == 400
 
 
+# 同日の出走距離を前走として参照せず、過去走がなければ距離差はNaNとなる。
 def test_same_day_distance_is_not_used_as_previous_race():
     entries = _entries()
     targets = entries.loc[
@@ -56,6 +62,7 @@ def test_same_day_distance_is_not_used_as_previous_race():
     assert math.isnan(row["race_entry_distance_change_from_last"])
 
 
+# 天気・オッズ・人気・馬体重など、採用しない当日列を出力定義へ含めない。
 def test_race_day_only_columns_are_not_generated():
     output = set(RaceEntryGenerator.output_columns)
 

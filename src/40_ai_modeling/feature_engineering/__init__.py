@@ -1,3 +1,6 @@
+# src/40_ai_modeling/feature_engineeringをPythonパッケージとして認識させる初期化ファイル。
+# 利用側が必要な生成器・設定・集計関数をまとめてimportできるよう、公開名をここで再公開する。
+#
 """Point-in-time feature generation and persistence infrastructure."""
 
 from .base import FeatureGenerator
@@ -45,6 +48,7 @@ from .race_entry_service import (
     generate_race_entry_features,
 )
 
+# このモジュールから明示的に公開する名前。実装内部の補助名と区別する。
 __all__ = [
     "FeatureContext",
     "FeatureGenerator",

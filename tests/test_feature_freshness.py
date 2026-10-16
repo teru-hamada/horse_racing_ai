@@ -1,3 +1,6 @@
+# 検証対象：元DBの更新によるstale判定と、生成時の状態情報がない場合のunknown判定を確認する。
+# 特徴量が存在することだけを理由に最新と判定しないことを検証する。
+#
 from __future__ import annotations
 
 from datetime import datetime
@@ -13,6 +16,7 @@ from src.public_api import (
 from tests.test_feature_storage import _feature_frame
 
 
+# 一時ディレクトリに元レースDBを作り、生成サービスを本番DBから隔離する。
 def _create_source(path):
     connection = duckdb.connect(str(path))
     connection.execute("""
@@ -32,8 +36,10 @@ def _create_source(path):
     connection.close()
 
 
+# 元DBへ行を追加するとfreshからstaleへ変わり、件数と収集runの差も返ることを確認する。
 def test_freshness_detects_source_update(tmp_path):
     source_db = tmp_path / "racing.duckdb"
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     _create_source(source_db)
     state = source_data_state(source_db)
@@ -72,7 +78,9 @@ def test_freshness_detects_source_update(tmp_path):
     }
 
 
+# 特徴量が保存済みでも生成元の状態情報がなければ、最新と断定せずunknownを返す。
 def test_existing_features_without_source_state_are_unknown(tmp_path):
+    # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
     feature_db = tmp_path / "features.duckdb"
     source_db = tmp_path / "racing.duckdb"
     _create_source(source_db)

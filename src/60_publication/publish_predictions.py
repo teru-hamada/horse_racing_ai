@@ -1,3 +1,7 @@
+# 日別予想成果物の状態・日付・行数などを検証し、公開用ディレクトリへ反映する。
+# 不完全または矛盾した成果物は反映前に拒否し、他の日付のページは保持する。
+# 同じ結果の再公開では生成日時だけによる差分を抑え、不要な更新を避ける。
+#
 """Validate a complete date result and prepare only its public files."""
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ import pandas as pd
 from .static_site import build_prediction_site
 
 
+# 成果物の検証を終えてから公開先へ反映し、変更した相対パス一覧を返す。
 def prepare_publication(results: Path, site: Path) -> list[str]:
     report = json.loads((results / "date_report.json").read_text(encoding="utf-8"))
     day = date.fromisoformat(report["race_date"]).isoformat()
@@ -47,6 +52,7 @@ def prepare_publication(results: Path, site: Path) -> list[str]:
                 or row["model_id"] != predictions.model_run_id.iloc[0]
                 or len(bets[bets.race_id.eq(row["race_id"])]) != row["bet_rows"]):
             raise ValueError("検証結果と公開する頭数・モデルが一致しません。")
+    # 推奨条件に合う買い目があるときだけ数値を検査する。買い目なし自体は異常とはしない。
     if not bets.empty:
         values = bets[["estimated_probability", "odds_used", "recovery_rate_percent"]].to_numpy(dtype=float)
         if not np.isfinite(values).all() or not bets.estimated_probability.between(0, 1).all() or not bets.odds_used.gt(0).all():
@@ -55,6 +61,7 @@ def prepare_publication(results: Path, site: Path) -> list[str]:
     # Prepare the complete site elsewhere first; failures leave published files alone.
     changed = []
     with tempfile.TemporaryDirectory() as temporary:
+        # 公開ファイルを検証・生成する一時ディレクトリ。既存サイトを先に変更しないために使う。
         staged = Path(temporary) / "site"
         if site.exists():
             shutil.copytree(site, staged)
@@ -85,6 +92,7 @@ def prepare_publication(results: Path, site: Path) -> list[str]:
     return changed
 
 
+# モジュールとしてimportしただけでは実行せず、CLIとして起動された場合だけ入口を呼ぶ。
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, required=True)

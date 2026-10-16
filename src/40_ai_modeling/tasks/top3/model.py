@@ -1,3 +1,8 @@
+# 3着以内を目的変数とするMLPの学習、保存、読み込み、各種予想を実装する。
+# 特徴量DBから作った学習表を時系列分割し、学習区分だけで前処理器をfitする。
+# 検証損失で早期終了と最良モデルを選び、テスト区分の指標・特徴量構成を成果物へ記録する。
+# 過去レース予想では履歴の未来情報を除くが、モデル自体の学習期間とは別に注意が必要。
+#
 from __future__ import annotations
 
 import json
@@ -17,6 +22,7 @@ from sklearn.metrics import accuracy_score, log_loss, precision_score, recall_sc
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+# プロジェクト既定の保存先。DBを差し替えるテストではこの参照も隔離先へ変更する。
 PATHS = import_module("src.00_common.config").PATHS
 from ...common.datasets import chronological_split
 from ...common.evaluation import safe_auc
@@ -44,19 +50,25 @@ save_model_run = _storage.save_model_run
 save_prediction_run = _storage.save_prediction_run
 
 
+# 3着内ラベルを付けた表を構築し、前処理・MLP学習・評価・成果物保存・DB登録まで行う。
 def train_model(
     historical_records: pd.DataFrame,
     config: TrainConfig,
     log: Callable[[str], None],
     progress: Callable[[float], None] | None = None,
 ) -> dict[str, object]:
+    # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
+    # progress: 任意の進捗コールバック。値は通常0～1の完了率。
     torch.manual_seed(config.random_seed)
     np.random.seed(config.random_seed)
+    # 今回学習するモデルの一意なID。成果物フォルダーと登録DBに共通で記録する。
     model_run_id = f"model_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
     model_dir = PATHS.models / "top3" / model_run_id
     model_dir.mkdir(parents=True, exist_ok=True)
 
+    # 前処理前の行数。フィルターで減った件数を診断する基準。
     original_rows = len(historical_records)
+    # 入力に含まれるレース数。出走馬の行数とは区別してログへ出す。
     original_races = (
         historical_records["race_id"].nunique()
         if "race_id" in historical_records.columns
@@ -68,8 +80,10 @@ def train_model(
         f"{original_races:,}レース"
     )
 
+    # 正解ラベルを作る着順列がないデータでは、学習を開始しない。
     if "finish_position" not in historical_records:
         raise ValueError("学習元データにfinish_positionがありません。")
+    # 有効な着順と目的変数を持つ、特徴量結合前の学習対象表。
     training_base = historical_records.copy()
     training_base["finish_position"] = pd.to_numeric(
         training_base["finish_position"], errors="coerce"
@@ -79,6 +93,7 @@ def train_model(
     if "horse_name" not in training_base:
         training_base["horse_name"] = pd.NA
 
+    # 学習表と選択特徴量・結合レポート・構成記録をひとまとめにした結果。
     dataset = TrainingDatasetBuilder().build(
         training_base,
         TrainingDatasetConfig(
@@ -87,6 +102,7 @@ def train_model(
         ),
     )
     training = dataset.frame
+    # この学習runで採用する列の順序。推論時も同じ構成を使う。
     model_features = list(dataset.feature_columns)
     for report in dataset.reports:
         log(
@@ -95,8 +111,11 @@ def train_model(
             f"鮮度={report.freshness_status}"
         )
 
+    # 前処理と結合を終えた有効な学習行数。最低件数の検査に使う。
     processed_rows = len(training)
+    # 前処理で失われた行数の診断値。入力件数との差から求める。
     removed_rows = max(original_rows - processed_rows, 0)
+    # 前処理後の学習表に残ったレース数。
     processed_races = (
         training["race_id"].nunique()
         if "race_id" in training.columns
@@ -109,6 +128,7 @@ def train_model(
     )
     log(f"前処理で除外された行数: {removed_rows:,}行")
 
+    # ID・開催日・正解と特徴量を合わせた欠損診断用の列一覧。
     diagnostic_columns = list(
         dict.fromkeys(
             ["race_id", "race_date", TARGET_COLUMN]
@@ -134,6 +154,7 @@ def train_model(
     ]
 
     if available_columns:
+        # 列ごとの欠損数。前処理で学習行が不足した原因をログで確認する。
         missing_counts = (
             training[available_columns]
             .isna()
@@ -148,6 +169,7 @@ def train_model(
                     f"({ratio:.1%})"
                 )
 
+    # 前処理後の有効行数で最低件数を確認する。元データの件数だけでは判断しない。
     if processed_rows < 500:
         raise ValueError(
             "学習前処理後の有効データが"
@@ -157,6 +179,7 @@ def train_model(
             "実行ログの欠損列・不足列を確認してください。"
         )
 
+    # 開催日単位で分割し、同じ日の行が学習側と評価側の両方へ入らないようにする。
     train_df, val_df, test_df = chronological_split(training)
     log(f"時系列分割: 学習={len(train_df)}、検証={len(val_df)}、テスト={len(test_df)}")
 
@@ -167,36 +190,50 @@ def train_model(
         f"学習特徴量: 合計={len(model_features)}列 / "
         f"数値={len(numeric_features)}列 / カテゴリ={len(categorical_features)}列"
     )
+    # 学習runに対応する補完・標準化・カテゴリ符号化の前処理器。
     preprocessor = make_registered_feature_preprocessor(
         numeric_features, categorical_features
     )
+    # 補完値・標準化の統計量・カテゴリ辞書は学習区分だけから求める。
+    # 検証とテストをfitへ含めると、将来データの分布が前処理へ漏れてしまう。
     x_train = preprocessor.fit_transform(
         prepare_registered_feature_frame(
             train_df, numeric_features, categorical_features
         )
     ).astype("float32")
+    # 学習済み前処理器で変換した検証入力。前処理のfitには含めない。
     x_val = preprocessor.transform(
         prepare_registered_feature_frame(
             val_df, numeric_features, categorical_features
         )
     ).astype("float32")
+    # 最終評価用の入力行列。前処理やエポック選択の学習対象にはしない。
     x_test = preprocessor.transform(
         prepare_registered_feature_frame(
             test_df, numeric_features, categorical_features
         )
     ).astype("float32")
+    # 学習入力と同じ行順の二値正解ラベル。
     y_train = train_df[TARGET_COLUMN].to_numpy(dtype="float32")
+    # 検証区分の正解ラベル。損失監視と最良エポックの選択に使う。
     y_val = val_df[TARGET_COLUMN].to_numpy(dtype="float32")
+    # テスト区分の正解ラベル。選択済みモデルの評価にだけ使う。
     y_test = test_df[TARGET_COLUMN].to_numpy(dtype="float32")
 
+    # CUDAが利用可能ならGPU、それ以外はCPUを選ぶ実行先。
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log(f"学習デバイス: {device}")
     model = MLP(x_train.shape[1], hidden_dim=config.hidden_dim, dropout=config.dropout).to(device)
+    # 正例・負例の比率を損失の重みに反映する。logitを直接受ける損失なので、ここではsigmoidしない。
     positives = max(float(y_train.sum()), 1.0)
+    # 学習負例数。正例数との比を損失関数のpos_weightへ渡す。
     negatives = max(float(len(y_train) - y_train.sum()), 1.0)
+    # クラス比率を補正する二値分類損失。確率ではなくlogitを受け取る。
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(negatives / positives, device=device))
+    # モデルのパラメーターを更新するAdamW。学習率と重み減衰を設定する。
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=1e-4)
 
+    # 学習行列と正解を対応付け、シャッフルしたミニバッチを取り出すローダー。
     train_loader = DataLoader(
         TensorDataset(torch.from_numpy(x_train), torch.from_numpy(y_train)),
         batch_size=config.batch_size,
@@ -207,15 +244,21 @@ def train_model(
     x_train_t = torch.from_numpy(x_train).to(device)
 
     history: list[dict[str, float | int]] = []
+    # これまでの最良の検証損失。小さいほど良い。
     best_loss = math.inf
+    # 最良検証損失を達成したエポック番号。保存指標と履歴の対応に使う。
     best_epoch = 0
+    # 検証損失が十分に改善しなかった連続回数。patienceに達したら早期終了する。
     waiting = 0
+    # 最良エポックの重みをCPU上へ独立コピーしたもの。学習中の更新から切り離す。
     best_state: dict[str, torch.Tensor] | None = None
 
+    # 最大エポック数まで学習する。検証損失が改善しなければpatienceで途中終了する。
     for epoch in range(1, config.epochs + 1):
         model.train()
         total_loss = 0.0
         seen = 0
+        # 入力と正解を同じバッチで取り出し、バッチごとに勾配を初期化してパラメーターを更新する。
         for x_batch, y_batch in train_loader:
             x_batch = x_batch.to(device)
             y_batch = y_batch.to(device)
@@ -226,13 +269,18 @@ def train_model(
             optimizer.step()
             total_loss += float(loss.item()) * len(x_batch)
             seen += len(x_batch)
+        # 一エポックの学習損失を観測行数で平均した値。
         train_loss = total_loss / max(seen, 1)
 
         model.eval()
+        # 評価・推論では勾配を保存しない。パラメーター更新をせず、メモリ使用量も抑える。
         with torch.no_grad():
             val_logits = model(x_val_t)
+            # 検証データでの損失。モデルの最良状態と早期終了を決める基準。
             val_loss = float(criterion(val_logits, y_val_t).item())
+            # 勾配を記録せずに求めた学習データの3着内確率。AUCの監視に使う。
             train_prob = torch.sigmoid(model(x_train_t)).cpu().numpy()
+            # 検証logitをsigmoidで0～1へ変換した確率。
             val_prob = torch.sigmoid(val_logits).cpu().numpy()
         train_auc = safe_auc(y_train, train_prob)
         val_auc = safe_auc(y_val, val_prob)
@@ -249,9 +297,12 @@ def train_model(
             f"epoch {epoch:03d}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, "
             f"train_auc={train_auc:.3f}, val_auc={val_auc:.3f}"
         )
+        # 進捗の通知先が渡された場合だけ通知する。CLIなど通知不要の利用でも同じ処理を使える。
         if progress:
             progress(epoch / config.epochs)
 
+        # 微小な変動を改善と数えず、検証損失が十分に下がった時点の重みを独立コピーする。
+        # 最終エポックの重みではなく、このbest_stateをテスト評価と保存に使用する。
         if val_loss < best_loss - 1e-4:
             best_loss = val_loss
             best_epoch = epoch
@@ -263,12 +314,17 @@ def train_model(
                 log(f"Early Stopping: {epoch}エポックで停止")
                 break
 
+    # 保存できる検証改善が一度もなければ、未選択の重みを成功モデルとして登録しない。
     if best_state is None:
         raise RuntimeError("学習済みモデルを保存できませんでした。")
+    # テスト区分は最良エポックの選択には使わず、選択後のモデルを評価するために使う。
     model.load_state_dict(best_state)
     model.to(device).eval()
+    # 評価・推論では勾配を保存しない。パラメーター更新をせず、メモリ使用量も抑える。
     with torch.no_grad():
+        # 最良エポックのモデルによるテスト確率。最終指標の算出へ使う。
         test_prob = torch.sigmoid(model(torch.from_numpy(x_test).to(device))).cpu().numpy()
+    # 確率0.5を閾値にした二値判定。確率の順位によるレース内上位3頭とは別の評価。
     test_pred = (test_prob >= 0.5).astype(int)
     metrics = {
         "model_run_id": model_run_id,
@@ -366,7 +422,10 @@ def train_model(
     return metrics
 
 
+# チェックポイントの構造でMLPを再作成し、同じ学習runの前処理器と指標を読み込む。
 def load_model_bundle(model_dir: Path) -> tuple[MLP, ColumnTransformer, dict[str, object]]:
+    # model_dir: 重み・前処理器・指標が同じ学習runとして保存されたディレクトリ。
+    # 重みと入力次元・隠れ層幅・Dropoutを持つ保存済みモデル情報。
     checkpoint = torch.load(model_dir / "model.pt", map_location="cpu", weights_only=True)
     model = MLP(
         input_dim=int(checkpoint["input_dim"]),
@@ -375,15 +434,18 @@ def load_model_bundle(model_dir: Path) -> tuple[MLP, ColumnTransformer, dict[str
     )
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
+    # 学習runに対応する補完・標準化・カテゴリ符号化の前処理器。
     preprocessor = joblib.load(model_dir / "preprocessor.joblib")
     metrics = json.loads((model_dir / "metrics.json").read_text(encoding="utf-8"))
     return model, preprocessor, metrics
 
 
+# 保存済みの列名を入力スキーマの正として扱う。列情報のない旧モデルは再学習を要求する。
 def _features_for_saved_model(
     metrics: dict[str, object],
 ) -> list[str]:
     """Return the registered columns saved by feature-DB Top3 models."""
+    # モデル指標に記録された学習時の特徴量一覧。
     saved_features = metrics.get("features")
     if isinstance(saved_features, list) and all(
         isinstance(column, str) for column in saved_features
@@ -394,10 +456,12 @@ def _features_for_saved_model(
     )
 
 
+# 保存済み数値・カテゴリ定義で欠損フラグと列順を復元してから、前処理器向けの型へそろえる。
 def _prepare_saved_model_features(
     target: pd.DataFrame,
     metrics: dict[str, object],
 ) -> pd.DataFrame:
+    # この学習runで採用する列の順序。推論時も同じ構成を使う。
     model_features = _features_for_saved_model(metrics)
     numeric = metrics.get("numeric_features")
     categorical = metrics.get("categorical_features")
@@ -409,11 +473,13 @@ def _prepare_saved_model_features(
         raise ValueError(
             "このモデルには特徴量DBの型情報がありません。新方式で再学習してください。"
         )
+    # 保存済みスキーマに合わせて欠損フラグと列を整えた予想入力。
     aligned = align_saved_top3_features(target, model_features)
     return prepare_registered_feature_frame(aligned, numeric, categorical)
 
 
 
+# 当日以降の結果を特徴量から除いて過去レースを予想し、実着順との比較表と保存先・集計を返す。
 def predict_historical_race(
     historical_records: pd.DataFrame,
     race_id: str,
@@ -427,6 +493,9 @@ def predict_historical_race(
         保存済みモデル自体が対象レースを学習に使用している場合、
         完全な未見データ検証にはならない。
     """
+    # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
+    # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
+    # model_dir: 重み・前処理器・指標が同じ学習runとして保存されたディレクトリ。
     race_id = str(race_id)
     records = historical_records.copy()
     records["race_id"] = records["race_id"].astype(str)
@@ -484,6 +553,7 @@ def predict_historical_race(
     matrix = preprocessor.transform(
         _prepare_saved_model_features(target, metrics)
     ).astype("float32")
+    # 評価・推論では勾配を保存しない。パラメーター更新をせず、メモリ使用量も抑える。
     with torch.no_grad():
         probability = torch.sigmoid(
             model(torch.from_numpy(matrix))
@@ -602,6 +672,7 @@ def predict_historical_race(
         "model_run_id": metrics.get("model_run_id"),
     }
 
+    # 予想実行のID。出力ファイル群と予想履歴をまとめて識別する。
     prediction_run_id = (
         f"backtest_{datetime.now():%Y%m%d_%H%M%S}_"
         f"{uuid.uuid4().hex[:6]}"
@@ -634,6 +705,7 @@ def predict_historical_race(
     )
     return result, output_path, summary
 
+# 共有の推論だけを行い、予想ファイルや予想履歴DBは更新しない。保存は呼出側が選択する。
 def infer_race(
     historical_records: pd.DataFrame,
     upcoming_records: pd.DataFrame,
@@ -642,6 +714,11 @@ def infer_race(
     *, feature_database: Path | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Run the shared inference path without persisting predictions or DB records."""
+    # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
+    # upcoming_records: 予想対象の出馬表。結果がまだ分からない行として扱う。
+    # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
+    # model_dir: 重み・前処理器・指標が同じ学習runとして保存されたディレクトリ。
+    # feature_database: 特徴量DBの指定先。省略可能な場合は既定のfeatures.duckdbを使う。
     model, preprocessor, metrics = load_model_bundle(model_dir)
     featured = (build_top3_prediction_features(historical_records, upcoming_records, feature_database=feature_database)
                 if feature_database is not None else build_top3_prediction_features(historical_records, upcoming_records))
@@ -651,6 +728,7 @@ def infer_race(
     matrix = preprocessor.transform(
         _prepare_saved_model_features(target, metrics)
     ).astype("float32")
+    # 評価・推論では勾配を保存しない。パラメーター更新をせず、メモリ使用量も抑える。
     with torch.no_grad():
         probability = torch.sigmoid(model(torch.from_numpy(matrix))).numpy()
     result = target[
@@ -664,14 +742,20 @@ def infer_race(
     return result, metrics
 
 
+# 1レースの推論結果をファイルと実行履歴へ保存し、予想表とParquetの保存先を返す。
 def predict_race(
     historical_records: pd.DataFrame,
     upcoming_records: pd.DataFrame,
     race_id: str,
     model_dir: Path,
 ) -> tuple[pd.DataFrame, Path]:
+    # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
+    # upcoming_records: 予想対象の出馬表。結果がまだ分からない行として扱う。
+    # race_id: レースの識別子。日付や馬番とは別にレース単位の照合へ使う。
+    # model_dir: 重み・前処理器・指標が同じ学習runとして保存されたディレクトリ。
     result, metrics = infer_race(historical_records, upcoming_records, race_id, model_dir)
 
+    # 予想実行のID。出力ファイル群と予想履歴をまとめて識別する。
     prediction_run_id = f"pred_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
     output_dir = PATHS.predictions / prediction_run_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -691,6 +775,7 @@ def predict_race(
     return result, output_path
 
 
+# 同じ日の出走馬をまとめて推論し、日別の成果物と予想実行履歴を保存する。
 def predict_race_date(
     historical_records: pd.DataFrame,
     upcoming_records: pd.DataFrame,
@@ -699,16 +784,24 @@ def predict_race_date(
 ) -> tuple[pd.DataFrame, Path]:
     """Predict every cached race on one date in a single inference run."""
 
+    # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
+    # upcoming_records: 予想対象の出馬表。結果がまだ分からない行として扱う。
+    # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
+    # model_dir: 重み・前処理器・指標が同じ学習runとして保存されたディレクトリ。
+    # 入力日付を変換・正規化した開催日。
     requested_date = pd.to_datetime(race_date, errors="coerce")
+    # 解釈できない開催日は、空予想として返さず入力エラーにする。
     if pd.isna(requested_date):
         raise ValueError("予想対象の日付が正しくありません。")
     requested_date = requested_date.normalize()
 
     upcoming = upcoming_records.copy()
     upcoming["race_date"] = pd.to_datetime(upcoming["race_date"], errors="coerce")
+    # 予想対象日に一致する出走馬だけを抽出した出馬表。
     date_targets = upcoming[
         upcoming["race_date"].dt.normalize().eq(requested_date)
     ].copy()
+    # 指定日に対応する出馬表がなければ、他の日付を予想せず不足を明示する。
     if date_targets.empty:
         raise ValueError("指定日の出走データがありません。")
 
@@ -717,6 +810,7 @@ def predict_race_date(
     matrix = preprocessor.transform(
         _prepare_saved_model_features(featured, metrics)
     ).astype("float32")
+    # 評価・推論では勾配を保存しない。パラメーター更新をせず、メモリ使用量も抑える。
     with torch.no_grad():
         probability = torch.sigmoid(model(torch.from_numpy(matrix))).numpy()
 
@@ -743,6 +837,7 @@ def predict_race_date(
     ).reset_index(drop=True)
     result.insert(0, "race_prediction_count", result.groupby("race_id")["race_id"].transform("size"))
 
+    # 予想実行のID。出力ファイル群と予想履歴をまとめて識別する。
     prediction_run_id = (
         f"date_pred_{requested_date:%Y%m%d}_{datetime.now():%H%M%S}_"
         f"{uuid.uuid4().hex[:6]}"

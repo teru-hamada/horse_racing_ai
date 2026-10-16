@@ -1,3 +1,7 @@
+# 予想、推奨買い目、確定結果の比較を、外部依存のない静的HTMLへ整形する。
+# 入力文字列をHTMLエスケープし、日付別ページと一覧を生成する。
+# 画面に掲載した買い目の購入額・払戻額を100円単位で集計し、返還は的中件数と区別する。
+#
 from __future__ import annotations
 from importlib import import_module as _import_module
 
@@ -9,9 +13,11 @@ import re
 import pandas as pd
 
 compare_recommended_bets = _import_module('src.50_result_comparison.prediction_comparison').compare_recommended_bets
+# 完走・取消・除外・中止などの内部状態と日本語表示の対応。
 RESULT_STATUS_LABELS = _import_module('src.50_result_comparison.prediction_comparison').RESULT_STATUS_LABELS
 
 
+# 公開ページへ埋め込む共通CSS。Python文字列内へ説明を入れると生成HTMLも変わるため、説明は文字列外へ置く。
 _STYLE = """
 :root{color-scheme:dark;--bg:#07130f;--panel:#10251d;--line:#25483a;--text:#f4f7f5;--muted:#a9bdb5;--accent:#38d996;--gold:#ffd166}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#163b2c 0,var(--bg) 42%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}
@@ -24,21 +30,26 @@ _STYLE += """
 """
 
 
+# レース名から重賞表記を識別する正規表現。金色見出しの判定に使う。
 _GRADED_RACE_PATTERN = re.compile(
     r"(?:Jpn\s*[123ⅠⅡⅢ]|G\s*[123ⅠⅡⅢ])",
     re.IGNORECASE,
 )
 
 
+# 動的な文字列はHTML本文や属性へ埋め込む前にエスケープする。
 def _text(value: object, fallback: str = "-") -> str:
     return fallback if pd.isna(value) else escape(str(value))
 
 
+# 数値を指定小数桁の表示文字列にする。欠損はゼロと表示せず「-」にする。
 def _number(value: object, digits: int = 2) -> str:
     return "-" if pd.isna(value) else f"{float(value):.{digits}f}"
 
 
+# 一つのレースで画面へ掲載する買い目を選び、表示分の精算と同じ集合を使う。
 def _displayed_bets(bets: pd.DataFrame) -> pd.DataFrame:
+    # 買い目がない場合も列を保った空表を返し、表示・精算側で同じ形式を扱えるようにする。
     if bets.empty:
         return bets.copy()
     return (
@@ -53,22 +64,31 @@ def _displayed_bets(bets: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+# 画面に表示する買い目を各100円で購入した場合の成績を計算し、返還金も払戻合計へ含める。
 def _bet_return_summary(
     bets: pd.DataFrame,
     official_payouts: dict[str, dict[str, int]],
     official_refunds: dict[str, dict[str, list[int]]] | None = None,
 ) -> dict[str, object]:
     """Settle displayed 100-yen bets with JRA's official payout amounts."""
+    # official_payouts: レース・券種・組合せをキーとする公式の100円当たり払戻金。
+    # official_refunds: 馬番・枠番・同枠組合せに関する公式返還情報。
     displayed = _displayed_bets(bets)
+    # 掲載する買い目の総数。各100円購入の合計金額の基準。
     total_bets = len(displayed)
+    # 公式情報で精算を確認できた買い目数。未確認は含めない。
     settled_bets = 0
+    # 的中した買い目数。返還された買い目はここへ数えない。
     hit_bets = 0
+    # 掲載買い目の公式払戻と返還金の合計（円）。
     payout = 0.0
 
     for bet in compare_recommended_bets(displayed, official_payouts, official_refunds).itertuples():
+        # 公式精算ができていない買い目は、確定払戻や的中の集計へ加えない。
         if bet.bet_result == "未確認":
             continue
         settled_bets += 1
+        # 的中件数は公式払戻で的中と判定された買い目だけを数え、返還を混ぜない。
         if bet.bet_result == "的中":
             hit_bets += 1
         payout += float(bet.payout_per_100)
@@ -83,6 +103,7 @@ def _bet_return_summary(
     }
 
 
+# 本文を共通のHTML枠とスタイルで包み、日別ページとして表示できる形にする。
 def _page(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -91,6 +112,7 @@ def _page(title: str, body: str) -> str:
 """
 
 
+# メモリ上の状態ではなく保存済み予想と公開ページから、指定日の処理状況を復元する。
 def prediction_date_status(
     race_date: object,
     predictions_dir: Path,
@@ -98,6 +120,7 @@ def prediction_date_status(
 ) -> tuple[bool, str | None]:
     """Return prediction presence and comparison status for a date."""
 
+    # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
     target_date = pd.to_datetime(race_date, errors="coerce")
     if pd.isna(target_date):
         return False, None
@@ -124,12 +147,14 @@ def prediction_date_status(
     return prediction_created, comparison_status
 
 
+# 指定日に対応する保存済み予想を探し、更新日時が最も新しいファイルを返す。
 def latest_prediction_file(
     race_date: object,
     predictions_dir: Path,
 ) -> Path | None:
     """Return the most recently updated saved date-prediction file."""
 
+    # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
     target_date = pd.to_datetime(race_date, errors="coerce")
     if pd.isna(target_date):
         return None
@@ -142,6 +167,7 @@ def latest_prediction_file(
     return max(candidates, key=lambda path: path.stat().st_mtime_ns)
 
 
+# 保存済み日付別ページへのリンク一覧を作り、公開サイトの入口を更新する。
 def _write_index(site_dir: Path) -> Path:
     pages = sorted((site_dir / "predictions").glob("*.html"), reverse=True)
     if pages:
@@ -160,6 +186,7 @@ def _write_index(site_dir: Path) -> Path:
     return index_path
 
 
+# 日別の予想・買い目・結果比較ページを生成して一覧を更新する。モデル内部情報の表示は最小限にする。
 def build_prediction_site(
     predictions: pd.DataFrame,
     race_date: object,
@@ -171,12 +198,14 @@ def build_prediction_site(
 ) -> Path:
     """Write a dependency-free GitHub Pages site for one prediction date."""
 
+    # race_date: 対象開催日。日別の抽出と過去履歴の境界に使う。
     required = {
         "race_id", "race_number", "race_name", "course_name", "horse_number",
         "horse_name", "jockey_name", "prediction_rank", "top3_probability",
         "odds", "expected_value_index",
     }
     missing = required.difference(predictions.columns)
+    # 必要な列・定義が不足する場合は、内容を補完で隠さず不足一覧付きで処理を止める。
     if missing:
         raise ValueError(f"静的ページ用の予想列が不足しています: {sorted(missing)}")
     target_date = pd.to_datetime(race_date, errors="coerce")
@@ -208,6 +237,7 @@ def build_prediction_site(
             page_predictions[column] = pd.NA
 
     race_sections = []
+    # レース単位で処理し、別レースの馬番や払戻金を混ぜない。
     for race_id, race in page_predictions.groupby("race_id", sort=False):
         first = race.iloc[0]
         rows = []
@@ -310,6 +340,7 @@ def build_prediction_site(
             comparison_status = "partial"
         else:
             comparison_status = "none"
+        # 失敗したレースIDと原因を残す一覧。成功分を失わず不足を報告する。
         failures = summary.get("failures", []) or []
         failure_text = ""
         if failures:
@@ -350,6 +381,7 @@ def build_prediction_site(
             f'{bet_return_text}'
             f'{failure_text}</section>'
         )
+    # この生成runで共通に付与する生成日時。行ごとにばらつかせない。
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     body = f"""<a class="back" href="../index.html">← 開催日一覧</a><header><div class="eyebrow">Daily Predictions</div>
 <h1>{date_text}</h1><p class="lead">開催日単位の全レース予想</p></header>
@@ -360,6 +392,7 @@ def build_prediction_site(
     return page_path
 
 
+# 予想がまだない場合にも、公開サイトの入口ページを用意する。
 def initialize_prediction_site(site_dir: Path) -> Path:
     """Create the empty landing page committed before the first prediction."""
     (site_dir / "predictions").mkdir(parents=True, exist_ok=True)

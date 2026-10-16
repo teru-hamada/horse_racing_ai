@@ -1,3 +1,6 @@
+# Top3学習と同じ特徴量群を、予想時点の出馬表と過去履歴から再構築する。
+# 保存済みの列一覧に合わせて欠損フラグと列順をそろえ、学習と推論の入力定義を一致させる。
+#
 from __future__ import annotations
 
 import pandas as pd
@@ -12,6 +15,7 @@ from ...feature_engineering.generators import (
 from ...feature_engineering.storage import load_performance_features
 
 
+# 学習と同じ近走成績・近走速度・出馬表条件を生成し、対象馬のキーで結合する。
 def build_top3_prediction_features(
     historical_records: pd.DataFrame,
     target_records: pd.DataFrame,
@@ -19,8 +23,11 @@ def build_top3_prediction_features(
 ) -> pd.DataFrame:
     """Generate the same point-in-time feature families used by Top3 training."""
 
+    # historical_records: 過去の出走結果の表。予想時点の履歴範囲は生成器側でも制限する。
+    # feature_database: 特徴量DBの指定先。省略可能な場合は既定のfeatures.duckdbを使う。
     required = {"race_id", "horse_id", "race_date"}
     missing = required.difference(target_records.columns)
+    # 必要な列・定義が不足する場合は、内容を補完で隠さず不足一覧付きで処理を止める。
     if missing:
         raise ValueError(f"Prediction targets are missing columns: {sorted(missing)}")
     targets = target_records.copy()
@@ -28,8 +35,11 @@ def build_top3_prediction_features(
     if targets["race_date"].isna().any():
         raise ValueError("Prediction targets contain invalid race_date values")
     keys = targets[["race_id", "horse_id", "race_date"]]
+    # 今回の予想対象に現れる馬IDの集合。履歴の索引作成を必要な馬に限定する。
     target_horses = set(targets["horse_id"].dropna().tolist())
 
+    # 学習で使う3つの特徴量群を同じ名前・版・パラメーターで生成する。
+    # 近走成績と出馬表条件は履歴から計算し、近走速度は保存済みの1走指数を集約する。
     baseline = RecentFormGenerator().transform(
         keys,
         historical_records,
@@ -59,6 +69,7 @@ def build_top3_prediction_features(
         FeatureContext("race_entry", "1.1.0", {}),
     )
 
+    # 当日の出馬表の列を保ったままキーで一対一結合する。生成結果の行順だけには依存しない。
     result = targets.copy()
     for generated in (baseline, recent_speed, race_entry):
         result = result.merge(
@@ -67,12 +78,14 @@ def build_top3_prediction_features(
     return result
 
 
+# 保存列の順序を正とし、欠損フラグを再構築する。不足する実特徴量は黙って補わない。
 def align_saved_top3_features(
     frame: pd.DataFrame,
     features: list[str],
 ) -> pd.DataFrame:
     """Recreate training-time missing indicators and enforce the saved schema."""
 
+    # 保存済みスキーマに合わせて欠損フラグと列を整えた予想入力。
     aligned = frame.copy()
     for column in features:
         if column.endswith("__missing"):
@@ -81,6 +94,7 @@ def align_saved_top3_features(
                 raise ValueError(f"Missing-indicator source is unavailable: {source}")
             aligned[column] = aligned[source].isna().astype("int8")
     missing = set(features).difference(aligned.columns)
+    # 必要な列・定義が不足する場合は、内容を補完で隠さず不足一覧付きで処理を止める。
     if missing:
         raise ValueError(f"Prediction feature generation is missing: {sorted(missing)}")
     return aligned
