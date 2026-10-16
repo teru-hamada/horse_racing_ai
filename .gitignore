@@ -71,8 +71,10 @@ tmp/
 temp/
 
 # --- エディター・OS が生成するローカルファイル ---
-# VS Code と JetBrains 系 IDE の端末・作業環境に依存する設定。
-.vscode/
+# VS Code は共通の文字コード設定だけを共有し、その他のローカル設定は除外する。
+.vscode/*
+!.vscode/settings.json
+# JetBrains 系 IDE の端末・作業環境に依存する設定。
 .idea/
 # macOS のフォルダー表示情報と、Windows のサムネイルキャッシュ。
 .DS_Store
