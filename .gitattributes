@@ -1,5 +1,29 @@
-# Keep hashed runtime metadata identical on Windows and Linux.
+# Git がファイルを扱う際の属性を指定する設定ファイル。日本語コメントは UTF-8 で保存する。
+# 各行は「対象パス 属性...」の形式。「#」で始まる行は説明用のコメント。
+# ここにあるパスは、この .gitattributes が置かれたリポジトリのルートを基準とする。
+# 対象ファイルの追跡・除外を決める .gitignore とは役割が異なる。
+#
+# 予測用バンドルは Windows と Linux の両方で利用するため、改行コードを統一する。
+# LF と CRLF ではファイルのバイト列が変わり、同じ文章でも SHA-256 の値が変化する。
+# 特に requirements.txt は manifest.json に記録されたハッシュで検証されるため、
+# チェックアウト時の改行変換で整合性チェックに失敗しないよう LF を指定する。
+#
+# 「text」はテキストとして改行を正規化する指定で、Git のインデックスでは LF にそろえる。
+# 「eol=lf」は作業ツリーへチェックアウトする際も LF を使用する指定。
+# 対象パスでは core.autocrlf などの端末設定に依存した CRLF への変換を防ぐ。
+# これらの属性は文字コードを UTF-8 に変換する設定ではない。
+
+# 予測実行環境に導入するパッケージ一覧。ハッシュ検証の対象となるファイル。
 prediction_bundle/requirements.txt text eol=lf
+
+# 予測実行環境の Python バージョンを記録するテキストファイル。
 prediction_bundle/.python-version text eol=lf
+
+# バンドルの構成、パッケージのバージョン、各ファイルのハッシュなどを記録する JSON。
 prediction_bundle/manifest.json text eol=lf
+
+# モデルやデータを格納する ZIP アーカイブはバイナリとして扱う。
+# 「binary」は組み込みマクロで、「-diff -merge -text」と同じ属性を設定する。
+# 改行の正規化と通常のテキスト差分表示を無効にし、テキストとしての自動マージを避ける。
+# ZIP のバイト列を保ち、manifest.json に記録されたアーカイブのハッシュ検証を維持する。
 prediction_bundle/runtime.zip binary

@@ -1,45 +1,79 @@
-# Python
+# Git の管理対象から除外するファイル・フォルダーを指定する。文字コードは UTF-8。
+# この設定は、まだ Git に追跡されていないファイルに適用される。
+# 既に追跡中のファイルは、ここに追加しても自動で管理対象から外れない。
+#
+# 記法の要点:
+#   「#」で始まる行はコメント、末尾の「/」はフォルダーを対象とする指定。
+#   「*」はパス区切り以外の文字列、「**」は複数階層にまたがるパスにも一致する。
+#   「!」で始まる行は除外の例外。同じパスに一致する場合、後に書いた指定が優先される。
+#   除外済みフォルダーの中を例外にするには、親フォルダーも除外対象から戻す必要がある。
+
+# --- Python のキャッシュ・テスト生成物 ---
+# モジュールの実行・読み込み時に生成されるバイトコードのキャッシュフォルダー。
 __pycache__/
+# .pyc・.pyo・.pyd に一致する。コンパイル済みコードや拡張モジュールのファイルを除外する。
 *.py[cod]
+# pytest が前回の失敗情報などを保存するキャッシュ。
 .pytest_cache/
+# カバレッジ測定ツールが出力する測定データと HTML レポート。
 .coverage
 htmlcov/
 
-# Virtual environments
+# --- ローカルの Python 仮想環境 ---
+# インストール済みパッケージや実行ファイルは、環境ごとに作成するため管理しない。
+# .venv は Windows セットアップ用、.venv-prediction は予測用の環境名。
+# venv という一般的な環境名も除外する。
 .venv/
 .venv-prediction/
 venv/
 
-# Secrets and local settings
+# --- 秘密情報・端末ごとの設定 ---
+# 環境変数ファイルには API キーなどが含まれる可能性があるため除外する。
+# .env 自体と、名前の末尾が .env のファイルを対象とする。
 .env
 *.env
+# Streamlit 用の秘密情報ファイル。共有用の画面設定とは別に扱う。
 .streamlit/secrets.toml
 
-# Local data
+# --- 取得データ・ローカルのデータファイル ---
+# data 配下を原則除外し、後続の ! 指定で必要なファイルだけ例外にする。
 data/**
+# 下位フォルダーを探索できるよう、フォルダー自体の除外を解除する。
+# この行だけでは中のファイル全体が管理対象に戻るわけではない。
 !data/**/
+# データの説明書と、空フォルダーの構成を残すための .gitkeep を管理対象に戻す。
+# .gitkeep は慣例的なファイル名であり、Git 自体の特別な機能ではない。
 !data/README.md
 !data/**/.gitkeep
+# レース情報・特徴量の DuckDB ファイルは、data 配下の除外に対する例外とする。
+# 例外指定は追跡を許可するだけであり、自動で git add されるわけではない。
 !data/racing.duckdb
 !data/features.duckdb
 
-# Generated model artifacts
+# --- 学習などで生成される成果物 ---
+# モデルの重み、前処理器、予測結果など、artifacts 配下の生成ファイルを原則除外する。
 artifacts/**
+# 下位フォルダーを探索可能にし、説明書とフォルダー維持用ファイルだけ例外にする。
 !artifacts/**/
 !artifacts/README.md
 !artifacts/**/.gitkeep
 
-# Existing model directory (until migration to artifacts/)
+# --- 従来のモデル保存先 ---
+# artifacts への移行まで使用する models 配下も除外する。ここには例外指定を設けない。
 models/**
 
-# Logs and temporary files
+# --- 実行ログ・一時ファイル ---
+# logs フォルダーと、拡張子が .log のファイルを除外する。
 logs/
 *.log
+# 作業途中のデータなどを置く一般的な一時フォルダー。
 tmp/
 temp/
 
-# IDE / OS
+# --- エディター・OS が生成するローカルファイル ---
+# VS Code と JetBrains 系 IDE の端末・作業環境に依存する設定。
 .vscode/
 .idea/
+# macOS のフォルダー表示情報と、Windows のサムネイルキャッシュ。
 .DS_Store
 Thumbs.db
