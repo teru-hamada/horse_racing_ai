@@ -1,0 +1,24 @@
+{
+  "class_weight": {
+    "status": "completed",
+    "total_bets": 98,
+    "settled_bets": 98,
+    "hit_bets": 6,
+    "refund_bets": 0,
+    "purchase": 9800,
+    "payout": 10900.0,
+    "recovery_rate": 111.22448979591837,
+    "missing_races": []
+  },
+  "sigmoid": {
+    "status": "completed",
+    "total_bets": 98,
+    "settled_bets": 98,
+    "hit_bets": 6,
+    "refund_bets": 0,
+    "purchase": 9800,
+    "payout": 10900.0,
+    "recovery_rate": 111.22448979591837,
+    "missing_races": []
+  }
+}
