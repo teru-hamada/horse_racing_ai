@@ -1,0 +1,4 @@
+# Changes affecting automation, credentials or publishing should be reviewed by the owner.
+/.github/ @teru-hamada
+/scripts/ @teru-hamada
+/src/60_publication/ @teru-hamada

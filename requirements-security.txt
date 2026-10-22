@@ -1,0 +1,7 @@
+# Security floors for runtime/GUI transitive dependencies, checked by pip-audit.
+# Keep model serialization libraries pinned separately in the private bundle.
+certifi>=2026.10.19
+urllib3>=2.8.0
+GitPython>=3.1.60
+pillow>=13.0.0
+pip>=26.2.2

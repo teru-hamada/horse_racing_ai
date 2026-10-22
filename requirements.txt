@@ -10,7 +10,8 @@
 # --- アプリ画面・可視化 ---
 # Python から Web アプリの画面を構築するフレームワーク。
 # app.py の操作画面を提供し、run_app.bat から streamlit run で起動する。
-streamlit>=1.40
+-r requirements-security.txt
+streamlit>=1.66.1
 
 # 表形式データを DataFrame として扱うためのライブラリ。
 # レース情報の整形・結合・集計、特徴量の生成、予測結果の入出力に使用する。

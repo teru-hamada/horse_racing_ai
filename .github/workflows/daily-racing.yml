@@ -30,15 +30,7 @@ on:
         type: boolean
 
 # ワークフローが使う GITHUB_TOKEN に与える権限。
-permissions:
-  # 実行履歴と、予想・結果照合の件数を保存したArtifactの読み取り。
-  actions: read
-  # リポジトリ内のコードやファイルの読み取り。
-  contents: read
-  # GitHub Pagesへの配信。
-  pages: write
-  # 配信時の認証に使うOIDCトークンの発行。
-  id-token: write
+permissions: {}
 
 # 同じグループの処理が同時に実行されないように制御する設定。
 concurrency:
@@ -53,11 +45,11 @@ jobs:
   predict:
     # predictに与える権限。
     permissions:
-      # 検証済みの公開ファイルをデフォルトブランチへpushするための権限。
-      contents: write
+      # ライブラリ導入・データ取得・予想は読み取り専用で行う。
+      contents: read
     # 後続の配信ジョブへ、対象コミットを渡す。
     outputs:
-      commit: ${{ steps.publish.outputs.commit }}
+      site_ready: ${{ steps.site_upload.outcome == 'success' }}
     # ジョブの実行環境。ubuntu-latestはGitHubが用意する最新のUbuntu。
     runs-on: ubuntu-latest
     # HTML取得などで処理が長引いても、最大2時間で打ち切る。
@@ -81,12 +73,11 @@ jobs:
       # ２．Checkout prediction files：リポジトリのファイルを、予想処理を実行する仮想マシンに取得する。
       - name: Checkout prediction files
         # 実行する処理の種類。actions/checkout@v6は、リポジトリのファイルを取得する処理。
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         # 取得対象(default_branch ：省略時のデフォルトブランチ)を指定する。
         with:
-          ref: ${{ github.event.repository.default_branch }}
-          # 公開直前のリモート取り込みに備え、Git履歴を省略せず取得する。
-          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
       # DB・モデルは専用の非公開リポジトリから、承認済みのコミットだけを取得する。
       - name: Validate private runtime configuration
         run: |
@@ -104,7 +95,7 @@ jobs:
           PRIVATE_DATA_REF: ${{ vars.PRIVATE_DATA_REF }}
           PRIVATE_DATA_SSH_KEY: ${{ secrets.PRIVATE_DATA_SSH_KEY }}
       - name: Checkout private runtime
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ vars.PRIVATE_DATA_REPOSITORY }}
           ref: ${{ vars.PRIVATE_DATA_REF }}
@@ -119,7 +110,7 @@ jobs:
       # ３．Set up Python：Pythonの実行環境を準備する。
       - name: Set up Python
         # 実行する処理の種類。actions/setup-python@v6は、Pythonの実行環境を準備する処理。
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         # 予想処理のPythonバージョンを、リポジトリ内のファイルから指定する。
         with:
           python-version-file: prediction_bundle/.python-version
@@ -134,9 +125,10 @@ jobs:
           subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch==' + version,
                           '--index-url', 'https://download.pytorch.org/whl/cpu'], check=True)
           PY
-          python -m pip install -r prediction_bundle/requirements.txt
+          python -m pip install -r prediction_bundle/requirements.txt -r requirements-security.txt
         shell: bash
       - name: Verify private databases and CPU model inference
+        id: runtime_check
         run: python scripts/verify_private_runtime.py
       # ５．Predict today and compare previous results：当日のレースを予想し、過去の結果と照合する。
       - name: Predict today and compare previous results
@@ -168,11 +160,7 @@ jobs:
         if: ${{ !cancelled() && (steps.daily.outcome == 'success' || steps.daily.outcome == 'failure') }}
         # 成功した処理だけを公開対象とし、失敗した側の既存ファイルは保持する。
         run: |
-          git fetch origin "$DEFAULT_BRANCH"
-          git merge --ff-only "origin/$DEFAULT_BRANCH"
           python -m src.10_workflows.daily_racing --prepare-publication
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       # ７．Collect race counts for public job status：公開用ジョブ状況ページが参照する件数ファイルを生成する。
       - name: Collect race counts for public job status
         # always()を指定することで、前段の処理が失敗しても実行される。
@@ -184,7 +172,7 @@ jobs:
         # always()を指定することで、前段の処理が失敗しても実行される。
         if: always()
         # 実行する処理の種類。actions/upload-artifact@v7は、指定したファイルをArtifactとして保存する処理。
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           # Artifact名を指定する。run_idとrun_attemptを含めることで、同一ワークフローの複数回実行でもArtifact名が重複しない。
           name: daily-racing-counts-${{ github.run_id }}-${{ github.run_attempt }}
@@ -194,25 +182,61 @@ jobs:
           retention-days: 90
       # 非公開入力や派生DBを含み得る診断フォルダーは公開リポジトリのArtifactへ送らない。
       # 公開用の予想・比較結果は従来どおりdocsだけに保存する。
-      # １０．Commit and push changed predictions：公開用ファイルに変更があれば、デフォルトブランチへコミット・pushする。
-      - name: Commit and push changed predictions
-        # ジョブ内でのIDを指定することで、後続の処理からコミット結果を参照できる。
-        id: publish
-        # 前段の処理で公開用ファイルに変更があれば、デフォルトブランチへコミット・pushする。
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.prepare.outputs.publication_required == 'true' }}
-        # 実行する処理の種類。bashは、シェルスクリプトを実行する処理。
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- docs
-          if git diff --cached --quiet; then
-            echo "No prediction changes; skipping commit."
-          else
-            git commit -m "Publish daily predictions and result comparisons"
-            git push origin "HEAD:$DEFAULT_BRANCH"
-          fi
-          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Validate public files before transfer
+        id: public_check
+        if: ${{ !cancelled() && (steps.prepare.outcome == 'success' || (inputs.verify_runtime_only && steps.runtime_check.outcome == 'success')) }}
+        run: python scripts/validate_public_site.py docs
+      - name: Transfer validated public files only
+        id: site_upload
+        if: ${{ !cancelled() && steps.public_check.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: public-site-${{ github.run_id }}-${{ github.run_attempt }}
+          path: docs/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # 別のVMで公開ファイルだけを検査・登録する。非公開データや鍵、pip環境は渡さない。
+  publish:
+    needs: predict
+    if: ${{ !cancelled() && needs.predict.outputs.site_ready == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      commit: ${{ steps.prepare.outputs.commit }}
+    steps:
+      - name: Checkout trusted publication code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Download current run public files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: public-site-${{ github.run_id }}-${{ github.run_attempt }}
+          path: _public-site
+      - name: Validate and commit public files
+        id: prepare
+        run: python scripts/publish_public_site.py --source _public-site
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      - name: Push public files
+        run: |
+          python - <<'PY'
+          import base64, os, subprocess
+          auth = base64.b64encode(('x-access-token:' + os.environ['GH_TOKEN']).encode()).decode()
+          env = dict(os.environ, GIT_CONFIG_COUNT='1',
+                     GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                     GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + auth)
+          subprocess.run(['git', 'push', 'origin', 'HEAD:' + os.environ['DEFAULT_BRANCH']], env=env, check=True)
+          PY
+        env:
+          GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
   # deploy：生成したページを配信するジョブ
@@ -228,12 +252,12 @@ jobs:
       # 配信時の認証に使うOIDCトークンの発行。
       id-token: write
     # predictジョブの完了後に実行する。predictジョブが中断された場合はdeployジョブも中断する。
-    needs: predict
+    needs: [predict, publish]
     # 前段のジョブが中断されていなければ、配信を実行する。
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.publish.result != 'failure' }}
     # 呼び出すワークフローのパスを指定する。withで入力値を渡す。
     uses: ./.github/workflows/deploy-pages.yml
     # 前段のジョブのコミットSHAと実行結果を、配信用ワークフローに渡す。
     with:
-      commit: ${{ needs.predict.outputs.commit }}
+      commit: ${{ needs.publish.outputs.commit }}
       prediction_result: ${{ needs.predict.result }}
