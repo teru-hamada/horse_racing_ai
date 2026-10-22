@@ -24,6 +24,10 @@ on:
         description: "指定日の前日分も結果照合する"
         default: false
         type: boolean
+      verify_runtime_only:
+        description: "非公開DB・モデルの取得と推論の動作確認だけを行う（予想は更新しない）"
+        default: false
+        type: boolean
 
 # ワークフローが使う GITHUB_TOKEN に与える権限。
 permissions:
@@ -83,6 +87,35 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           # 公開直前のリモート取り込みに備え、Git履歴を省略せず取得する。
           fetch-depth: 0
+      # DB・モデルは専用の非公開リポジトリから、承認済みのコミットだけを取得する。
+      - name: Validate private runtime configuration
+        run: |
+          python - <<'PY'
+          import os, re
+          if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', os.environ['PRIVATE_DATA_REPOSITORY']):
+              raise SystemExit('Set Actions variable PRIVATE_DATA_REPOSITORY (owner/repository).')
+          if not re.fullmatch(r'[0-9a-fA-F]{40}', os.environ['PRIVATE_DATA_REF']):
+              raise SystemExit('Set Actions variable PRIVATE_DATA_REF to the full private commit SHA.')
+          if not os.environ['PRIVATE_DATA_SSH_KEY']:
+              raise SystemExit('Set Actions secret PRIVATE_DATA_SSH_KEY with a read-only private repository deploy key.')
+          PY
+        env:
+          PRIVATE_DATA_REPOSITORY: ${{ vars.PRIVATE_DATA_REPOSITORY }}
+          PRIVATE_DATA_REF: ${{ vars.PRIVATE_DATA_REF }}
+          PRIVATE_DATA_SSH_KEY: ${{ secrets.PRIVATE_DATA_SSH_KEY }}
+      - name: Checkout private runtime
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ vars.PRIVATE_DATA_REPOSITORY }}
+          ref: ${{ vars.PRIVATE_DATA_REF }}
+          ssh-key: ${{ secrets.PRIVATE_DATA_SSH_KEY }}
+          path: .private-runtime
+          persist-credentials: false
+          sparse-checkout: |
+            prediction_bundle
+            data
+      - name: Restore private runtime files
+        run: python scripts/private_runtime.py restore --source .private-runtime
       # ３．Set up Python：Pythonの実行環境を準備する。
       - name: Set up Python
         # 実行する処理の種類。actions/setup-python@v6は、Pythonの実行環境を準備する処理。
@@ -103,8 +136,11 @@ jobs:
           PY
           python -m pip install -r prediction_bundle/requirements.txt
         shell: bash
+      - name: Verify private databases and CPU model inference
+        run: python scripts/verify_private_runtime.py
       # ５．Predict today and compare previous results：当日のレースを予想し、過去の結果と照合する。
       - name: Predict today and compare previous results
+        if: ${{ !inputs.verify_runtime_only }}
         # idを指定することで、後続の処理から公開が必要かどうかを参照できる。
         id: daily
         # 実行する処理の種類。python -m src.10_workflows.daily_racingは、当日の予想と前日照合を行う処理。
@@ -156,21 +192,8 @@ jobs:
           path: data/job_status/race_counts.json
           # Artifactの保存期間を指定する。90日間保存する。
           retention-days: 90
-      # ９．Save predictions, comparisons and diagnostics：予想・照合の結果や診断情報を、Artifactとして保存する。
-      - name: Save predictions, comparisons and diagnostics
-        # always()を指定することで、前段の処理が失敗しても実行される。
-        if: always()
-        # 実行する処理の種類。 actions/upload-artifact@v7は、指定したファイルをArtifactとして保存する処理。
-        uses: actions/upload-artifact@v7
-        with:
-          # Artifact名を指定する。run_idとrun_attemptを含めることで、同一ワークフローの複数回実行でもArtifact名が重複しない。
-          name: daily-racing-${{ github.run_id }}-${{ github.run_attempt }}
-          # アップロード対象のディレクトリを指定する。
-          path: |
-            data/daily_racing/
-            !data/daily_racing/**/work/**
-          # 診断情報は90日保持する。監査ZIPは別途docsへコピーし、Git履歴に永続化する。
-          retention-days: 90
+      # 非公開入力や派生DBを含み得る診断フォルダーは公開リポジトリのArtifactへ送らない。
+      # 公開用の予想・比較結果は従来どおりdocsだけに保存する。
       # １０．Commit and push changed predictions：公開用ファイルに変更があれば、デフォルトブランチへコミット・pushする。
       - name: Commit and push changed predictions
         # ジョブ内でのIDを指定することで、後続の処理からコミット結果を参照できる。

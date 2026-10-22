@@ -45,10 +45,14 @@ data/**
 # .gitkeep は慣例的なファイル名であり、Git 自体の特別な機能ではない。
 !data/README.md
 !data/**/.gitkeep
-# レース情報・特徴量の DuckDB ファイルは、data 配下の除外に対する例外とする。
-# 例外指定は追跡を許可するだけであり、自動で git add されるわけではない。
-!data/racing.duckdb
-!data/features.duckdb
+# DBは非公開リポジトリで管理する。既存の追跡解除は移行先の確認後に行う。
+
+# 非公開リポジトリの取得先と、移行用のコピー。
+.private-runtime/
+prediction_bundle/runtime.zip
+prediction_bundle/manifest.json
+prediction_bundle/requirements.txt
+prediction_bundle/.python-version
 
 # --- 学習などで生成される成果物 ---
 # モデルの重み、前処理器、予測結果など、artifacts 配下の生成ファイルを原則除外する。

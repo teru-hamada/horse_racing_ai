@@ -70,7 +70,7 @@ horse_racing_ai/
 └─ tests/                         自動テスト
 ```
 
-`data/racing.duckdb`・`data/features.duckdb`・`prediction_bundle/`・公開用の`docs/`はGit管理対象です。元の`models/`、収集HTML、ローカルの予想結果、ログはGit管理対象外です。各モデルの`manifest.json`にはタスク名・アルゴリズム・特徴量バージョン・学習期間などを記録します。
+DB・モデルは専用の非公開リポジトリへ移す構成を準備しています。`data/racing.duckdb`・`data/features.duckdb`と`prediction_bundle/`の生成4ファイルは今後の追加対象から除外し、Actionsが非公開側から取得します。既存ファイルの追跡解除は移行先での動作確認後に行います。設定と移行状況は[非公開データへの移行手順](docs/private_runtime_migration.md)を参照してください。公開用の`docs/`は引き続きGit管理対象です。元の`models/`、収集HTML、ローカルの予想結果、ログはGit管理対象外です。
 
 ## ローカルでのプログラム実行方法（Windows）
 
@@ -243,7 +243,7 @@ Actionsが参照する登録DBの学習成功済み最新モデルを使用し�
 .venv/Scripts/python.exe -m src.40_ai_modeling.prediction_bundle
 ```
 
-生成した`runtime.zip`・`manifest.json`・`requirements.txt`・`.python-version`と更新した`data/racing.duckdb`を同じコミットで反映します。詳細は[パッケージ手順](prediction_bundle/README.md)を参照してください。
+生成した`runtime.zip`・`manifest.json`・`requirements.txt`・`.python-version`とDBは非公開側に同じコミットで反映し、Actions変数`PRIVATE_DATA_REF`をそのSHAへ更新します。詳細は[移行手順](docs/private_runtime_migration.md)と[パッケージ手順](prediction_bundle/README.md)を参照してください。
 Pythonは `prediction_bundle/.python-version`（現在3.12）を使用します。
 
 Actionsと同じ依存ライブラリを専用環境へ入れ、ローカルで日付単位に実行する例:
