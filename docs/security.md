@@ -33,6 +33,9 @@ JavaScript本体もチェックアウトした既知のソースと一致する�
 - CodeQLのPython解析（security-extended）。
 - 非公開側の固定実行環境とGUI環境を構築し、間接依存も含めて `pip-audit` で検査。
 
+監査用スクリプトはCPU版PyTorchの `+cpu` 接尾辞を上流バージョンへ対応付ける。
+PyPIにCPU版がないことを理由にPyTorchの検査を省略せず、未検査パッケージがあれば失敗させる。
+
 PRで実行するコードには非公開リポジトリの鍵を渡さない。
 依存関係監査はデフォルトブランチのpush・週次・手動実行だけで行う。
 DependabotはGitHub ActionsとPython依存の更新PRを作成する。自動マージはしない。
