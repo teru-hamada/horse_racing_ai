@@ -31,7 +31,7 @@ beautifulsoup4>=4.12
 
 # HTML/XML の解析エンジン。BeautifulSoup に "lxml" を指定する処理で使用する。
 # beautifulsoup4 による要素の抽出を支えるパーサーとして必要。
-lxml>=5.3
+lxml>=6.1.3
 
 # --- データベース・ファイル保存 ---
 # SQL でデータを検索・集計できる組み込み型の分析用データベース。
