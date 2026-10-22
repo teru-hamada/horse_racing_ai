@@ -8,8 +8,10 @@ GitHub Freeで利用する構成です。予想用ActionsとPagesは公開リポ
 
 非公開側への初回アップロードと、読み取り専用Deploy key・Actions設定が完了しています。
 初回コミットは `38dd15387a7d9c257f9398a3beee59ac73b83e20` です。
-元ファイルはローカルにも公開リポジトリの履歴にも残しています。
-追跡解除は取得・推論検証後に実施し、過去履歴の除去は別途行います。
+GitHub Actionsで非公開checkout・復元・実DB・CPU推論・Pages配信の成功を確認しました。
+検証実行: https://github.com/teru-hamada/horse_racing_ai/actions/runs/39754792780
+公開側の最新コミットでは生成6ファイルの追跡を解除し、ローカルの元ファイルは保持します。
+過去の公開履歴からの除去と既存の診断Artifactの確認・削除は別途必要です。
 
 ## 1. 非公開側を作る
 
@@ -68,7 +70,7 @@ DBを含み得る `data/daily_racing/` 全体の診断Artifactはアップロー
 ## 4. 動作確認後に公開側の追跡を解除する
 
 次は作業ツリーのファイルを消さず、Gitの追跡だけを外す操作です。
-本手順は準備段階ではまだ実行していません。
+この追跡解除は初回移行で実施済みです。コマンドは再移行時の参考として記載します。
 
 ```powershell
 git rm --cached -- data/racing.duckdb data/features.duckdb prediction_bundle/runtime.zip prediction_bundle/manifest.json prediction_bundle/requirements.txt prediction_bundle/.python-version

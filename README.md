@@ -70,7 +70,7 @@ horse_racing_ai/
 └─ tests/                         自動テスト
 ```
 
-DB・モデルは専用の非公開リポジトリへ移す構成を準備しています。`data/racing.duckdb`・`data/features.duckdb`と`prediction_bundle/`の生成4ファイルは今後の追加対象から除外し、Actionsが非公開側から取得します。既存ファイルの追跡解除は移行先での動作確認後に行います。設定と移行状況は[非公開データへの移行手順](docs/private_runtime_migration.md)を参照してください。公開用の`docs/`は引き続きGit管理対象です。元の`models/`、収集HTML、ローカルの予想結果、ログはGit管理対象外です。
+DB・モデルは専用の非公開リポジトリで管理します。`data/racing.duckdb`・`data/features.duckdb`と`prediction_bundle/`の生成4ファイルは公開側で追跡せず、Actionsが読み取り専用Deploy keyで非公開側の指定コミットから取得します。設定と移行状況は[非公開データへの移行手順](docs/private_runtime_migration.md)を参照してください。過去の公開Git履歴からの除去は別途必要です。公開用の`docs/`は引き続きGit管理対象です。元の`models/`、収集HTML、ローカルの予想結果、ログはGit管理対象外です。
 
 ## ローカルでのプログラム実行方法（Windows）
 
