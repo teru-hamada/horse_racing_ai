@@ -53,7 +53,7 @@ scikit-learn>=1.5
 
 # 対話的なグラフを作成するライブラリ。
 # app.py で plotly.express を使用し、データをグラフとして画面に表示する。
-plotly>=5.24
+plotly>=7.1.0
 
 # Python オブジェクトをファイルへ保存し、後から復元するためのライブラリ。
 # 学習時の前処理器を preprocessor.joblib に保存し、推論時に読み込んで再利用する。
