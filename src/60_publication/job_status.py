@@ -92,7 +92,6 @@ def render_status(runs: list[dict], now: datetime, repository: str = "", branch:
             raise ValueError("Invalid public repository")
         live = (f'<p id="live-status" role="status" data-repository="{escape(repository)}" '
                 f'data-branch="{escape(branch)}">最新結果を確認しています…</p>'
-                f'<p><a href="https://github.com/{escape(repository)}/actions/workflows/daily-racing.yml">GitHub Actionsで確認 →</a></p>'
                 '<noscript><p>JavaScriptが無効なため、保存時点の情報を表示しています。</p></noscript>'
                 '<script src="job-status.js" defer></script>')
     return f'''<!doctype html>
