@@ -43,3 +43,16 @@
 `RESULT_UPDATE_CODE_REF` は、公開側コードの検証済み40文字コミットSHAに固定する。取り込みに必要なライブラリだけを、既存の非公開requirementsから固定して導入する。PyTorchや学習処理は使わない。
 
 公開側の `PRIVATE_DATA_REF` は従来の予想用データを指したまま維持する。GUIで最新DBを取得する場合は、非公開側の更新後コミットSHAを明示して復元する。モデル更新を行う運用は別途設計する。
+
+## 設置・実行結果（2026-10-23）
+
+- 更新コード：`6c5ead594f3eaffad29d9baf3bfcb0011a0c4913`。全390テストが成功し、公開側Security checksも成功。
+- 非公開workflow設置：`48089d4e54e05c019f3927f43091640de2911479`。
+- [初回の取り込み](https://github.com/teru-hamada/horse-racing-ai-private-data/actions/runs/39949143148)：8月8日の全36レース・462頭を新規取得し、登録・分割保存まで成功。
+- 保存後の非公開main：`9ca1fc8182c9205a1c0f9c525df96e87070dd6dd`。historicalは267,182行・19,390レース。
+- [同じ指定での再実行](https://github.com/teru-hamada/horse-racing-ai-private-data/actions/runs/39949653277)：保存後のmainを使用し、更新0日・0行、変更なしで保存ステップを省略。新たなデータコミットなし。
+- 保存したsnapshotを別途取得・復元し、モデル・予想用バンドル・特徴量DBの5ファイルのハッシュ一致と、DB内のモデル登録情報の一致を確認。
+- partは64 MiBと約4.09 MiB。両方とも100 MiB未満。
+- 手動で8月8日のみ処理したため、連続確認済みの日付は8月2日のまま保持。8月3日〜7日を処理済みとして飛ばしていない。
+- `RESULT_UPDATE_ENABLED=true` を設定し、毎日日本時間02:25の定期実行を有効化した。残りの期間は最大7暦日ずつ順に取り込む。
+- 公開側本番参照は `38dd15387a7d9c257f9398a3beee59ac73b83e20` のまま。ローカルの本番DB・バンドル等6ファイルも変更なし。
