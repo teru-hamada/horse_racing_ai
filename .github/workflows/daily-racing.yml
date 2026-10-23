@@ -69,7 +69,7 @@ jobs:
       # ２．Checkout prediction files：リポジトリのファイルを、予想処理を実行する仮想マシンに取得する。
       - name: Checkout prediction files
         # 実行する処理の種類。actions/checkout@v6は、リポジトリのファイルを取得する処理。
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # 取得対象(default_branch ：省略時のデフォルトブランチ)を指定する。
         with:
           ref: ${{ github.sha }}
@@ -91,7 +91,7 @@ jobs:
           PRIVATE_DATA_REF: ${{ vars.PRIVATE_DATA_REF }}
           PRIVATE_DATA_SSH_KEY: ${{ secrets.PRIVATE_DATA_SSH_KEY }}
       - name: Checkout private runtime
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ vars.PRIVATE_DATA_REPOSITORY }}
           ref: ${{ vars.PRIVATE_DATA_REF }}
@@ -107,7 +107,7 @@ jobs:
       # ３．Set up Python：Pythonの実行環境を準備する。
       - name: Set up Python
         # 実行する処理の種類。actions/setup-python@v6は、Pythonの実行環境を準備する処理。
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         # 予想処理のPythonバージョンを、リポジトリ内のファイルから指定する。
         with:
           python-version-file: prediction_bundle/.python-version
@@ -205,7 +205,7 @@ jobs:
       commit: ${{ steps.prepare.outputs.commit }}
     steps:
       - name: Checkout trusted publication code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
