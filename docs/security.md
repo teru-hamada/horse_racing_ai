@@ -27,7 +27,7 @@ JavaScript本体もチェックアウトした既知のソースと一致する�
 
 ## 継続的な検査と更新
 
-`Security checks` ワークフローは関連コードのpush・PRと週次スケジュールで実行する。
+`セキュリティ検査` ワークフローは関連コードのpush・PRと週次スケジュールで実行する。
 
 - 公開ファイル検査と不正Artifact・古い予想の上書き防止テスト。
 - CodeQLのPython解析（security-extended）。
