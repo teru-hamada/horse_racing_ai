@@ -57,8 +57,7 @@ SSHキーは非公開checkoutに使用し、後続のGit認証として保持し
 
 設定後に公開側のActions変更をコミット・pushし、オッズが公開されている開催日で
 「日次予想・結果照合・公開」を手動実行します。
-`verify_runtime_only` をオンにすると開催データを取得せず、非公開データの取得・ハッシュ、
-DB・実行環境・保存モデル・CPU推論を検証し、予想データは更新しません。
+非公開データのハッシュ・DB・実行環境・保存モデル・CPU推論の検査は毎回の予想前に実行します。
 非公開checkout・復元・予想・結果照合・Pages配信を確認してください。
 設定不足は停止させ、公開済みバンドルへの自動フォールバックは行いません。
 
@@ -90,18 +89,17 @@ DBがない状態でも動くことを確認します。
 
 ```powershell
 .venv/Scripts/python.exe -m src.40_ai_modeling.prediction_bundle
-.venv/Scripts/python.exe scripts/private_runtime.py prepare --format legacy --output .private-runtime/next
+.venv/Scripts/python.exe scripts/private_runtime.py prepare --output .private-runtime/next
 ```
 
-新しいコピーの `data/` と `prediction_bundle/` を非公開リポジトリに反映し、push後の
+新しい分割スナップショットを非公開リポジトリに反映し、復元・推論の確認後に
 SHAを `PRIVATE_DATA_REF` に登録します。公開側にDBやバンドルを再追加しないでください。
-Gitは100 MiB以上の通常ファイルを受け付けないため、増大した場合は保存方法を見直します。
 モデルの読み込みには信頼できる作成元のファイルだけを使用してください。
 
-## 100 MiB制限に向けた分割保存の検証
+## 100 MiB制限に対応する分割保存
 
-DBをローカルで使用するときの構成を維持したまま、保存時に圧縮して64 MiBずつに分割する新形式を検証しました。
-非公開リポジトリの検証用ブランチへの保存と、clone後の完全復元を確認済みです。
-Actionsは新旧形式を自動判別する処理へ改修しています。本番参照SHAはまだ従来形式のままです。
-詳細とコマンドは[分割保存・復元の検証結果](private_snapshot_validation_2026-10-23.md)を参照してください。
+DBをローカルで使用するときの構成を維持したまま、保存時に圧縮して64 MiBずつに分割します。
+`snapshot.json` に元ファイルと各partのハッシュを保存し、復元時に照合します。
+Gitへ保存する各partは100 MiB未満に収まり、復元後のDBは100 MiBを超えても扱えます。
+Actionsは新旧形式を自動判別します。本番参照SHAは従来形式のままです。
 GUIからの保存・復元とActionsへの適用手順は[データ同期](private_data_sync.md)を参照してください。

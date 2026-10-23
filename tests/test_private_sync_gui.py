@@ -5,6 +5,24 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 
+def test_database_creation_auto_sync_default_and_durable_retry(tmp_path, monkeypatch):
+    import src.public_api as api
+    paths = api.get_paths(tmp_path)
+    monkeypatch.setattr(api, 'PATHS', paths)
+    monkeypatch.setattr(import_module('src.00_common.storage'), 'PATHS', paths)
+    monkeypatch.setattr(api, 'list_database_jobs', lambda *a, **k: [])
+    monkeypatch.setattr(api, 'list_pending_database_syncs', lambda **k: [{'id': 'pending_batch'}])
+    calls = []
+    monkeypatch.setattr(api, 'retry_database_sync', lambda batch: calls.append(batch))
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'), default_timeout=60).run()
+    app.sidebar.radio[0].set_value('データベース作成').run()
+    assert not app.exception
+    checkbox = next(item for item in app.checkbox if item.key == 'database_auto_sync')
+    assert checkbox.value is True
+    next(item for item in app.button if item.label == '未同期分の統合を再試行').click().run()
+    assert not app.exception and calls == ['pending_batch']
+
+
 def test_sync_menu_connection_save_and_confirmed_restore(tmp_path, monkeypatch):
     import src.public_api as api
     paths = api.get_paths(tmp_path)

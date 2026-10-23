@@ -24,10 +24,6 @@ on:
         description: "指定日の前日分も結果照合する"
         default: false
         type: boolean
-      verify_runtime_only:
-        description: "非公開DB・モデルの取得と推論の動作確認だけを行う（予想は更新しない）"
-        default: false
-        type: boolean
 
 # ワークフローが使う GITHUB_TOKEN に与える権限。
 permissions: {}
@@ -129,11 +125,9 @@ jobs:
           python -m pip install -r prediction_bundle/requirements.txt -r requirements-security.txt
         shell: bash
       - name: Verify private databases and CPU model inference
-        id: runtime_check
         run: python scripts/verify_private_runtime.py
       # ５．Predict today and compare previous results：当日のレースを予想し、過去の結果と照合する。
       - name: Predict today and compare previous results
-        if: ${{ !inputs.verify_runtime_only }}
         # idを指定することで、後続の処理から公開が必要かどうかを参照できる。
         id: daily
         # 実行する処理の種類。python -m src.10_workflows.daily_racingは、当日の予想と前日照合を行う処理。
@@ -185,7 +179,7 @@ jobs:
       # 公開用の予想・比較結果は従来どおりdocsだけに保存する。
       - name: Validate public files before transfer
         id: public_check
-        if: ${{ !cancelled() && (steps.prepare.outcome == 'success' || (inputs.verify_runtime_only && steps.runtime_check.outcome == 'success')) }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         run: python scripts/validate_public_site.py docs
       - name: Transfer validated public files only
         id: site_upload

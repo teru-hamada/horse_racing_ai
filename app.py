@@ -83,6 +83,8 @@ from src.public_api import (
     private_repository_info,
     save_private_snapshot,
     restore_private_snapshot,
+    list_pending_database_syncs,
+    retry_database_sync,
 )
 
 # Streamlit page configuration
@@ -768,6 +770,14 @@ def _render_database_creation_status(
             f"登録オッズ: "
             f"{latest_job['result'].get('odds_count', 0):,}"
         )
+    if latest_job.get('sync_status') == 'completed':
+        st.success("非公開mainとの統合が完了しました。")
+        st.caption(f"保存コミット: {latest_job.get('sync_commit', '')}")
+    elif latest_job.get('sync_status') == 'failed':
+        st.warning("ローカルDB登録は完了しています。非公開DBとの統合は未完了です。")
+        st.write(latest_job.get('sync_error', ''))
+    elif latest_job.get('sync_status') == 'running':
+        st.info("ローカルDB登録済み。非公開mainの最新データへ統合しています。")
     # ジョブにエラーが記録されている場合だけ、失敗理由を表示する。
     if latest_job["error"]:
         st.error(latest_job["error"])
@@ -1827,11 +1837,16 @@ elif page == "データベース作成":
             if status_messages:
                 st.success("　".join(status_messages))
 
-        st.caption(
-            "ネットワークアクセスは行わず、取得済みHTMLだけを"
-            "バックグラウンドで解析・登録します。"
-            "画面を移動しても処理は継続します。"
-        )
+        sync_repository = None
+        if dataset_type == 'historical':
+            sync_enabled = st.checkbox("DB作成後に非公開mainへ統合する", value=True, key="database_auto_sync")
+            if sync_enabled:
+                sync_repository = st.text_input("統合先の非公開リポジトリ", value="teru-hamada/horse-racing-ai-private-data",
+                                                key="database_sync_repository")
+                st.caption("登録後に最新DBと統合します。掲載一覧との照合や不足レースの補完にはネット接続を使います。モデル・特徴量は更新しません。")
+        else:
+            st.caption("出馬表・オッズはローカル登録のみです。確定結果の自動統合の対象には含めません。")
+        st.caption("取得済みHTMLの解析・登録はバックグラウンドで実行します。画面を移動しても継続します。")
         database_jobs = list_database_jobs()
         active_database_job = next(
             (
@@ -1859,7 +1874,7 @@ elif page == "データベース作成":
             cancel_database = st.button(
                 "処理を中止",
                 key="cancel_database_creation",
-                disabled=active_database_job is None,
+                disabled=active_database_job is None or active_database_job.get('local_saved', False),
                 use_container_width=True,
             )
 
@@ -1871,6 +1886,7 @@ elif page == "データベース作成":
                     dataset_type=dataset_type,
                     start_date=start_date,
                     end_date=end_date,
+                    sync_repository=sync_repository,
                 )
                 st.success(
                     "バックグラウンドでデータベース作成を"
@@ -1905,6 +1921,17 @@ elif page == "データベース作成":
             _render_active_database_creation_status()
         else:
             _render_database_creation_status()
+        pending_syncs = list_pending_database_syncs(paths=PATHS)
+        if pending_syncs:
+            st.warning(f"未同期のDB登録が{len(pending_syncs)}件あります。")
+            pending_ids = [item['id'] for item in pending_syncs]
+            pending_id = st.selectbox("再試行する登録", pending_ids, key="retry_database_sync_batch")
+            if st.button("未同期分の統合を再試行", disabled=active_database_job is not None):
+                try:
+                    retry_database_sync(pending_id)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
 
     else:
         confirmation_type_label = st.radio(

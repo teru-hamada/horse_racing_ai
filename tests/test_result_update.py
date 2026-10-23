@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import duckdb
 import pandas as pd
 import pytest
+import requests
 
 from scripts import private_runtime, private_snapshot, runtime_transfer
 from scripts import publish_results_snapshot as publisher
@@ -126,6 +127,41 @@ def test_all_failed_days_produce_no_candidate(source, tmp_path, monkeypatch):
     report = run(source, tmp_path, '1')
     assert report['status'] == 'incomplete' and not report['changed']
     assert not (tmp_path / 'out1').exists()
+
+
+def test_transient_download_timeout_recovers_without_losing_day(source, tmp_path, monkeypatch):
+    download = Collector._download
+    attempts = []
+
+    def timeout_once(self, url, path, force):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise requests.Timeout('temporary outage')
+        return download(self, url, path, force)
+
+    monkeypatch.setattr(Collector, '_download', timeout_once)
+    monkeypatch.setattr(update.time, 'sleep', lambda _: None)
+    before = runtime_transfer.hashes(source)
+    report = run(source, tmp_path, 'retry')
+    assert report['status'] == 'ok' and report['updated_rows'] == 6
+    assert attempts[0] == attempts[1]
+    assert runtime_transfer.hashes(source) == before
+
+
+def test_exhausted_downloads_leave_day_retryable_and_source_unchanged(source, tmp_path, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise requests.ConnectionError('offline')
+
+    monkeypatch.setattr(Collector, '_download', unavailable)
+    monkeypatch.setattr(update.time, 'sleep', lambda _: None)
+    before = runtime_transfer.hashes(source)
+    report = run(source, tmp_path, 'failed')
+    assert report['status'] == 'incomplete' and not report['changed']
+    assert not (tmp_path / 'outfailed').exists()
+    assert runtime_transfer.hashes(source) == before
+    monkeypatch.setattr(Collector, '_download', lambda self, url, path, force: calendar() if 'calendar' in url else '<html>fresh result</html>')
+    recovered = run(source, tmp_path, 'recovered')
+    assert recovered['status'] == 'ok' and recovered['updated_rows'] == 6
 
 
 @pytest.mark.parametrize('start,end,max_days', [

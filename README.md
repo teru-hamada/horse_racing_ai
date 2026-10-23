@@ -243,7 +243,7 @@ Actionsが参照する登録DBの学習成功済み最新モデルを使用し�
 .venv/Scripts/python.exe -m src.40_ai_modeling.prediction_bundle
 ```
 
-生成した`runtime.zip`・`manifest.json`・`requirements.txt`・`.python-version`とDBは非公開側に同じコミットで反映し、Actions変数`PRIVATE_DATA_REF`をそのSHAへ更新します。詳細は[移行手順](docs/private_runtime_migration.md)と[パッケージ手順](prediction_bundle/README.md)を参照してください。
+生成したバンドルとDBは分割スナップショットとして非公開側に保存し、復元・推論の確認後にActions変数`PRIVATE_DATA_REF`をそのSHAへ更新します。詳細は[データ同期](docs/private_data_sync.md)、[移行手順](docs/private_runtime_migration.md)と[パッケージ手順](prediction_bundle/README.md)を参照してください。
 Pythonは `prediction_bundle/.python-version`（現在3.12）を使用します。
 
 Actionsと同じ依存ライブラリを専用環境へ入れ、ローカルで日付単位に実行する例:
@@ -275,6 +275,6 @@ Actionsと同じコミット・実行パッケージを使い、Artifactを `dat
 
 開催日順に学習・検証・テストへ分割し、Early StoppingとLoss／AUCの推移で過学習を確認します。予想対象レースより前の履歴を使って特徴量を生成します。
 
-HTML収集とDB作成は分離しており、DB作成では保存済みHTMLだけを解析します。取得元のHTML構造変更やオッズ公開状況による不足・解析エラーは、保存HTMLと処理ログで確認してください。
+HTML収集とDB作成は分離しており、DB作成は保存済みHTMLを解析します。過去結果は登録後に非公開DBへ自動統合でき、一覧照合・不足レースの補完時にはネット接続を使います。詳細は[データ同期](docs/private_data_sync.md)を参照してください。取得元のHTML構造変更やオッズ公開状況による不足・解析エラーは、保存HTMLと処理ログで確認してください。
 
 本プログラムは研究・学習用です。予想の的中や利益を保証するものではありません。

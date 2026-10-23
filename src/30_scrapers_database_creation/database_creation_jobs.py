@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -49,7 +50,13 @@ class DatabaseCreationJob:
     # 終了日時。未完了はNoneで、成功・失敗・取消の終了時に設定する。
     completed_at: datetime | None = None
     # サービスが返す件数などの結果。default_factoryによりジョブ間で辞書を共有しない。
-    result: dict[str, int] = field(default_factory=dict)
+    result: dict[str, Any] = field(default_factory=dict)
+    sync_repository: str | None = None
+    sync_status: str = "disabled"
+    sync_error: str = ""
+    sync_commit: str = ""
+    sync_batch: str = ""
+    local_saved: bool = False
     # 失敗時に画面へ渡す例外メッセージ。正常時は空文字列。
     error: str = ""
     # 画面から参照するログ行の一覧。インスタンスごとに独立したリストを持つ。
@@ -83,6 +90,10 @@ def _snapshot(job: DatabaseCreationJob) -> dict[str, Any]:
         "result": dict(job.result),
         "error": job.error,
         "logs": list(job.logs),
+        "sync_status": job.sync_status,
+        "sync_error": job.sync_error,
+        "sync_commit": job.sync_commit,
+        "local_saved": job.local_saved,
     }
 
 
@@ -112,12 +123,15 @@ def start_database_job(
     dataset_type: str,
     start_date: date,
     end_date: date,
+    *, sync_repository: str | None = None,
 ) -> str:
     # 保存先と解析形式が決まらない種別は受け入れず、既知の二種類へ限定する。
     if dataset_type not in {"historical", "upcoming"}:
         raise ValueError(
             f"未対応のdataset_typeです: {dataset_type}"
         )
+    if sync_repository and not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', sync_repository):
+        raise ValueError('統合先は owner/name 形式で指定してください。')
     # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
     with _LOCK:
         # 実行中だけでなく取消処理中も排他対象にし、同じDBへの生成・更新の競合を避ける。
@@ -138,6 +152,8 @@ def start_database_job(
             dataset_type=dataset_type,
             start_date=start_date,
             end_date=end_date,
+            sync_repository=sync_repository if dataset_type == 'historical' else None,
+            sync_status='pending' if sync_repository and dataset_type == 'historical' else 'disabled',
         )
         _CANCEL_EVENTS[job_id] = threading.Event()
 
@@ -161,6 +177,7 @@ def cancel_database_job(job_id: str) -> bool:
             job is None
             or cancel_event is None
             or job.status not in {"running", "cancelling"}
+            or job.local_saved
         ):
             return False
         cancel_event.set()
@@ -251,11 +268,20 @@ def _run_job(job_id: str) -> None:
             f"解析完了: {frame['race_id'].nunique():,}レース / "
             f"{len(frame):,}頭。データベースへ保存します。"
         )
+        if job.sync_repository:
+            try:
+                sync = import_module('src.10_workflows.database_sync')
+                job.sync_batch = sync.enqueue(frame, job.job_id, job.sync_repository, paths=PATHS, prepared=True)
+            except Exception as exc:
+                job.sync_error = str(exc)
+                logger.warning(f'同期用の控えを保存できません。ローカル登録を続けます: {exc}')
         save_race_records(
             frame,
             job.job_id,
             job.dataset_type,
         )
+        with _LOCK:
+            job.local_saved = True
         odds_count = 0
         if job.dataset_type == "upcoming":
             try:
@@ -325,6 +351,27 @@ def _run_job(job_id: str) -> None:
             row_count=row_count,
             message="取得済みHTMLからデータベース作成完了",
         )
+        if job.sync_repository:
+            with _LOCK:
+                job.result = result
+                job.progress = 0.96
+                job.sync_status = 'running'
+            try:
+                sync = import_module('src.10_workflows.database_sync')
+                if not job.sync_batch:
+                    job.sync_batch = sync.enqueue(frame, job.job_id, job.sync_repository, paths=PATHS)
+                else:
+                    sync.mark_local_saved(job.sync_batch, paths=PATHS)
+                synced = sync.synchronize(job.sync_batch, paths=PATHS, log=logger.info)
+                with _LOCK:
+                    job.sync_status = 'completed'
+                    job.sync_commit = synced['commit']
+                    job.sync_error = ''
+            except Exception as exc:
+                logger.warning(f'ローカルDB登録は完了しました。非公開DBとの統合は未完了です: {exc}')
+                with _LOCK:
+                    job.sync_status = 'failed'
+                    job.sync_error = str(exc)
         # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
         with _LOCK:
             job.result = result
@@ -368,3 +415,35 @@ def _run_job(job_id: str) -> None:
             # 一般の例外で終了したことを記録する。利用者による取消とは区別する。
             job.status = "failed"
             job.completed_at = datetime.now()
+
+
+def retry_database_sync(batch_id: str) -> str:
+    """Retry a durable batch without parsing or registering local HTML again."""
+    sync = import_module('src.10_workflows.database_sync')
+    _, metadata = sync.read_batch(batch_id, PATHS)
+    with _LOCK:
+        if any(job.status in {'running', 'cancelling'} for job in _JOBS.values()):
+            raise RuntimeError('データベース作成・統合の処理が実行中です。')
+        job_id = 'sync_' + uuid.uuid4().hex[:12]
+        job = DatabaseCreationJob(job_id, 'historical', date.fromisoformat(min(metadata['dates'])),
+                                  date.fromisoformat(max(metadata['dates'])),
+                                  sync_repository=metadata['repository'], sync_status='running',
+                                  sync_batch=batch_id, local_saved=True,
+                                  result={'race_count': metadata['races'], 'row_count': metadata['rows']})
+        _JOBS[job_id] = job
+        _CANCEL_EVENTS[job_id] = threading.Event()
+
+    def worker():
+        logger = AppLogger(PATHS.logs)
+        try:
+            result = sync.synchronize(batch_id, paths=PATHS, log=logger.info)
+            with _LOCK:
+                job.sync_status, job.sync_commit = 'completed', result['commit']
+        except Exception as exc:
+            with _LOCK:
+                job.sync_status, job.sync_error = 'failed', str(exc)
+        finally:
+            with _LOCK:
+                job.status, job.progress, job.completed_at = 'completed', 1.0, datetime.now()
+    threading.Thread(target=worker, name=job_id, daemon=True).start()
+    return job_id

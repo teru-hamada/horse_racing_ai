@@ -10,6 +10,7 @@ _private_sync = import_module('src.10_workflows.private_sync')
 private_repository_info = _private_sync.repository_info
 save_private_snapshot = _private_sync.save_snapshot
 restore_private_snapshot = _private_sync.restore_snapshot
+list_pending_database_syncs = import_module('src.10_workflows.database_sync').pending_batches
 
 
 _storage = import_module("src.00_common.storage")
@@ -66,6 +67,7 @@ start_html_collection_job = _html_jobs.start_job
 cancel_database_job = _database_jobs.cancel_database_job
 list_database_jobs = _database_jobs.list_database_jobs
 start_database_job = _database_jobs.start_database_job
+retry_database_sync = _database_jobs.retry_database_sync
 
 NetkeibaHtmlCollector = _html_scraper.NetkeibaHtmlCollector
 NetkeibaDatabaseCreator = _database_scraper.NetkeibaDatabaseCreator
