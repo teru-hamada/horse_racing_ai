@@ -1,0 +1,110 @@
+# Install this workflow in the PRIVATE data repository, not the public code repository.
+name: 確定結果DBの更新
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '開始日 YYYY-MM-DD（空欄は未処理期間から最大7日）'
+        type: string
+        required: false
+      end_date:
+        description: '終了日 YYYY-MM-DD（開始日を指定した場合は必須）'
+        type: string
+        required: false
+  schedule:
+    - cron: '25 17 * * *' # JST 02:25
+
+permissions: {}
+concurrency:
+  group: historical-result-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.event.repository.private && (github.event_name == 'workflow_dispatch' || vars.RESULT_UPDATE_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Require the default branch
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      - name: Checkout latest private snapshot
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: private-data
+      - name: Record base and validate pinned code
+        id: base
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          if not re.fullmatch(r'[0-9a-fA-F]{40}', os.environ['CODE_REF']):
+              raise SystemExit('RESULT_UPDATE_CODE_REF must be a full reviewed public commit SHA')
+          sha = subprocess.check_output(['git', '-C', 'private-data', 'rev-parse', 'HEAD'], text=True).strip()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('sha=' + sha + '\n')
+          PY
+        env:
+          CODE_REF: ${{ vars.RESULT_UPDATE_CODE_REF }}
+      - name: Checkout pinned updater code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: teru-hamada/horse_racing_ai
+          ref: ${{ vars.RESULT_UPDATE_CODE_REF }}
+          path: code
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version-file: private-data/prediction_bundle/.python-version
+      - name: Install ingestion dependencies only
+        run: python code/scripts/install_results_environment.py --requirements private-data/prediction_bundle/requirements.txt
+      - name: Fetch and validate complete result days
+        id: update
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          args = [sys.executable, 'code/scripts/update_results.py', '--source', 'private-data',
+                  '--output', str(temp / 'result-candidate'), '--work', str(temp / 'result-work')]
+          if os.environ.get('START_DATE'):
+              args += ['--start', os.environ['START_DATE']]
+          if os.environ.get('END_DATE'):
+              args += ['--end', os.environ['END_DATE']]
+          raise SystemExit(subprocess.call(args))
+          PY
+        env:
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+      - name: Save verified DB for the next execution
+        id: save
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          python code/scripts/publish_results_snapshot.py --repository private-data --candidate "$RUNNER_TEMP/result-candidate" --report "$RUNNER_TEMP/result-work/report.json" --expected-commit "$EXPECTED_BASE"
+        env:
+          EXPECTED_BASE: ${{ steps.base.outputs.sha }}
+      - name: Write result summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'result-work/report.json'
+          if path.exists():
+              report = json.loads(path.read_text())
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+                  output.write('Result DB update: ' + report['status'] + '\n\n')
+                  output.write('Updated days: ' + str(report['updated_days']) + '; rows: ' + str(report['updated_rows']) + '\n\n')
+                  output.write('Continuous scan cursor: ' + report['cursor'] + '\n\nModel and feature files unchanged.\n')
+          PY
+      - name: Fail when any requested day is incomplete
+        if: steps.update.outcome == 'failure'
+        run: exit 1
