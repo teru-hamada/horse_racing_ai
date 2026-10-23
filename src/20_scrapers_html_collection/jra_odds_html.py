@@ -94,6 +94,22 @@ class JraOddsHtmlCollector:
 
     # JRAの画面遷移パラメーターをPOSTし、診断に使える画面本文を受け取る。
     def _post(self, cname: str) -> str:
+        for attempt in range(4):
+            try:
+                return self._post_once(cname)
+            except requests.exceptions.SSLError:
+                raise
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                if attempt == 3:
+                    raise
+                delay = max(self.interval_seconds, 2.0 * (2 ** attempt))
+                self.logger.warning(
+                    f"JRAオッズ通信失敗: cname={cname}, "
+                    f"retry={attempt + 1}/3, wait={delay:g}s: {exc}"
+                )
+                time.sleep(delay)
+
+    def _post_once(self, cname: str) -> str:
         response = self.session.post(
             self.URL,
             data={"cname": cname},

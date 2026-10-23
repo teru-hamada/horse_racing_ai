@@ -5,11 +5,53 @@ from datetime import date
 from importlib import import_module
 
 import pytest
+import requests
+from unittest.mock import Mock
 
 
 JraOddsHtmlCollector = import_module(
     "src.20_scrapers_html_collection.jra_odds_html"
 ).JraOddsHtmlCollector
+
+
+@pytest.mark.parametrize("error_type", [requests.ConnectionError, requests.Timeout])
+def test_post_retries_transient_network_failure(monkeypatch, error_type):
+    collector = JraOddsHtmlCollector(LoggerStub(), interval_seconds=0)
+    response = Mock(text="<html>odds</html>")
+    collector.session.post = Mock(side_effect=[error_type("reset"), response])
+    sleep = Mock()
+    monkeypatch.setattr("time.sleep", sleep)
+
+    assert collector._post(collector.ENTRY_CNAME) == response.text
+    assert collector.session.post.call_count == 2
+    sleep.assert_called_once_with(2.0)
+    assert response.encoding == "cp932"
+
+
+def test_post_stops_after_three_retries(monkeypatch):
+    collector = JraOddsHtmlCollector(LoggerStub(), interval_seconds=0)
+    collector.session.post = Mock(side_effect=requests.ConnectionError("reset"))
+    sleep = Mock()
+    monkeypatch.setattr("time.sleep", sleep)
+
+    with pytest.raises(requests.ConnectionError):
+        collector._post(collector.ENTRY_CNAME)
+    assert collector.session.post.call_count == 4
+    assert [call.args[0] for call in sleep.call_args_list] == [2.0, 4.0, 8.0]
+
+
+@pytest.mark.parametrize("error", [requests.exceptions.SSLError("certificate"),
+                                  requests.HTTPError("403")])
+def test_post_does_not_retry_ssl_or_http_errors(monkeypatch, error):
+    collector = JraOddsHtmlCollector(LoggerStub(), interval_seconds=0)
+    collector.session.post = Mock(side_effect=error)
+    sleep = Mock()
+    monkeypatch.setattr("time.sleep", sleep)
+
+    with pytest.raises(type(error)):
+        collector._post(collector.ENTRY_CNAME)
+    assert collector.session.post.call_count == 1
+    sleep.assert_not_called()
 
 
 # テスト中のログを記録する代替ロガー。実際のログ出力先に依存せず通知内容を検証する。
