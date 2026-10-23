@@ -105,6 +105,7 @@ jobs:
           sparse-checkout: |
             prediction_bundle
             data
+            parts
       - name: Restore private runtime files
         run: python scripts/private_runtime.py restore --source .private-runtime
       # ３．Set up Python：Pythonの実行環境を準備する。

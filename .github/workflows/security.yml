@@ -73,20 +73,25 @@ jobs:
           sparse-checkout: |
             /prediction_bundle/requirements.txt
             /prediction_bundle/.python-version
+            /prediction_bundle/manifest.json
+            /snapshot.json
+            /parts/
+      - name: Restore verified environment metadata (legacy or split)
+        run: python scripts/private_runtime.py restore --source .private-runtime --metadata-only --output .private-runtime/audit
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version-file: .private-runtime/prediction_bundle/.python-version
+          python-version-file: .private-runtime/audit/prediction_bundle/.python-version
       - name: Install runtime and GUI dependencies with CPU PyTorch
         run: |
           python - <<'PY'
           from pathlib import Path
           import subprocess, sys
-          requirements = Path('.private-runtime/prediction_bundle/requirements.txt').read_text()
+          requirements = Path('.private-runtime/audit/prediction_bundle/requirements.txt').read_text()
           version = next(line.split('==', 1)[1] for line in requirements.splitlines() if line.startswith('torch=='))
           subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch==' + version,
                           '--index-url', 'https://download.pytorch.org/whl/cpu'], check=True)
           PY
-          python -m pip install -r requirements.txt -c .private-runtime/prediction_bundle/requirements.txt
+          python -m pip install -r requirements.txt -c .private-runtime/audit/prediction_bundle/requirements.txt
           python -m pip install pip-audit==2.10.1
       - name: Audit installed direct and transitive dependencies
         run: python scripts/audit_dependencies.py

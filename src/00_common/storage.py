@@ -160,11 +160,16 @@ def connect(database: Path | None = None) -> duckdb.DuckDBPyConnection:
     # database: 読み書き対象のDBパス。テストでは専用DBへ切り替える。
     database = database if database is not None else PATHS.database
     database.parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(database))
-    con.execute(SCHEMA_SQL)
-    # 既存DBも、登録日時とは別に元HTMLの取得情報を保持できるよう移行する。
-    for column in ("fetched_at", "source_url", "source_cname", "source_sha256"):
-        con.execute(f"ALTER TABLE race_odds ADD COLUMN IF NOT EXISTS {column} VARCHAR")
+    from .runtime_lock import connect_locked
+    con = connect_locked(PATHS.root, database, duckdb.connect)
+    try:
+        con.execute(SCHEMA_SQL)
+        # 既存DBも、登録日時とは別に元HTMLの取得情報を保持できるよう移行する。
+        for column in ("fetched_at", "source_url", "source_cname", "source_sha256"):
+            con.execute(f"ALTER TABLE race_odds ADD COLUMN IF NOT EXISTS {column} VARCHAR")
+    except BaseException:
+        con.close()
+        raise
     return con
 
 

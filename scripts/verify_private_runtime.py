@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def main():
+def main(root=ROOT):
     import duckdb
     import torch
 
@@ -18,16 +18,16 @@ def main():
     loader = import_module('src.40_ai_modeling.tasks.top3.model')
     with tempfile.TemporaryDirectory() as directory:
         work = Path(directory) / 'runtime'
-        manifest = bundle.unpack_bundle(ROOT / 'prediction_bundle', work)
+        manifest = bundle.unpack_bundle(root / 'prediction_bundle', work)
         if manifest['python_version'] != f'{sys.version_info.major}.{sys.version_info.minor}':
             raise ValueError('Python version mismatch')
         for package, expected in manifest['versions'].items():
             if version(package).split('+')[0] != expected.split('+')[0]:
                 raise ValueError(f'Package version mismatch: {package}')
-        with duckdb.connect(str(ROOT / 'data/racing.duckdb'), read_only=True) as con:
+        with duckdb.connect(str(root / 'data/racing.duckdb'), read_only=True) as con:
             if bundle.latest_model(con)['model_id'] != manifest['model_id']:
                 raise ValueError('Registered model differs from private bundle')
-        with duckdb.connect(str(ROOT / 'data/features.duckdb'), read_only=True) as con:
+        with duckdb.connect(str(root / 'data/features.duckdb'), read_only=True) as con:
             con.execute('SELECT count(*) FROM performance_features').fetchone()
         model, preprocessor, metrics = loader.load_model_bundle(work / 'model')
         if metrics['model_run_id'] != manifest['model_id']:
@@ -43,4 +43,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root', type=Path, default=ROOT)
+    main(parser.parse_args().root.resolve())

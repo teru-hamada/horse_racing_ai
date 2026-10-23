@@ -60,17 +60,18 @@ def latest_model(connection) -> dict:
 
 
 # 元DBを読み取り専用で開き、必要な表とモデルを作業領域へ複製してから4つの配布ファイルへ反映する。
-def export_bundle(output: Path) -> dict:
+def export_bundle(output: Path, *, paths=None) -> dict:
+    paths = paths or PATHS
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output) as temporary, ExitStack() as stack:
         stage = Path(temporary)
         # Hold read-only locks while exporting both DBs; do not modify source DBs.
-        racing = stack.enter_context(duckdb.connect(str(PATHS.database), read_only=True))
-        features = stack.enter_context(duckdb.connect(str(PATHS.feature_database), read_only=True))
+        racing = stack.enter_context(duckdb.connect(str(paths.database), read_only=True))
+        features = stack.enter_context(duckdb.connect(str(paths.feature_database), read_only=True))
         selected = latest_model(racing)
         model_dir = Path(selected["model_path"])
         if not model_dir.is_dir():
-            model_dir = PATHS.models / "top3" / selected["model_id"]
+            model_dir = paths.models / "top3" / selected["model_id"]
         (stage / "model").mkdir()
         for name in MODEL_FILES:
             source = model_dir / name

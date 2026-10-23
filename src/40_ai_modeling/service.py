@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable
+from functools import wraps
+from importlib import import_module
 
 import pandas as pd
 
@@ -18,7 +20,18 @@ from .tasks.top3.model import predict_race_date as _predict_top3_date
 from .tasks.top3.train import train_model as _train_top3
 
 
+def _runtime_operation(function):
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        config = import_module('src.00_common.config')
+        locking = import_module('src.00_common.runtime_lock')
+        with locking.runtime_lock(config.PATHS.root):
+            return function(*args, **kwargs)
+    return guarded
+
+
 # 登録を確認したタスクの学習実装へ渡し、学習指標を返す。
+@_runtime_operation
 def train_task(
     task_name: str,
     historical_records: pd.DataFrame,
@@ -40,6 +53,7 @@ def train_task(
 
 
 # タスク名を検証してから、指定レースの予想実装へ振り分ける。
+@_runtime_operation
 def predict_task(
     task_name: str,
     historical_records: pd.DataFrame,
@@ -65,6 +79,7 @@ def predict_task(
 
 
 # 指定タスクの過去レース予想を呼び出し、確定結果との比較に使う。
+@_runtime_operation
 def predict_historical_task(
     task_name: str,
     historical_records: pd.DataFrame,
@@ -87,6 +102,7 @@ def predict_historical_task(
 
 
 # 指定タスクの開催日一括予想へ、履歴・出馬表・モデル保存先を渡す。
+@_runtime_operation
 def predict_date_task(
     task_name: str,
     historical_records: pd.DataFrame,

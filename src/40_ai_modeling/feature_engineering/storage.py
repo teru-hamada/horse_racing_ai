@@ -86,14 +86,19 @@ CREATE TABLE IF NOT EXISTS performance_features (
 def connect(path: Path | None = None) -> duckdb.DuckDBPyConnection:
     database = Path(path or PATHS.feature_database)
     database.parent.mkdir(parents=True, exist_ok=True)
-    connection = duckdb.connect(str(database))
-    connection.execute(SCHEMA_SQL)
-    connection.execute(
-        "ALTER TABLE feature_runs ADD COLUMN IF NOT EXISTS source_state_token VARCHAR"
-    )
-    connection.execute(
-        "ALTER TABLE feature_runs ADD COLUMN IF NOT EXISTS source_state_json VARCHAR"
-    )
+    connect_locked = import_module('src.00_common.runtime_lock').connect_locked
+    connection = connect_locked(PATHS.root, database, duckdb.connect)
+    try:
+        connection.execute(SCHEMA_SQL)
+        connection.execute(
+            "ALTER TABLE feature_runs ADD COLUMN IF NOT EXISTS source_state_token VARCHAR"
+        )
+        connection.execute(
+            "ALTER TABLE feature_runs ADD COLUMN IF NOT EXISTS source_state_json VARCHAR"
+        )
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 

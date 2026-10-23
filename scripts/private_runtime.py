@@ -10,6 +10,9 @@ import json
 from pathlib import Path
 import shutil
 import zipfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
@@ -27,12 +30,12 @@ def digest(path: Path) -> str:
     return result.hexdigest()
 
 
-def validate(source: Path) -> None:
+def validate(source: Path, *, enforce_git_limit: bool = True) -> None:
     for name in FILES:
         path = source / name
         if not path.is_file() or path.is_symlink():
             raise ValueError(f'Missing or unsafe private runtime file: {name}')
-        if path.stat().st_size >= 100 * 1024 * 1024:
+        if enforce_git_limit and path.stat().st_size >= 100 * 1024 * 1024:
             raise ValueError(f'File exceeds the GitHub Git file size limit: {name}')
     bundle = source / 'prediction_bundle'
     manifest = json.loads((bundle / 'manifest.json').read_text(encoding='utf-8'))
@@ -65,8 +68,13 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest='command', required=True)
     prepare = subparsers.add_parser('prepare', help='Prepare an ignored copy for a private repository')
     prepare.add_argument('--output', type=Path, default=ROOT / '.private-runtime')
+    prepare.add_argument('--format', choices=('split', 'legacy'), default='split')
     restore = subparsers.add_parser('restore', help='Restore a checked-out private snapshot into the application')
     restore.add_argument('--source', type=Path, required=True)
+    restore.add_argument('--output', type=Path, default=ROOT)
+    restore.add_argument('--metadata-only', action='store_true')
+    recover = subparsers.add_parser('recover', help='Roll back an interrupted activation')
+    recover.add_argument('--output', type=Path, default=ROOT)
     args = parser.parse_args()
     if args.command == 'prepare':
         destination = args.output.resolve()
@@ -76,14 +84,29 @@ def main() -> None:
             raise SystemExit('Output must be inside .private-runtime to avoid accidental publication.')
         if destination.exists():
             raise SystemExit('Output already exists; use a new subdirectory under .private-runtime.')
+        if args.format == 'split':
+            from scripts.private_snapshot import prepare as prepare_split
+            from importlib import import_module
+            with import_module('src.00_common.runtime_lock').runtime_lock(ROOT):
+                prepare_split(ROOT, destination)
+            print('Prepared split private snapshot (parts below 100 MiB).')
+            return
         copy_runtime(ROOT, destination)
         (destination / '.gitattributes').write_text('* -text\n', encoding='utf-8')
         (destination / 'README.md').write_text(
             '# Private prediction runtime\n\nKeep this repository PRIVATE. No Actions or Pages required.\n',
             encoding='utf-8')
         print('Prepared private runtime copy. Original files were preserved.')
+    elif args.command == 'recover':
+        from scripts import runtime_transfer
+        runtime_transfer.recover(args.output.resolve())
+        print('Recovered previous runtime from its backup.')
     else:
-        copy_runtime(args.source.resolve(), ROOT)
+        from scripts import runtime_transfer
+        if args.metadata_only:
+            runtime_transfer.metadata(args.source.resolve(), args.output.resolve())
+        else:
+            runtime_transfer.activate(args.source.resolve(), args.output.resolve())
         print('Restored and verified private runtime files.')
 
 

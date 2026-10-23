@@ -21,7 +21,7 @@ READMEなどは自動生成しない空のリポジトリにしてください�
 元のDB・モデルは変更しません。DBを書き込むアプリを止めてから実行します。
 
 ```powershell
-.venv/Scripts/python.exe scripts/private_runtime.py prepare
+.venv/Scripts/python.exe scripts/private_runtime.py prepare --format legacy
 git -C .private-runtime init -b main
 git -C .private-runtime add -- .gitattributes README.md data prediction_bundle
 git -C .private-runtime commit -m "Store private prediction runtime"
@@ -90,10 +90,18 @@ DBがない状態でも動くことを確認します。
 
 ```powershell
 .venv/Scripts/python.exe -m src.40_ai_modeling.prediction_bundle
-.venv/Scripts/python.exe scripts/private_runtime.py prepare --output .private-runtime/next
+.venv/Scripts/python.exe scripts/private_runtime.py prepare --format legacy --output .private-runtime/next
 ```
 
 新しいコピーの `data/` と `prediction_bundle/` を非公開リポジトリに反映し、push後の
 SHAを `PRIVATE_DATA_REF` に登録します。公開側にDBやバンドルを再追加しないでください。
 Gitは100 MiB以上の通常ファイルを受け付けないため、増大した場合は保存方法を見直します。
 モデルの読み込みには信頼できる作成元のファイルだけを使用してください。
+
+## 100 MiB制限に向けた分割保存の検証
+
+DBをローカルで使用するときの構成を維持したまま、保存時に圧縮して64 MiBずつに分割する新形式を検証しました。
+非公開リポジトリの検証用ブランチへの保存と、clone後の完全復元を確認済みです。
+Actionsは新旧形式を自動判別する処理へ改修しています。本番参照SHAはまだ従来形式のままです。
+詳細とコマンドは[分割保存・復元の検証結果](private_snapshot_validation_2026-10-23.md)を参照してください。
+GUIからの保存・復元とActionsへの適用手順は[データ同期](private_data_sync.md)を参照してください。

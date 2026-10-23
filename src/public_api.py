@@ -6,6 +6,11 @@
 
 from importlib import import_module
 
+_private_sync = import_module('src.10_workflows.private_sync')
+private_repository_info = _private_sync.repository_info
+save_private_snapshot = _private_sync.save_snapshot
+restore_private_snapshot = _private_sync.restore_snapshot
+
 
 _storage = import_module("src.00_common.storage")
 _html_jobs = import_module(

@@ -80,6 +80,9 @@ from src.public_api import (
     save_collection_run,
     save_race_records,
     calculate_bet_recommendations,
+    private_repository_info,
+    save_private_snapshot,
+    restore_private_snapshot,
 )
 
 # Streamlit page configuration
@@ -1389,7 +1392,7 @@ def _render_race_entry_management() -> None:
 with st.sidebar:
     page = st.radio(
         "メニュー",
-        ["ダッシュボード", "HTML収集（学習用）", "HTML収集（予想用）", "データベース作成", "前準備（特徴量エンジニアリング）", "モデル学習", "レース予想", "ログ・保存結果", "メンテナンス"],
+        ["ダッシュボード", "HTML収集（学習用）", "HTML収集（予想用）", "データベース作成", "前準備（特徴量エンジニアリング）", "モデル学習", "レース予想", "ログ・保存結果", "データ同期", "メンテナンス"],
     )
     st.divider()
     st.caption(f"DB: {PATHS.database}")
@@ -1397,6 +1400,10 @@ with st.sidebar:
     st.caption("推奨Python: 3.11")
 
 log_placeholder = None
+
+if (PATHS.root / '.private-runtime/activation-pending.json').exists() and page != "データ同期":
+    st.error("前回の復元が中断されています。［データ同期］からバックアップ復旧を実行してください。")
+    st.stop()
 
 
 # 画面切替: 'ダッシュボード'。選択された画面の入力・処理・結果表示を構築する。
@@ -3655,6 +3662,63 @@ elif page == "ログ・保存結果":
     st.dataframe(runs, use_container_width=True, hide_index=True)
     st.subheader("学習モデル履歴")
     st.dataframe(model_runs(), use_container_width=True, hide_index=True)
+
+elif page == "データ同期":
+    from scripts import runtime_transfer
+    st.header("非公開リポジトリとのデータ同期")
+    st.caption("DB・モデルを分割して保存します。通常のHTML取り込みはこれまでどおり利用できます。")
+    repository = st.text_input("非公開リポジトリ", value="teru-hamada/horse-racing-ai-private-data")
+
+    def require_idle():
+        groups = (list_jobs(), list_database_jobs(), list_feature_generation_jobs(),
+                  list_speed_index_jobs(), list_recent_speed_jobs(), list_race_entry_jobs())
+        if any(job['status'] in {'running', 'cancelling'} for jobs in groups for job in jobs):
+            raise RuntimeError("実行中の収集・DB・特徴量処理が終わってから同期してください。")
+
+    if st.button("接続確認"):
+        try:
+            st.session_state.private_sync_info = private_repository_info(repository, root=PATHS.root)
+            st.success("非公開リポジトリを確認しました。")
+        except Exception as exc:
+            st.error(str(exc))
+    info = st.session_state.get('private_sync_info', {})
+    if info.get('repository') != repository:
+        info = {}
+    if info:
+        st.caption(f"確認済みコミット: {info['commit']}")
+    if st.button("現在のデータを非公開へ保存", disabled=not info):
+        try:
+            with st.spinner("データを検証・分割して保存しています…"):
+                saved = save_private_snapshot(repository, info['commit'], paths=PATHS, check_idle=require_idle)
+            st.session_state.private_sync_saved = saved
+            st.success("候補として保存しました。予想用モデルの採用は別途行います。")
+        except Exception as exc:
+            st.error(str(exc))
+    saved = st.session_state.get('private_sync_saved')
+    if saved:
+        st.markdown(f"[保存したデータを確認]({saved['url']})")
+        st.code(saved['commit'])
+    st.divider()
+    commit = st.text_input("復元するコミットSHA（40文字）", value=info.get('commit', ''))
+    confirmed = st.checkbox("現在のデータをバックアップして、指定したデータに置き換える")
+    if st.button("指定したデータを取得・復元", disabled=not confirmed):
+        try:
+            expected = runtime_transfer.hashes(PATHS.root)
+            with st.spinner("取得・検証して復元しています…"):
+                restored = restore_private_snapshot(repository, commit, paths=PATHS,
+                    expected_hashes=expected, check_idle=require_idle)
+            st.cache_data.clear()
+            st.success(f"復元しました。バックアップ: {restored['backup']}")
+        except Exception as exc:
+            st.error(str(exc))
+    if (PATHS.root / '.private-runtime/activation-pending.json').exists():
+        st.error("前回の復元が中断されています。復旧後に通常の操作を再開できます。")
+        if st.button("中断前のバックアップへ戻す"):
+            try:
+                runtime_transfer.recover(PATHS.root)
+                st.success("バックアップへ戻しました。")
+            except Exception as exc:
+                st.error(str(exc))
 
 # 画面切替: 'メンテナンス'。選択された画面の入力・処理・結果表示を構築する。
 elif page == "メンテナンス":
