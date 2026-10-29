@@ -49,7 +49,7 @@ jobs:
       # １．Checkout public files：リポジトリのファイルを、配信処理を実行する仮想マシンに取得する。
       - name: Checkout public files
         # 実行する処理の種類。actions/checkout@v6は、リポジトリのファイルを取得する処理。
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # 取得対象(inputs.commit ：日次処理から渡されたコミット時点のファイル、default_branch ：省略時のデフォルトブランチ)を指定する。
         with:
           ref: ${{ inputs.commit || github.event.repository.default_branch }}
@@ -68,11 +68,11 @@ jobs:
       # ３．Configure GitHub Pages：GitHub Pagesの配信設定を行う。
       - name: Configure GitHub Pages
         # 実行する処理の種類。actions/configure-pages@v5は、GitHub Pagesの配信設定を行う処理。
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       # ４．Upload Pages artifact：生成したPages用のArtifactをアップロードする。
       - name: Upload Pages artifact
         # 実行する処理の種類。actions/upload-pages-artifact@v4は、生成したPages用のArtifactをアップロードする処理。
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         # アップロード対象のディレクトリを指定する。
         with:
           path: docs
@@ -81,4 +81,4 @@ jobs:
         # ジョブ内でのIDを指定することで、後続の処理から配信結果を参照できる。
         id: deployment
         # 実行する処理の種類。actions/deploy-pages@v4は、アップロードしたPages用のArtifactを、GitHub Pagesへ配信する処理。
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
