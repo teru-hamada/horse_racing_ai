@@ -1904,8 +1904,13 @@ elif page == "データベース作成":
             except Exception as exc:
                 st.error(str(exc))
 
-        if dataset_type == 'historical' and st.button('非公開リポジトリから過去結果を取り込む（全期間）',
-                disabled=active_database_job is not None or not repository_input):
+        import_database = False
+        if dataset_type == 'historical':
+            with start_column:
+                import_database = st.button('非公開リポジトリから過去結果を取り込む（全期間）',
+                    disabled=active_database_job is not None or not repository_input,
+                    use_container_width=True)
+        if import_database:
             try:
                 job_id = start_database_job(dataset_type='historical', start_date=start_date, end_date=end_date,
                                             sync_repository=repository_input, import_only=True)
