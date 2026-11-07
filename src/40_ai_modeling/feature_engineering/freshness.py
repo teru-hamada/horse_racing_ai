@@ -34,7 +34,10 @@ def source_data_state(database: Path | None = None) -> dict[str, object]:
             "latest_collected_at": None,
             "latest_collection_run_id": None,
         }
-    connection = duckdb.connect(str(path), read_only=True)
+    # Live application connections use DuckDB's default read/write configuration.
+    # A read_only connection cannot coexist with those, even for SELECT queries.
+    connect_locked = import_module('src.00_common.runtime_lock').connect_locked
+    connection = connect_locked(PATHS.root, path, duckdb.connect)
     try:
         row = connection.execute(
             """

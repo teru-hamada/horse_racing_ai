@@ -37,6 +37,20 @@ def _create_source(path):
 
 
 # 元DBへ行を追加するとfreshからstaleへ変わり、件数と収集runの差も返ることを確認する。
+def test_source_state_accepts_an_existing_application_connection(tmp_path, monkeypatch):
+    from importlib import import_module
+    freshness = import_module('src.40_ai_modeling.feature_engineering.freshness')
+    paths = import_module('src.00_common.config').get_paths(tmp_path)
+    monkeypatch.setattr(freshness, 'PATHS', paths)
+    _create_source(paths.database)
+    with duckdb.connect(str(paths.database)) as existing:
+        assert source_data_state(paths.database)['row_count'] == 1
+        assert existing.execute('SELECT count(*) FROM race_records').fetchone()[0] == 1
+    # The inspection closes its connection and releases the shared lock.
+    with duckdb.connect(str(paths.database), read_only=True) as reopened:
+        assert reopened.execute('SELECT count(*) FROM race_records').fetchone()[0] == 1
+
+
 def test_freshness_detects_source_update(tmp_path):
     source_db = tmp_path / "racing.duckdb"
     # このテスト専用の特徴量DBパス。本番のfeatures.duckdbは使わない。
