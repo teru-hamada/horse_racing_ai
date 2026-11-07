@@ -205,3 +205,114 @@ def test_database_job_runs_integration_after_local_save_and_preserves_success_on
         assert calls == ['local-save', 'remote-merge'] and job.sync_status == 'failed'
     else:
         assert 'remote-merge' not in calls
+
+
+def mock_pull(monkeypatch, remote, *, split=False):
+    import shutil
+    calls = []
+    monkeypatch.setattr(sync.private_sync, 'repository_info', lambda *a, **k: {'branch': 'main', 'commit': 'a' * 40})
+    def git(args, *, cwd):
+        calls.append(args)
+        if args[0] == 'fetch':
+            if split:
+                packed = cwd.parent / 'packed'
+                private_snapshot.prepare(remote.root, packed)
+                shutil.copytree(packed, cwd, dirs_exist_ok=True)
+            else:
+                for name in private_runtime.FILES:
+                    target = cwd / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(remote.root / name, target)
+        return 'a' * 40 if args[0] == 'rev-parse' else ''
+    monkeypatch.setattr(sync.private_sync, '_git', git)
+    monkeypatch.setattr(sync, 'build_candidate', lambda *a, **k: pytest.fail('pull must not build an upload'))
+    return calls
+
+
+@pytest.mark.parametrize('split', [False, True])
+def test_repository_pull_needs_no_html_and_keeps_local_rows_and_models(tmp_path, monkeypatch, split):
+    remote, local = database(tmp_path / 'remote'), database(tmp_path / 'local')
+    sync.result_update.save_day(remote.database, records(), date(2026, 8, 9))
+    with duckdb.connect(str(local.database)) as con:
+        con.execute("UPDATE race_records SET time_seconds=999")
+        con.execute("INSERT INTO race_records(race_id,horse_id,dataset_type) VALUES ('future','h','upcoming')")
+    protected = {name: private_runtime.digest(local.root / name) for name in sync.result_update.PROTECTED}
+    calls = mock_pull(monkeypatch, remote, split=split)
+    assert not list(local.historical_html.rglob('*.html'))
+    result = sync.import_repository('example/private', paths=local)
+    assert result['imported_rows'] == len(records())
+    with duckdb.connect(str(local.database), read_only=True) as con:
+        assert con.execute("SELECT time_seconds FROM race_records WHERE race_date=DATE '2026-08-02'").fetchone()[0] == 999
+        assert con.execute("SELECT count(*) FROM race_records WHERE dataset_type='upcoming'").fetchone()[0] == 1
+    again = sync.import_repository('example/private', paths=local)
+    assert again['imported_rows'] == 0
+    assert all(private_runtime.digest(local.root / name) == value for name, value in protected.items())
+    assert not any(args[0] in {'push', 'commit'} for args in calls)
+
+
+def test_repository_pull_creates_database_and_respects_date_range(tmp_path, monkeypatch):
+    remote = database(tmp_path / 'remote')
+    local = get_paths(tmp_path / 'empty-local')
+    sync.result_update.save_day(remote.database, records(8), date(2026, 8, 8))
+    sync.result_update.save_day(remote.database, records(9), date(2026, 8, 9))
+    mock_pull(monkeypatch, remote)
+    result = sync.import_repository('example/private', paths=local, start_date=date(2026, 8, 9), end_date=date(2026, 8, 9))
+    assert result['imported_rows'] == len(records(9))
+    with duckdb.connect(str(local.database), read_only=True) as con:
+        assert con.execute('SELECT DISTINCT race_date FROM race_records').fetchall() == [(date(2026, 8, 9),)]
+
+
+@pytest.mark.parametrize('failure', ['network', 'cancel', 'duplicates'])
+def test_pull_failure_before_merge_preserves_existing_database(tmp_path, monkeypatch, failure):
+    remote, local = database(tmp_path / 'remote'), database(tmp_path / 'local')
+    mock_pull(monkeypatch, remote)
+    if failure == 'network':
+        monkeypatch.setattr(sync.private_sync, '_git', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('offline')))
+    if failure == 'duplicates':
+        with duckdb.connect(str(remote.database)) as con:
+            con.execute('INSERT INTO race_records SELECT * FROM race_records')
+    before = private_runtime.digest(local.database)
+    count = []
+    def cancel():
+        count.append(1)
+        if failure == 'cancel' and len(count) == 3:
+            raise RuntimeError('cancelled')
+    with pytest.raises((RuntimeError, ValueError)):
+        sync.import_repository('example/private', paths=local, check_cancel=cancel)
+    assert private_runtime.digest(local.database) == before
+
+
+@pytest.mark.parametrize('import_only', [False, True])
+@pytest.mark.parametrize('cancel', [False, True])
+def test_database_job_imports_without_html(tmp_path, monkeypatch, import_only, cancel):
+    import threading
+    paths = database(tmp_path / 'local')
+    monkeypatch.setattr(jobs, 'PATHS', paths)
+    def scraper(**kwargs):
+        if import_only:
+            pytest.fail('repository-only mode must not initialize the HTML parser')
+        return type('EmptyScraper', (), {'parse_cached_date_range': lambda self, **k: pd.DataFrame()})()
+    monkeypatch.setattr(jobs, 'NetkeibaDatabaseCreator', scraper)
+    monkeypatch.setattr(jobs, '_save_run', lambda *a, **k: None)
+    calls = []
+    cancel_event = threading.Event()
+    def pull(repository, **kwargs):
+        calls.append(kwargs)
+        if cancel:
+            cancel_event.set()
+            kwargs['check_cancel']()
+        kwargs['before_merge']()
+        return {'commit': 'a' * 40, 'race_count': 2, 'row_count': 6, 'imported_rows': 6,
+                'odds_count': 0, 'start_date': date(2026, 8, 9), 'end_date': date(2026, 8, 9)}
+    monkeypatch.setattr(sync, 'import_repository', pull)
+    job = jobs.DatabaseCreationJob('pull-test', 'historical', date(2026, 1, 1), date(2026, 12, 31),
+                                   sync_repository='example/private', import_only=import_only)
+    monkeypatch.setitem(jobs._JOBS, job.job_id, job)
+    monkeypatch.setitem(jobs._CANCEL_EVENTS, job.job_id, cancel_event)
+    jobs._run_job(job.job_id)
+    if cancel:
+        assert job.status == 'cancelled' and job.sync_status == 'cancelled' and not job.local_saved
+        return
+    assert job.status == 'completed' and job.local_saved and job.sync_status == 'completed'
+    assert job.source == 'private_repository' and job.result['imported_rows'] == 6
+    assert calls[0]['start_date'] == (None if import_only else date(2026, 1, 1))

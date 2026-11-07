@@ -771,13 +771,18 @@ def _render_database_creation_status(
             f"{latest_job['result'].get('odds_count', 0):,}"
         )
     if latest_job.get('sync_status') == 'completed':
-        st.success("非公開mainとの統合が完了しました。")
-        st.caption(f"保存コミット: {latest_job.get('sync_commit', '')}")
+        if latest_job.get('source') == 'private_repository':
+            st.caption(f"新規追加: {latest_job['result'].get('imported_rows', 0):,}頭（既存のローカル行は保持）")
+        st.success("非公開リポジトリからの取り込みが完了しました。" if latest_job.get('source') == 'private_repository'
+                   else "非公開mainとの統合が完了しました。")
+        st.caption(f"参照コミット: {latest_job.get('sync_commit', '')}")
     elif latest_job.get('sync_status') == 'failed':
-        st.warning("ローカルDB登録は完了しています。非公開DBとの統合は未完了です。")
+        st.warning("非公開リポジトリからの取り込みに失敗しました。" if latest_job.get('source') == 'private_repository'
+                   else "ローカルDB登録は完了しています。非公開DBとの統合は未完了です。")
         st.write(latest_job.get('sync_error', ''))
     elif latest_job.get('sync_status') == 'running':
-        st.info("ローカルDB登録済み。非公開mainの最新データへ統合しています。")
+        st.info("非公開リポジトリの過去結果を取り込んでいます。" if latest_job.get('source') == 'private_repository'
+                else "ローカルDB登録済み。非公開mainの最新データへ統合しています。")
     # ジョブにエラーが記録されている場合だけ、失敗理由を表示する。
     if latest_job["error"]:
         st.error(latest_job["error"])
@@ -1628,7 +1633,7 @@ elif page == "データベース作成":
     mode = st.radio(
         "作成方法",
         [
-            "取得済みHTMLから作成",
+            "HTML・非公開リポジトリから作成",
             "デモデータを作成",
             "登録内容確認",
         ],
@@ -1690,7 +1695,7 @@ elif page == "データベース作成":
                 logger.exception(f"デモデータ生成失敗: {exc}")
                 st.exception(exc)
     # 選択した作成・予想モードに対応する入力と実行処理を表示する。
-    elif mode == "取得済みHTMLから作成":
+    elif mode == "HTML・非公開リポジトリから作成":
         st.info(
             "別の年・日付を指定して作成したデータは、"
             "既存データを残したまま追加登録されます。"
@@ -1840,10 +1845,12 @@ elif page == "データベース作成":
         sync_repository = None
         if dataset_type == 'historical':
             sync_enabled = st.checkbox("DB作成後に非公開mainへ統合する", value=True, key="database_auto_sync")
+            repository_input = st.text_input("取り込み・統合先の非公開リポジトリ", value="teru-hamada/horse-racing-ai-private-data",
+                                            key="database_sync_repository").strip()
             if sync_enabled:
-                sync_repository = st.text_input("統合先の非公開リポジトリ", value="teru-hamada/horse-racing-ai-private-data",
-                                                key="database_sync_repository")
-                st.caption("登録後に最新DBと統合します。掲載一覧との照合や不足レースの補完にはネット接続を使います。モデル・特徴量は更新しません。")
+                sync_repository = repository_input
+                st.caption("HTMLがある場合は登録後に最新DBと統合します。HTMLがない場合は、指定期間の過去結果を非公開mainから取り込みます。")
+            st.caption("全期間の取り込みボタンはHTML不要です。既存のローカル行を保持して不足分を追加し、モデル・特徴量・非公開リポジトリは変更しません。")
         else:
             st.caption("出馬表・オッズはローカル登録のみです。確定結果の自動統合の対象には含めません。")
         st.caption("取得済みHTMLの解析・登録はバックグラウンドで実行します。画面を移動しても継続します。")
@@ -1866,7 +1873,7 @@ elif page == "データベース作成":
                 type="primary",
                 disabled=(
                     active_database_job is not None
-                    or not database_creation_available
+                    or (not database_creation_available and not (dataset_type == 'historical' and sync_repository))
                 ),
                 use_container_width=True,
             )
@@ -1894,6 +1901,16 @@ elif page == "データベース作成":
                 )
                 st.rerun()
             # 処理エラーを画面へ表示し、失敗理由を確認できるようにする。
+            except Exception as exc:
+                st.error(str(exc))
+
+        if dataset_type == 'historical' and st.button('非公開リポジトリから過去結果を取り込む（全期間）',
+                disabled=active_database_job is not None or not repository_input):
+            try:
+                job_id = start_database_job(dataset_type='historical', start_date=start_date, end_date=end_date,
+                                            sync_repository=repository_input, import_only=True)
+                st.success(f'HTMLを使わず、非公開リポジトリからの取り込みを開始しました。実行ID: {job_id}')
+                st.rerun()
             except Exception as exc:
                 st.error(str(exc))
 

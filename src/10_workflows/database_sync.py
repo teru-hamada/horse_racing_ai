@@ -229,25 +229,90 @@ def build_candidate(source, batch, metadata, work, *, collector_factory=result_u
     return restored, candidate if changed else None, report
 
 
-def merge_local(remote_database, batch_id, *, paths):
+def merge_local(remote_database, batch_id, *, paths, start_date=None, end_date=None):
     """Pull historical rows without replacing local models or newer local imports."""
     columns = ','.join(result_update.storage.RACE_RECORD_COLUMNS)
     remote_path = str(Path(remote_database).resolve()).replace("'", "''")
+    predicate = "r.dataset_type='historical'"
+    parameters = []
+    if start_date is not None:
+        predicate += ' AND r.race_date BETWEEN ? AND ?'
+        parameters = [start_date, end_date]
     with duckdb.connect(str(paths.database)) as connection:
         connection.execute(f"ATTACH '{remote_path}' AS merged_source (READ_ONLY)")
         connection.execute('BEGIN TRANSACTION')
         try:
-            connection.execute("DELETE FROM race_records WHERE dataset_type='historical' AND collection_run_id=?", [batch_id])
+            connection.execute(result_update.storage.SCHEMA_SQL)
+            before = connection.execute("SELECT count(*) FROM race_records WHERE dataset_type='historical'").fetchone()[0]
+            if batch_id is not None:
+                connection.execute("DELETE FROM race_records WHERE dataset_type='historical' AND collection_run_id=?", [batch_id])
             connection.execute(f"""INSERT INTO race_records ({columns})
                 SELECT {','.join('r.' + name for name in result_update.storage.RACE_RECORD_COLUMNS)}
                 FROM merged_source.race_records r
-                WHERE r.dataset_type='historical' AND NOT EXISTS (
+                WHERE {predicate} AND NOT EXISTS (
                     SELECT 1 FROM race_records l WHERE l.dataset_type='historical'
-                    AND l.race_id=r.race_id AND l.horse_id=r.horse_id)""")
+                    AND l.race_id=r.race_id AND l.horse_id=r.horse_id)""", parameters)
+            after = connection.execute("SELECT count(*) FROM race_records WHERE dataset_type='historical'").fetchone()[0]
             connection.execute('COMMIT')
+            return after - before
         except BaseException:
             connection.execute('ROLLBACK')
             raise
+
+
+def import_repository(repository, *, paths, start_date=None, end_date=None,
+                      log=lambda value: None, check_cancel=lambda: None, before_merge=lambda: None):
+    """Pull missing historical rows without HTML, uploads or runtime activation."""
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
+        raise ValueError('リポジトリは owner/name で指定してください。')
+    if (start_date is None) != (end_date is None) or (start_date is not None and start_date > end_date):
+        raise ValueError('取り込み期間の開始日・終了日を確認してください。')
+    with runtime_lock(paths.root):
+        check_cancel()
+        info = private_sync.repository_info(repository, root=paths.root)
+        if info['branch'] != 'main' or not re.fullmatch(r'[0-9a-fA-F]{40}', info['commit']):
+            raise ValueError('取り込み元のmainコミットを確認できません。')
+        base = _root(paths)
+        base.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base, prefix='pull-') as temporary:
+            temporary = Path(temporary)
+            checkout = temporary / 'repository'
+            checkout.mkdir()
+            git = lambda args: private_sync._git(args, cwd=checkout)
+            log('非公開mainから過去結果DBを取得しています。HTMLは使用しません。')
+            git(['init'])
+            git(['remote', 'add', 'origin', f'https://github.com/{repository}.git'])
+            git(['fetch', '--depth', '1', 'origin', info['commit']])
+            git(['checkout', '--detach', 'FETCH_HEAD'])
+            if git(['rev-parse', 'HEAD']) != info['commit']:
+                raise ValueError('取得したコミットが一致しません。')
+            check_cancel()
+            restored = temporary / 'runtime'
+            runtime_transfer.materialize(checkout, restored)
+            remote = restored / 'data/racing.duckdb'
+            predicate = "dataset_type='historical'"
+            parameters = []
+            if start_date is not None:
+                predicate += ' AND race_date BETWEEN ? AND ?'
+                parameters = [start_date, end_date]
+            with duckdb.connect(str(remote), read_only=True) as connection:
+                rows, races, first, last = connection.execute(
+                    f'SELECT count(*),count(DISTINCT race_id),min(race_date),max(race_date) FROM race_records WHERE {predicate}', parameters).fetchone()
+                invalid = connection.execute(f'''SELECT count(*) FROM race_records WHERE {predicate}
+                    AND (race_id IS NULL OR horse_id IS NULL OR race_date IS NULL)''', parameters).fetchone()[0]
+                duplicate = connection.execute(f'''SELECT count(*) FROM (SELECT race_id,horse_id
+                    FROM race_records WHERE {predicate} GROUP BY race_id,horse_id HAVING count(*)>1)''', parameters).fetchone()[0]
+                if invalid or duplicate:
+                    raise ValueError('取得した過去結果のキーに欠損・重複があります。')
+            if not rows:
+                raise ValueError('非公開リポジトリに対象期間の過去結果がありません。')
+            check_cancel()
+            before_merge()
+            paths.database.parent.mkdir(parents=True, exist_ok=True)
+            added = merge_local(remote, None, paths=paths, start_date=start_date, end_date=end_date)
+            log(f'取り込み完了: 対象{races:,}レース・{rows:,}頭 / 新規追加{added:,}頭。既存のローカル行は保持しました。')
+            return {'commit': info['commit'], 'race_count': races, 'row_count': rows,
+                    'imported_rows': added, 'odds_count': 0, 'start_date': first, 'end_date': last}
 
 
 def synchronize(batch_id, *, paths, log=lambda value: None):

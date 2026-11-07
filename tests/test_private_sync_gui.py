@@ -23,6 +23,26 @@ def test_database_creation_auto_sync_default_and_durable_retry(tmp_path, monkeyp
     assert not app.exception and calls == ['pending_batch']
 
 
+def test_database_creation_can_pull_without_html_or_upload_enabled(tmp_path, monkeypatch):
+    import src.public_api as api
+    paths = api.get_paths(tmp_path)
+    monkeypatch.setattr(api, 'PATHS', paths)
+    monkeypatch.setattr(import_module('src.00_common.storage'), 'PATHS', paths)
+    monkeypatch.setattr(api, 'list_database_jobs', lambda *a, **k: [])
+    monkeypatch.setattr(api, 'list_pending_database_syncs', lambda **k: [])
+    calls = []
+    monkeypatch.setattr(api, 'start_database_job', lambda **kwargs: calls.append(kwargs) or 'pull-job')
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'), default_timeout=60).run()
+    app.sidebar.radio[0].set_value('データベース作成').run()
+    next(item for item in app.checkbox if item.key == 'database_auto_sync').uncheck().run()
+    button = next(item for item in app.button if item.label == '非公開リポジトリから過去結果を取り込む（全期間）')
+    assert not button.disabled and not list(paths.historical_html.rglob('*.html'))
+    button.click().run()
+    assert not app.exception and len(calls) == 1
+    assert calls[0]['import_only'] is True and calls[0]['dataset_type'] == 'historical'
+    assert calls[0]['sync_repository'] == 'teru-hamada/horse-racing-ai-private-data'
+
+
 def test_sync_menu_connection_save_and_confirmed_restore(tmp_path, monkeypatch):
     import src.public_api as api
     paths = api.get_paths(tmp_path)

@@ -57,6 +57,8 @@ class DatabaseCreationJob:
     sync_commit: str = ""
     sync_batch: str = ""
     local_saved: bool = False
+    import_only: bool = False
+    source: str = 'cached_html'
     # 失敗時に画面へ渡す例外メッセージ。正常時は空文字列。
     error: str = ""
     # 画面から参照するログ行の一覧。インスタンスごとに独立したリストを持つ。
@@ -93,6 +95,7 @@ def _snapshot(job: DatabaseCreationJob) -> dict[str, Any]:
         "sync_status": job.sync_status,
         "sync_error": job.sync_error,
         "sync_commit": job.sync_commit,
+        "source": job.source,
         "local_saved": job.local_saved,
     }
 
@@ -123,7 +126,7 @@ def start_database_job(
     dataset_type: str,
     start_date: date,
     end_date: date,
-    *, sync_repository: str | None = None,
+    *, sync_repository: str | None = None, import_only: bool = False,
 ) -> str:
     # 保存先と解析形式が決まらない種別は受け入れず、既知の二種類へ限定する。
     if dataset_type not in {"historical", "upcoming"}:
@@ -132,6 +135,8 @@ def start_database_job(
         )
     if sync_repository and not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', sync_repository):
         raise ValueError('統合先は owner/name 形式で指定してください。')
+    if import_only and (dataset_type != 'historical' or not sync_repository):
+        raise ValueError('リポジトリからの取り込みは、過去結果と非公開リポジトリを指定してください。')
     # 共有ジョブをロックして参照・更新し、UI側の照会や取消要求との同時アクセスから保護する。
     with _LOCK:
         # 実行中だけでなく取消処理中も排他対象にし、同じDBへの生成・更新の競合を避ける。
@@ -154,6 +159,7 @@ def start_database_job(
             end_date=end_date,
             sync_repository=sync_repository if dataset_type == 'historical' else None,
             sync_status='pending' if sync_repository and dataset_type == 'historical' else 'disabled',
+            import_only=import_only,
         )
         _CANCEL_EVENTS[job_id] = threading.Event()
 
@@ -206,7 +212,7 @@ def _save_run(
             "completed_at": datetime.now(),
             "status": status,
             "dataset_type": job.dataset_type,
-            "source": "cached_html",
+            "source": job.source,
             "start_date": job.start_date,
             "end_date": job.end_date,
             "race_count": race_count,
@@ -218,6 +224,39 @@ def _save_run(
 
 
 # ジョブ条件を処理実装へ渡し、ログ・進捗を更新しながら成功・取消・失敗を記録する。
+def _import_repository(job, cancel_event, logger):
+    sync = import_module('src.10_workflows.database_sync')
+    def check_cancel():
+        if cancel_event.is_set():
+            raise DatabaseCreationCancelled()
+    def before_merge():
+        with _LOCK:
+            check_cancel()
+            job.local_saved = True  # Disable cancellation once the atomic DB write begins.
+    with _LOCK:
+        job.source, job.sync_status, job.progress = 'private_repository', 'running', 0.2
+    try:
+        result = sync.import_repository(job.sync_repository, paths=PATHS, log=logger.info,
+                    start_date=None if job.import_only else job.start_date,
+                    end_date=None if job.import_only else job.end_date,
+                    check_cancel=check_cancel, before_merge=before_merge)
+    except BaseException as exc:
+        with _LOCK:
+            job.local_saved = False
+            job.sync_status = 'cancelled' if isinstance(exc, DatabaseCreationCancelled) else 'failed'
+            job.sync_error = str(exc)
+        raise
+    with _LOCK:
+        job.sync_status, job.sync_commit, job.sync_error = 'completed', result['commit'], ''
+        job.local_saved = True
+        job.start_date, job.end_date = result['start_date'], result['end_date']
+        job.result, job.progress = result, 1.0
+    _save_run(job, status='completed', race_count=result['race_count'], row_count=result['row_count'],
+              message=f"非公開リポジトリから取り込み完了（新規追加{result['imported_rows']:,}頭）")
+    with _LOCK:
+        job.status, job.completed_at = 'completed', datetime.now()
+
+
 def _run_job(job_id: str) -> None:
     job = _JOBS[job_id]
     cancel_event = _CANCEL_EVENTS[job_id]
@@ -242,13 +281,16 @@ def _run_job(job_id: str) -> None:
             )
 
     logger = AppLogger(PATHS.logs, callback=log_callback)
-    scraper = NetkeibaDatabaseCreator(logger=logger)
     try:
         logger.info(
             f"データベース作成開始: "
             f"{job.start_date}～{job.end_date}, "
             f"dataset_type={job.dataset_type}"
         )
+        if job.import_only:
+            _import_repository(job, cancel_event, logger)
+            return
+        scraper = NetkeibaDatabaseCreator(logger=logger)
         frame = scraper.parse_cached_date_range(
             start_date=job.start_date,
             end_date=job.end_date,
@@ -259,6 +301,10 @@ def _run_job(job_id: str) -> None:
         if cancel_event.is_set():
             raise DatabaseCreationCancelled()
         if frame.empty:
+            if job.dataset_type == 'historical' and job.sync_repository:
+                logger.info('対象期間の解析可能なローカルHTMLがないため、非公開リポジトリから直接取り込みます。')
+                _import_repository(job, cancel_event, logger)
+                return
             raise ValueError(
                 "対象期間の解析可能なHTMLがありません。"
                 "先にHTML収集を実行してください。"
