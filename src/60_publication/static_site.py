@@ -179,6 +179,64 @@ def _calibration_return_block(returns: dict | None) -> str:
             + '<span>予想時に保存した購入対象・購入金額を、JRA公式払戻金・返還で精算。</span></section>')
 
 
+def _ticket_selection_return_block(returns, status, prediction_dir):
+    """Show the independent frozen policy and paired cumulative settlements."""
+    policy = _import_module('src.40_ai_modeling.common.ticket_selection')
+    result = (returns or {}).get(policy.POLICY, {})
+    source = (status or {}).get(policy.POLICY, {})
+    state = result.get('status', 'pending' if source.get('status') == 'ok' else 'missing')
+    if state == 'completed':
+        text = (f'{int(result["total_bets"])}点・購入 {int(result["purchase"]):,}円・'
+                f'払戻 {float(result["payout"]):,.0f}円・'
+                f'損益 {float(result["payout"]) - int(result["purchase"]):+,.0f}円・'
+                f'回収率 {float(result["recovery_rate"]):.1f}%・返還 {int(result.get("refund_bets", 0))}点')
+    elif state == 'no_bets':
+        text = '購入対象なし（見送り）'
+    elif state == 'pending':
+        text = ('公式結果の精算待ち' if not result else
+                f'精算中（{int(result.get("settled_bets", 0))} / {int(result.get("total_bets", 0))}点確定）')
+    elif state in {'incomplete', 'unavailable'} or source.get('status') in {'incomplete', 'unavailable'}:
+        state, text = 'incomplete', '検証データ不足（回収率は未集計）'
+    else:
+        text = '検証開始前（予想時に保存した検証買い目なし）'
+    purchase = _import_module('src.00_common.purchase_plan')
+    totals = {'days': 0, 'current_purchase': 0, 'current_payout': 0,
+              'experiment_purchase': 0, 'experiment_payout': 0}
+    for path in sorted((prediction_dir / policy.CATEGORY).glob('*/returns.json')):
+        try:
+            item = json.loads(path.read_text(encoding='utf-8'))[policy.POLICY]
+            if (item.get('status') not in {'completed', 'no_bets'}
+                    or item.get('selection_policy_id') != policy.POLICY_ID):
+                continue
+            baseline = prediction_dir / f'{path.parent.name}_bets_results.csv'
+            frame = purchase.adopt_saved_plan(pd.read_csv(baseline, dtype={'race_id': str, 'selection': str}))
+            if not {'bet_result', 'payout_yen'} <= set(frame):
+                continue
+            base = purchase.return_summary(frame)
+            if base['total_bets'] != base['settled_bets']:
+                continue
+            totals['days'] += 1
+            totals['current_purchase'] += base['purchase']
+            totals['current_payout'] += base['payout']
+            totals['experiment_purchase'] += item['purchase']
+            totals['experiment_payout'] += item['payout']
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    cumulative = f'<span>同じ日付で精算済みの比較対象: {totals["days"]}開催日</span>'
+    for name, label in [('current', '現行'), ('experiment', '上限あり検証')]:
+        stake, payout = totals[name + '_purchase'], totals[name + '_payout']
+        roi = f'{payout / stake * 100:.1f}%' if stake else '—'
+        cumulative += (f'<span>累計・{label}: 購入 {stake:,}円・払戻 {payout:,.0f}円・'
+                       f'損益 {payout - stake:+,.0f}円・回収率 {roi}</span>')
+    return ('<section class="comparison-summary ticket-selection-verification">'
+            '<strong>買い目選定の回収率比較【検証中】</strong>'
+            '<span>補正なし確率で推定回収率110〜200%の候補から、現行スコア順で最大3点・各100円。'
+            '確率補正の検証とは別に比較しています。</span>'
+            f'<span data-selection-policy="{policy.POLICY}" data-status="{_text(state)}">当日: {_text(text)}</span>'
+            + cumulative + '<span>まず20開催日を目安に回収率・損益を評価します。</span>'
+            '<span>予想時の買い目を固定して公式払戻・返還で精算。過去結果からの再選定は含みません。</span></section>')
+
+
 def build_prediction_site(
     predictions: pd.DataFrame,
     race_date: object,
@@ -188,6 +246,8 @@ def build_prediction_site(
     comparison_summary: dict[str, object] | None = None,
     bet_recommendations: pd.DataFrame | None = None,
     calibration_returns: dict | None = None,
+    ticket_selection_returns: dict | None = None,
+    ticket_selection_status: dict | None = None,
 ) -> Path:
     """Write a dependency-free GitHub Pages site for one prediction date."""
 
@@ -210,6 +270,12 @@ def build_prediction_site(
     returns_path = prediction_dir / 'calibration' / date_text / 'returns.json'
     if calibration_returns is None and returns_path.is_file():
         calibration_returns = json.loads(returns_path.read_text(encoding='utf-8'))
+    selection_root = prediction_dir / 'ticket_selection' / date_text
+    if ticket_selection_returns is None and (selection_root / 'returns.json').is_file():
+        ticket_selection_returns = json.loads((selection_root / 'returns.json').read_text(encoding='utf-8'))
+    selection_status = ticket_selection_status
+    if selection_status is None and (selection_root / 'status.json').is_file():
+        selection_status = json.loads((selection_root / 'status.json').read_text(encoding='utf-8'))
     prediction_dir.mkdir(parents=True, exist_ok=True)
     (site_dir / ".nojekyll").touch()
 
@@ -380,6 +446,7 @@ def build_prediction_site(
             f'{failure_text}</section>'
         )
         comparison_block += _calibration_return_block(calibration_returns)
+    comparison_block += _ticket_selection_return_block(ticket_selection_returns, selection_status, prediction_dir)
     # この生成runで共通に付与する生成日時。行ごとにばらつかせない。
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     body = f"""<a class="back" href="../index.html">← 開催日一覧</a><header><div class="eyebrow">Daily Predictions</div>
@@ -389,6 +456,25 @@ def build_prediction_site(
     page_path.write_text(_page(f"{date_text} 競馬予想", body), encoding="utf-8")
     _write_index(site_dir)
     return page_path
+
+
+def refresh_ticket_selection_sections(site_dir: Path):
+    """Refresh only experiment cards; retain historical forecasts and settlements."""
+    root = Path(site_dir) / 'predictions'
+    pattern = r'<section class="comparison-summary ticket-selection-verification">.*?</section>'
+    for page in sorted(root.glob('*.html')):
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', page.stem):
+            continue
+        directory = root / 'ticket_selection' / page.stem
+        load = lambda name: json.loads((directory / name).read_text(encoding='utf-8')) if (directory / name).is_file() else None
+        block = _ticket_selection_return_block(load('returns.json'), load('status.json'), root)
+        html = page.read_text(encoding='utf-8')
+        if re.search(pattern, html, re.DOTALL):
+            updated = re.sub(pattern, lambda _: block, html, flags=re.DOTALL)
+        else:
+            updated = html.replace('<details class="race', block + '<details class="race', 1)
+        if updated != html:
+            page.write_text(updated, encoding='utf-8')
 
 
 # 予想がまだない場合にも、公開サイトの入口ページを用意する。

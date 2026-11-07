@@ -140,7 +140,10 @@ def run_date(bundle: Path, output: Path, race_date: date, *, calibration_method:
             combined_plan.to_csv(output / 'recommended_bets.csv', index=False, encoding='utf-8-sig')
             report['purchase_plan_version'] = 1
             aggregate_comparison_outputs(output, [output / 'races' / row['race_id'] for row in report['races'] if row['status'] == 'ok'])
-            build_prediction_site(combined, race_date, combined.model_run_id.iloc[0], output / "preview", bet_recommendations=combined_plan)
+            selection_status = output / 'ticket_selection/status.json'
+            build_prediction_site(combined, race_date, combined.model_run_id.iloc[0], output / "preview", bet_recommendations=combined_plan,
+                                  ticket_selection_status=json.loads(selection_status.read_text(encoding='utf-8'))
+                                  if selection_status.exists() else None)
     # 処理失敗の原因をレポートへ残す。成功扱いや開催なしへの置き換えは行わない。
     except Exception as exc:
         report.update(status="error", error=str(exc))

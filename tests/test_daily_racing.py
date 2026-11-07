@@ -151,6 +151,42 @@ def test_changed_resolved_plan_blocks_result_publication(tmp_path, prior_site):
     assert before == {str(p): p.read_bytes() for p in prior_site.rglob('*') if p.is_file()}
 
 
+@pytest.mark.parametrize('tamper', [False, True])
+def test_ticket_selection_settles_publishes_and_guards_frozen_inputs(tmp_path, prior_site, monkeypatch, tamper):
+    import logging
+    import shutil
+    policy = _import_module('src.40_ai_modeling.common.ticket_selection')
+    calibration = _import_module('src.40_ai_modeling.common.calibration')
+    predictions = pd.read_csv(prior_site / 'predictions/2026-09-19.csv', dtype={'race_id': str, 'horse_id': str})
+    predictions = calibration.attach_probabilities(predictions, [.5], tmp_path, {'model_run_id': 'm'})
+    odds = pd.DataFrame({'race_id': predictions.race_id, 'bet_type': 'place', 'selection_1': 1,
+                         'selection_2': float('nan'), 'selection_3': float('nan'), 'odds_min': 3.})
+    policy.save(predictions, tmp_path / 'experiment', odds)
+    shutil.copytree(tmp_path / 'experiment/ticket_selection', prior_site / 'predictions/ticket_selection/2026-09-19')
+
+    def fetch(*args, **kwargs):
+        frame = pd.DataFrame({'horse_id': [None], 'horse_number': [1], 'finish_position': [1], 'result_status': ['finished']})
+        frame.attrs['official_payouts'] = {'win:1': 300, 'place:1': 150}
+        return frame
+    monkeypatch.setattr(daily.JraResultFetcher, 'fetch_result_for_comparison', fetch)
+    output = tmp_path / 'run'
+    output.mkdir()
+    report = daily.compare_previous(date(2026, 9, 19), prior_site, output / 'comparison', logging.getLogger())
+    assert report['ticket_selection_returns']['ev_cap2']['recovery_rate'] == 150
+    assert report['summary']['bet_returns']['recovery_rate'] == 300
+    (output / 'daily_report.json').write_text(json.dumps({'status': 'ok', 'tasks': {
+        'prediction': {'status': 'no_races'}, 'comparison': {'status': 'ok', 'race_date': '2026-09-19'}}}), encoding='utf-8')
+    if tamper:
+        (prior_site / 'predictions/ticket_selection/2026-09-19/ev_cap2/definition.json').write_text('{}')
+        with pytest.raises(ValueError, match='変更'):
+            daily.prepare_daily_publication(output, prior_site)
+    else:
+        assert daily.prepare_daily_publication(output, prior_site)
+        html = (prior_site / 'predictions/2026-09-19.html').read_text(encoding='utf-8')
+        assert '回収率 150.0%' in html and '回収率 300.0%' in html and '1開催日' in html
+        assert (prior_site / 'predictions/ticket_selection/2026-09-19/returns.json').exists()
+
+
 # 公開済み予想を再計算せずに照合し、元CSVを保ったまま比較結果だけを追加できることを確認する。
 @pytest.mark.parametrize("prediction_status", ["no_races", "incomplete", "error"])
 def test_previous_results_update_without_repredicting_and_preserve_original(tmp_path, prior_site, prediction_status):

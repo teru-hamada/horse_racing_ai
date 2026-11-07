@@ -78,6 +78,17 @@ def prepare_publication(results: Path, site: Path) -> list[str]:
             shutil.copytree(site, staged)
         else:
             staged.mkdir()
+        selection_root = results / 'ticket_selection'
+        selection_names = []
+        if selection_root.exists():
+            for source in selection_root.rglob('*'):
+                if not source.is_file() or source.suffix not in {'.csv', '.json'}:
+                    continue
+                name = f'predictions/ticket_selection/{day}/{source.relative_to(selection_root).as_posix()}'
+                target = staged / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                selection_names.append(name)
         build_prediction_site(predictions, day, predictions.model_run_id.iloc[0], staged, bet_recommendations=selected)
         export = staged / "predictions"
         predictions.to_csv(export / f"{day}.csv", index=False, encoding="utf-8-sig", lineterminator="\n")
@@ -85,6 +96,7 @@ def prepare_publication(results: Path, site: Path) -> list[str]:
         bets.to_csv(export / f"{day}_candidates.csv", index=False, encoding="utf-8-sig", lineterminator="\n")
         names = [".nojekyll", "index.html", f"predictions/{day}.html",
                  f"predictions/{day}.csv", f"predictions/{day}_bets.csv", f"predictions/{day}_candidates.csv"]
+        names.extend(selection_names)
         # 方式別比較はデータとして永続化し、公開HTMLの表示方式とは独立させる。
         comparison_root = results / 'calibration'
         if comparison_root.exists():

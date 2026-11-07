@@ -268,6 +268,7 @@ def save_comparison_outputs(predictions, output: Path, odds=None, *, save_primar
     (root / 'status.json').write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
     if context is not None:
         audit.archive_snapshot(root, output, context)
+    import_module('src.40_ai_modeling.common.ticket_selection').save(predictions, output, odds)
     return status
 
 
@@ -275,6 +276,8 @@ def aggregate_comparison_outputs(output: Path, race_directories):
     """一日の成功レースの比較成果物を集約。方式の一部欠落をゼロ買いと混同しない。"""
     import pandas as pd
     directories = list(race_directories)
+    from importlib import import_module
+    import_module('src.40_ai_modeling.common.ticket_selection').aggregate(output, directories)
     if not directories or not any((d / 'calibration/status.json').exists() for d in directories):
         return  # 旧成果物や比較出力のないテスト入力にも対応する。
     import shutil

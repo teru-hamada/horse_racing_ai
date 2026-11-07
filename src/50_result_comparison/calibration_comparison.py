@@ -49,18 +49,20 @@ def validate_snapshot(predictions_root: Path, day: str, hashes):
             raise ValueError('補正比較の予想・買い目が照合開始後に変更されました。再実行してください。')
 
 
-def settle_saved_comparisons(snapshot: Path, day: str, public_predictions, actual_results, output: Path):
+def settle_saved_comparisons(snapshot: Path, day: str, public_predictions, actual_results, output: Path,
+                             *, category='calibration', methods=METHODS,
+                             calibration_methods=None, validate_method=None):
     """方式ごとに独立精算し、不足を主方式の失敗や0%へ置き換えない。"""
-    root = snapshot / 'calibration' / day
+    root = snapshot / category / day
     status_path = root / 'status.json'
     try:
         source_status = json.loads(status_path.read_text(encoding='utf-8')) if status_path.exists() else {}
         if not isinstance(source_status, dict):
             raise ValueError('Invalid comparison status')
     except (OSError, ValueError):
-        source_status = {method: {'status': 'invalid'} for method in METHODS}
+        source_status = {method: {'status': 'invalid'} for method in methods}
     results = {}
-    for method in METHODS:
+    for method in methods:
         directory = root / method
         result = {'status': 'missing', 'reason': '比較用の保存済み予想・買い目がありません。'}
         try:
@@ -76,13 +78,16 @@ def settle_saved_comparisons(snapshot: Path, day: str, public_predictions, actua
             predictions = pd.read_csv(directory / 'predictions.csv', dtype={'race_id': str, 'horse_id': str})
             bets = pd.read_csv(directory / 'recommended_bets.csv', dtype={'race_id': str, 'selection': str})
             bets = import_module('src.00_common.purchase_plan').adopt_saved_plan(bets)
+            if validate_method is not None:
+                validate_method(method, method_status, predictions, bets)
+            calibration_method = (calibration_methods or {}).get(method, method)
             identity = ['race_id', 'horse_id', 'horse_number']
             if (predictions.empty or predictions.duplicated(identity).any()
                     or set(map(tuple, predictions[identity].astype(str).to_numpy())) !=
                     set(map(tuple, public_predictions[identity].astype(str).to_numpy()))
                     or not pd.to_datetime(predictions.race_date).dt.date.astype(str).eq(day).all()
                     or set(predictions.model_run_id) != set(public_predictions.model_run_id)
-                    or not predictions.calibration_method.eq(method).all()):
+                    or not predictions.calibration_method.eq(calibration_method).all()):
                 raise ValueError('比較予想の対象馬・開催日・モデル・方式が一致しません。')
             probabilities = predictions.top3_probability.to_numpy(dtype=float)
             if (not np.isfinite(probabilities).all() or not predictions.top3_probability.between(0, 1).all()
@@ -92,7 +97,7 @@ def settle_saved_comparisons(snapshot: Path, day: str, public_predictions, actua
                     or bets.groupby('race_id').size().gt(3).any()):
                 raise ValueError('保存済み比較買い目のレース・点数・重複が不正です。')
             if not bets.empty:
-                if not bets.calibration_method.eq(method).all():
+                if not bets.calibration_method.eq(calibration_method).all():
                     raise ValueError('比較買い目の方式が一致しません。')
                 if not bets.calibration_id.eq(predictions.calibration_id.iloc[0]).all():
                     raise ValueError('比較買い目の補正定義が一致しません。')

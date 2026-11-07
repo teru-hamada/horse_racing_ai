@@ -10,12 +10,12 @@ import pytest
 prepare_publication = _import_module('src.60_publication.publish_predictions').prepare_publication
 
 
-def test_comparison_files_are_persisted_without_changing_public_html(tmp_path, results):
+def test_comparison_files_are_persisted_and_selection_status_is_shown(tmp_path, results):
     calibration = _import_module('src.40_ai_modeling.common.calibration')
     site = tmp_path / 'site'
     prepare_publication(results, site)
     page = site / 'predictions/2026-09-19.html'
-    original = page.read_bytes()
+    original_bets = (site / 'predictions/2026-09-19_bets.csv').read_bytes()
     calibration.save_calibrations(tmp_path / 'calibration.json', [
         calibration.ProbabilityCalibration('m'),
         calibration.ProbabilityCalibration('m', 'class_weight', {'pos_weight': 4.}),
@@ -27,8 +27,11 @@ def test_comparison_files_are_persisted_without_changing_public_html(tmp_path, r
                          'selection_2': float('nan'), 'selection_3': float('nan'), 'odds_min': 3.})
     calibration.save_comparison_outputs(comparison, results, odds)
     changed = prepare_publication(results, site)
-    assert changed and all(name.startswith('predictions/calibration/') for name in changed)
-    assert page.read_bytes() == original
+    assert changed and all(name.startswith(('predictions/calibration/', 'predictions/ticket_selection/'))
+                           or name == 'predictions/2026-09-19.html' for name in changed)
+    assert '公式結果の精算待ち' in page.read_text(encoding='utf-8')
+    assert (site / 'predictions/2026-09-19_bets.csv').read_bytes() == original_bets
+    assert (site / 'predictions/ticket_selection/2026-09-19/ev_cap2/recommended_bets.csv').exists()
     root = site / 'predictions/calibration/2026-09-19'
     assert (root / 'status.json').exists()
     for method in calibration.METHODS:

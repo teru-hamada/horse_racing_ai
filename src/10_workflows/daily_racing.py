@@ -31,6 +31,7 @@ prepare_publication = _import_module('src.60_publication.publish_predictions').p
 check_meeting_day = _import_module('src.20_scrapers_html_collection.race_calendar').check_meeting_day
 build_prediction_site = _import_module('src.60_publication.static_site').build_prediction_site
 calibration_comparison = _import_module('src.50_result_comparison.calibration_comparison')
+ticket_selection = _import_module('src.40_ai_modeling.common.ticket_selection')
 
 # 日本標準時（UTC+9）。日付判定と公開ページの時刻表示を統一する。
 JST = timezone(timedelta(hours=9))
@@ -53,6 +54,7 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
         shutil.copy2(source, output / source.name)
     # 結果を見る前の比較用上位3点を固定し、結果照合後に選び直さない。
     calibration_hashes = calibration_comparison.snapshot_inputs(site / 'predictions', str(day), output / 'inputs')
+    selection_hashes = ticket_selection.snapshot_inputs(site / 'predictions', str(day), output / 'inputs')
     actual_results = {}
     predictions = pd.read_csv(output / sources[0].name, dtype={"race_id": str, "horse_id": str})
     bets = pd.read_csv(output / sources[1].name, dtype={"race_id": str, "selection": str})
@@ -104,6 +106,8 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     judged.to_csv(output / "bets_results.csv", index=False, encoding="utf-8-sig")
     calibration_returns = calibration_comparison.settle_saved_comparisons(
         output / 'inputs', str(day), predictions, actual_results, output / 'calibration')
+    selection_returns = ticket_selection.settle(
+        output / 'inputs', str(day), predictions, actual_results, output / 'ticket_selection')
     # 照合対象と精算結果がすべて揃い、公開可能と判断できるかのフラグ。
     complete = summary["failed_races"] == 0 and summary["compared_races"] == len(ids)
     complete = complete and not judged.bet_result.eq("未確認").any()
@@ -114,7 +118,8 @@ def compare_previous(day: date, site: Path, output: Path, logger) -> dict:
     result = {"status": "ok" if complete else "incomplete", "race_date": str(day),
               "source_hashes": source_hashes, "summary": summary,
               "purchase_plan_sha256": sha256(output / "purchase_plan.csv"),
-              "calibration_source_hashes": calibration_hashes, "calibration_returns": calibration_returns}
+              "calibration_source_hashes": calibration_hashes, "calibration_returns": calibration_returns,
+              "ticket_selection_source_hashes": selection_hashes, "ticket_selection_returns": selection_returns}
     (output / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 
@@ -203,6 +208,9 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
             if 'calibration_source_hashes' in comparison_report:
                 calibration_comparison.validate_snapshot(site / 'predictions', day,
                                                           comparison_report['calibration_source_hashes'])
+            if 'ticket_selection_source_hashes' in comparison_report:
+                ticket_selection.validate_snapshot(site / 'predictions', day,
+                                                     comparison_report['ticket_selection_source_hashes'])
             predictions = pd.read_csv(root / f"{day}.csv", dtype={"race_id": str, "horse_id": str})
             bets = pd.read_csv(root / f"{day}_bets.csv", dtype={"race_id": str, "selection": str})
             if 'purchase_plan_sha256' in comparison_report:
@@ -212,15 +220,21 @@ def prepare_daily_publication(output: Path, site: Path) -> bool:
                 bets = _import_module('src.00_common.purchase_plan').validate_plan(
                     pd.read_csv(plan_path, dtype={'race_id': str, 'selection': str}))
             comparison = pd.read_csv(root / "comparison.csv", dtype={"race_id": str, "horse_id": str})
+            # Store settlements first so the page can aggregate paired, settled days.
+            if (root / 'ticket_selection').exists():
+                shutil.copytree(root / 'ticket_selection', staged / 'predictions/ticket_selection' / day, dirs_exist_ok=True)
+            shutil.copy2(root / 'bets_results.csv', staged / 'predictions' / f'{day}_bets_results.csv')
             build_prediction_site(predictions, day, predictions.model_run_id.iloc[0], staged,
                                   comparison=comparison, comparison_summary=comparison_report["summary"], bet_recommendations=bets,
-                                  calibration_returns=comparison_report.get('calibration_returns'))
+                                  calibration_returns=comparison_report.get('calibration_returns'),
+                                  ticket_selection_returns=comparison_report.get('ticket_selection_returns'))
             # 比較用精算も公開CSVとして残す。予想・推奨買い目の元ファイルは変更しない。
             if (root / 'calibration').exists():
                 target = staged / 'predictions/calibration' / day
                 shutil.copytree(root / 'calibration', target, dirs_exist_ok=True)
             for source, target in (("comparison.csv", f"{day}_comparison.csv"), ("bets_results.csv", f"{day}_bets_results.csv")):
                 shutil.copy2(root / source, staged / "predictions" / target)
+        _import_module('src.60_publication.static_site').refresh_ticket_selection_sections(staged)
         pattern = '<p class="meta">生成日時: [^<]*</p>'.encode("utf-8")
         for source in staged.rglob("*"):
             # 最新版の必須成果物が欠けた場合は、古いモデルへ自動切替せず不足を通知する。

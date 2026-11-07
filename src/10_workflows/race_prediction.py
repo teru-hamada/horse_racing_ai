@@ -212,7 +212,10 @@ def run_prediction(bundle: Path, output: Path, race_date: date | None = None,
         report['recommended_rows'] = len(selected)
         report["calibration_comparison"] = save_comparison_outputs(predictions, output, odds)
         report["betting_status"] = "ok"
-        build_prediction_site(predictions, race_date, report["model_id"], output / "preview", bet_recommendations=selected)
+        selection_status = output / 'ticket_selection/status.json'
+        build_prediction_site(predictions, race_date, report["model_id"], output / "preview", bet_recommendations=selected,
+                              ticket_selection_status=json.loads(selection_status.read_text(encoding='utf-8'))
+                              if selection_status.exists() else None)
         report.update(prediction_rows=len(predictions), matched_win_runners=len(joined), bet_rows=len(bets),
                       bet_note="推奨条件を満たす買い目なし" if bets.empty else "計算成功", status="ok")
         # 保存済み入力での再現モード。元成果物の整合性確認や結果比較を行う。
