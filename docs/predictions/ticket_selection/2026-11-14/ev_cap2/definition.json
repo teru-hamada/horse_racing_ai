@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "calibration_method": "none",
+  "minimum_recovery_rate_percent": 110,
+  "maximum_recovery_rate_percent": 200,
+  "ranking": [
+    "recommendation_score",
+    "recovery_rate_percent"
+  ],
+  "maximum_tickets_per_race": 3,
+  "stake_yen": 100,
+  "candidate_universe": "existing_eligible_candidates"
+}
