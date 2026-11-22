@@ -1,0 +1,17 @@
+{
+  "none": {
+    "status": "ok",
+    "races_available": 24,
+    "races_expected": 24
+  },
+  "class_weight": {
+    "status": "ok",
+    "races_available": 24,
+    "races_expected": 24
+  },
+  "sigmoid": {
+    "status": "ok",
+    "races_available": 24,
+    "races_expected": 24
+  }
+}
