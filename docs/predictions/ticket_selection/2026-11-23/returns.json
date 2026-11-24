@@ -1,0 +1,14 @@
+{
+  "ev_cap2": {
+    "status": "completed",
+    "total_bets": 71,
+    "settled_bets": 71,
+    "hit_bets": 17,
+    "refund_bets": 0,
+    "purchase": 7100,
+    "payout": 5150.0,
+    "recovery_rate": 72.53521126760563,
+    "missing_races": [],
+    "selection_policy_id": "policy_eb17bd2589900ea2d41e"
+  }
+}
